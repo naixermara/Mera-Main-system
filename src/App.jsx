@@ -367,6 +367,10 @@ export default function MeraConsignmentApp() {
   const canSeeAccounting = ACCOUNTING_EMAILS.includes(String(authUser?.email || "").toLowerCase());
 
   const [page, setPage] = useState("sales");
+  // Set when "+ Add stock" is pressed on a consignment store. Delivery &
+  // Invoices reads it once on open to pre-fill a delivery note for that
+  // store, then clears it so it doesn't fire again on the next visit.
+  const [stockForStore, setStockForStore] = useState(null);
   const [salesSubPage, setSalesSubPage] = useState("consignment");
   const [consignmentSubView, setConsignmentSubView] = useState("regular");
   const [stores, setStores] = useState([]);
@@ -749,6 +753,42 @@ export default function MeraConsignmentApp() {
     }
   }
 
+  // "+ Add stock" on a store. Hands the store over to Delivery & Invoices so
+  // the restock is recorded the way every other shipment is — as a delivery
+  // note the store can sign — rather than as a number typed over the old one.
+  function openAddStock(store) {
+    setStockForStore({
+      id: store.id,
+      name: store.name,
+      plPrice: store.plPrice || 0,
+      nightPrice: store.nightPrice || 0,
+      dayPrice: store.dayPrice || 0,
+    });
+    setPage("delivery");
+  }
+
+  // Called back once that delivery note is saved. Raises the store's stocked
+  // total by what was sent, so Sales shows it without a reload. A store that
+  // had hit zero and dropped into "no longer stocking" comes back on its own.
+  async function receiveStock(storeId, q) {
+    const s = stores.find((x) => x.id === storeId);
+    if (!s) return;
+    const next = {
+      pl: (Number(s.pl) || 0) + (Number(q.pl) || 0),
+      night: (Number(s.night) || 0) + (Number(q.night) || 0),
+      dayp: (Number(s.dayp) || 0) + (Number(q.day) || 0),
+    };
+    try {
+      await sbFetch(`stores?id=eq.${storeId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ pl_initial: next.pl, night_initial: next.night, day_initial: next.dayp }),
+      });
+      setStores((prev) => prev.map((x) => (x.id === storeId ? { ...x, ...next } : x)));
+    } catch (e) {
+      setSaveError(true);
+    }
+  }
+
   async function submitLog(e) {
     e.preventDefault();
     if (!logForm.storeId) return;
@@ -895,7 +935,10 @@ export default function MeraConsignmentApp() {
         });
       return { ...s, products, totalRemaining, totalValue, hasPricing, totalCollected, allTimeCollected, lastVisitDate, visitedThisMonth, latestNote, visitCount: storeVisits.length, paymentHistory, allTimePaymentHistory, fullHistory };
     });
-  }, [visits, selectedMonth]);
+    // `stores` belongs here: without it an edited price, a changed opening
+    // quantity or a restock does not show until something else forces a
+    // recalculation.
+  }, [stores, visits, selectedMonth]);
 
   const filtered = useMemo(() => {
     return enriched.filter((s) => {
@@ -1213,7 +1256,7 @@ export default function MeraConsignmentApp() {
         ) : page === "kol" ? (
           <KolPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
         ) : page === "delivery" ? (
-          <DeliveryNotePage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
+          <DeliveryNotePage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} stockForStore={stockForStore} onStockHandled={() => setStockForStore(null)} onStoreStocked={receiveStock} />
         ) : page === "stores" ? (
           <StoresPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
         ) : page === "accounting" ? (
@@ -1548,6 +1591,7 @@ export default function MeraConsignmentApp() {
                   salespeople={salespeople}
                   onAddSalesperson={addSalesperson}
                   onLogVisit={() => { setLogForm({ ...emptyLogForm, storeId: s.id }); setStoreQuery(s.name); setShowStoreList(false); setShowLog(true); }}
+                  onAddStock={() => openAddStock(s)}
                 />
               ))}
             </div>
@@ -1579,6 +1623,7 @@ export default function MeraConsignmentApp() {
                 salespeople={salespeople}
                 onAddSalesperson={addSalesperson}
                 onLogVisit={() => { setLogForm({ ...emptyLogForm, storeId: s.id }); setStoreQuery(s.name); setShowStoreList(false); setShowLog(true); }}
+                  onAddStock={() => openAddStock(s)}
               />
             ))}
           </div>
@@ -6639,7 +6684,7 @@ const STOCK_PRODUCTS = [
   { key: "day", label: "Day (ថ្ងៃ)" },
 ];
 
-function DeliveryNotePage({ authUser, C, sbFetch, logActivity }) {
+function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, onStockHandled, onStoreStocked }) {
   const [loading, setLoading] = useState(true);
   const [notes, setNotes] = useState([]);
   const [invoices, setInvoices] = useState([]);
@@ -6711,6 +6756,27 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity }) {
       }
     })();
   }, []);
+
+  // Arriving from "+ Add stock" on a consignment store: open a delivery note
+  // already pointed at that store, with its agreed prices filled in. Waits for
+  // the note list to load so the document number is the right next one.
+  useEffect(() => {
+    if (!stockForStore || loading) return;
+    setDnForm({
+      ...emptyDNForm,
+      businessType: "consignment",
+      storeMode: "existing",
+      storeId: stockForStore.id,
+      dnNumber: nextDNNumber(),
+      orderNo: nextOrderNo(),
+      plPrice: stockForStore.plPrice ? String(stockForStore.plPrice) : "",
+      nightPrice: stockForStore.nightPrice ? String(stockForStore.nightPrice) : "",
+      dayPrice: stockForStore.dayPrice ? String(stockForStore.dayPrice) : "",
+    });
+    setStockError("");
+    setShowNewDN(true);
+    onStockHandled && onStockHandled();
+  }, [stockForStore, loading]);
 
   function storeListFor(businessType) {
     if (businessType === "credit") return creditStores;
@@ -6872,6 +6938,16 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity }) {
       setSaveError(false);
       if (!stockMissing) await addStockMove(wanted.map((w) => ({ ...w, qty: -w.qty })), "delivery", dnNumber);
       setStockError("");
+      // A consignment drop is also a restock of that store's shelf, so raise
+      // what Sales shows sitting there. Corporate and credit stores bill per
+      // invoice and hold no consignment shelf, so they are left alone.
+      if (dnForm.businessType === "consignment" && onStoreStocked) {
+        await onStoreStocked(storeId, {
+          pl: parseFloat(dnForm.plQty) || 0,
+          night: parseFloat(dnForm.nightQty) || 0,
+          day: parseFloat(dnForm.dayQty) || 0,
+        });
+      }
       logActivity?.("Created delivery note", storeName, inserted.dn_number);
       return true;
     } catch (e) {
@@ -6888,6 +6964,10 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity }) {
     stockMoves.forEach((m) => { by[m.product] = (by[m.product] || 0) + Number(m.qty || 0); });
     return by;
   }, [stockMoves]);
+
+  // Table exists but nothing has ever been counted in. Every delivery note
+  // will be refused until an opening count is entered, so say so plainly.
+  const stockEmpty = !stockMissing && stockMoves.length === 0;
 
   const stockLabel = (code) =>
     (STOCK_PRODUCTS.find((p) => p.key === code) || {}).label || code;
@@ -7013,6 +7093,14 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity }) {
             <span style={{ fontSize: 11, color: C.textFaint }}>{showStock ? "close" : "adjust"}</span>
           </div>
         </div>
+
+        {stockEmpty && !showStock && (
+          <div style={{ background: C.amberBg, color: C.amber, padding: "10px 12px", borderRadius: 8, fontSize: 12.5, marginTop: 11, border: `1px solid ${C.amber}35`, lineHeight: 1.5 }}>
+            Nothing has been counted into the warehouse yet, so every delivery note will
+            be refused. Press <b>adjust</b> above and enter how many boxes of each product
+            you have on hand — you only do this once.
+          </div>
+        )}
 
         {showStock && (
           stockMissing ? (
@@ -7401,6 +7489,14 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity }) {
             {stockError && (
               <div style={{ background: C.roseBg, color: C.rose, padding: "12px 14px", borderRadius: 9, fontSize: 13, marginBottom: 12, border: `1px solid ${C.rose}40` }}>
                 <b>Not enough stock.</b> {stockError}
+                {stockEmpty && (
+                  <div style={{ color: C.textDim, marginTop: 8, lineHeight: 1.5 }}>
+                    Your warehouse is still empty because nothing has been counted in yet.
+                    Close this, open <b>Stock on hand</b> at the top of this page, press
+                    <b> adjust</b>, and add how many boxes of each product you actually
+                    have. Then come back and save this note.
+                  </div>
+                )}
               </div>
             )}
             <button
@@ -8446,7 +8542,7 @@ function StatCard({ icon: Icon, label, value, subtitle, onClick, active }) {
   );
 }
 
-function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, showAllTimePayments, onToggleAllTimePayments, onDeleteVisit, onUpdateVisit, onUpdatePrices, onUpdateStoreDetails, salespeople, onAddSalesperson, onLogVisit }) {
+function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, showAllTimePayments, onToggleAllTimePayments, onDeleteVisit, onUpdateVisit, onUpdatePrices, onUpdateStoreDetails, salespeople, onAddSalesperson, onLogVisit, onAddStock }) {
   const [showHistory, setShowHistory] = useState(false);
   const [editingVisitId, setEditingVisitId] = useState(null);
   const [editForm, setEditForm] = useState(null);
@@ -8484,20 +8580,29 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
 
       {expanded && (
         <div style={{ borderTop: `1px solid ${C.border}`, padding: "14px 17px 17px" }}>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onLogVisit && onLogVisit(); }}
-            style={{ width: "100%", background: C.gold, border: "none", borderRadius: 8, padding: "9px 0", fontSize: 12, fontWeight: 700, color: "#1A1508", cursor: "pointer", marginBottom: 13 }}
-          >
-            + Log a visit
-          </button>
+          <div style={{ display: "flex", gap: 8, marginBottom: 13 }}>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onLogVisit && onLogVisit(); }}
+              style={{ flex: 1, background: C.gold, border: "none", borderRadius: 8, padding: "9px 0", fontSize: 12, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}
+            >
+              + Log a visit
+            </button>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onAddStock && onAddStock(); }}
+              style={{ flex: 1, background: "none", border: `1px solid ${C.gold}80`, borderRadius: 8, padding: "9px 0", fontSize: 12, fontWeight: 700, color: C.goldBright, cursor: "pointer" }}
+            >
+              + Add stock
+            </button>
+          </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 9, marginBottom: 13 }}>
             {store.products.map((p) => (
               <div key={p.key} style={{ background: C.bg2, borderRadius: 9, padding: "9px 11px", border: `1px solid ${C.border}` }}>
                 <div style={{ fontSize: 10, color: C.textDim, fontWeight: 600, marginBottom: 6 }}>{p.label}</div>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.textFaint, marginBottom: 2 }}>
-                  <span>ដើមគ្រា (opening)</span>
+                  <span>ដើមគ្រា (total sent)</span>
                   <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: C.textDim }}>{p.init}</span>
                 </div>
                 {p.sold > 0 && (
