@@ -850,9 +850,11 @@ export default function MeraConsignmentApp() {
     return stores.map((s) => {
       const storeVisits = v.filter((x) => x.store === s.name);
       const products = PRODUCTS.map((p) => {
-        const init = s[p.initKey];
-        const sold = storeVisits.filter((x) => x.product === p.key).reduce((a, x) => a + x.sold, 0);
-        const returned = storeVisits.filter((x) => x.product === p.key).reduce((a, x) => a + x.returned, 0);
+        // A store that has never been given an opening quantity stores NULL
+        // here. Without Number(), NULL - sold is NaN and the card reads "NaN".
+        const init = Number(s[p.initKey]) || 0;
+        const sold = storeVisits.filter((x) => x.product === p.key).reduce((a, x) => a + (Number(x.sold) || 0), 0);
+        const returned = storeVisits.filter((x) => x.product === p.key).reduce((a, x) => a + (Number(x.returned) || 0), 0);
         const remaining = Math.max(0, init - sold - returned);
         const price = s[p.priceKey] || 0;
         const value = remaining * price;
@@ -1545,6 +1547,7 @@ export default function MeraConsignmentApp() {
                   onUpdateStoreDetails={updateStoreDetails}
                   salespeople={salespeople}
                   onAddSalesperson={addSalesperson}
+                  onLogVisit={() => { setLogForm({ ...emptyLogForm, storeId: s.id }); setStoreQuery(s.name); setShowStoreList(false); setShowLog(true); }}
                 />
               ))}
             </div>
@@ -1573,8 +1576,9 @@ export default function MeraConsignmentApp() {
                 onUpdateVisit={updateVisit}
                 onUpdatePrices={updateStorePrices}
                 onUpdateStoreDetails={updateStoreDetails}
-                  salespeople={salespeople}
-                  onAddSalesperson={addSalesperson}
+                salespeople={salespeople}
+                onAddSalesperson={addSalesperson}
+                onLogVisit={() => { setLogForm({ ...emptyLogForm, storeId: s.id }); setStoreQuery(s.name); setShowStoreList(false); setShowLog(true); }}
               />
             ))}
           </div>
@@ -8442,7 +8446,7 @@ function StatCard({ icon: Icon, label, value, subtitle, onClick, active }) {
   );
 }
 
-function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, showAllTimePayments, onToggleAllTimePayments, onDeleteVisit, onUpdateVisit, onUpdatePrices, onUpdateStoreDetails, salespeople, onAddSalesperson }) {
+function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, showAllTimePayments, onToggleAllTimePayments, onDeleteVisit, onUpdateVisit, onUpdatePrices, onUpdateStoreDetails, salespeople, onAddSalesperson, onLogVisit }) {
   const [showHistory, setShowHistory] = useState(false);
   const [editingVisitId, setEditingVisitId] = useState(null);
   const [editForm, setEditForm] = useState(null);
@@ -8480,6 +8484,14 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
 
       {expanded && (
         <div style={{ borderTop: `1px solid ${C.border}`, padding: "14px 17px 17px" }}>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onLogVisit && onLogVisit(); }}
+            style={{ width: "100%", background: C.gold, border: "none", borderRadius: 8, padding: "9px 0", fontSize: 12, fontWeight: 700, color: "#1A1508", cursor: "pointer", marginBottom: 13 }}
+          >
+            + Log a visit
+          </button>
+
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 9, marginBottom: 13 }}>
             {store.products.map((p) => (
               <div key={p.key} style={{ background: C.bg2, borderRadius: 9, padding: "9px 11px", border: `1px solid ${C.border}` }}>
