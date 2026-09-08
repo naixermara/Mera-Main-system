@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
-import { Plus, X, Search, ChevronDown, ChevronRight, AlertCircle, Package, Wallet, Calendar, ClipboardList, Sparkles, Trash2, LogOut, Download } from "lucide-react";
+import { Plus, X, Search, ChevronDown, ChevronRight, AlertCircle, Package, Wallet, Calendar, ClipboardList, Sparkles, Trash2, LogOut, Download, Menu } from "lucide-react";
 
 const SUPABASE_URL = "https://idkjsxrqaklyhidptaon.supabase.co";
 const SUPABASE_KEY = "sb_publishable_Y-yZsch-GC8QNXYY8ja-dA_MaBE4El0";
@@ -422,6 +422,12 @@ export default function MeraConsignmentApp() {
   // store, then clears it so it doesn't fire again on the next visit.
   const [stockForStore, setStockForStore] = useState(null);
   const [salesSubPage, setSalesSubPage] = useState("consignment");
+  // Sidebar. navPick is the label of the item showing, so the sidebar can
+  // highlight it; childTab is handed to a page that has its own inner tabs.
+  const [navGroup, setNavGroup] = useState(1);
+  const [navPick, setNavPick] = useState("Consignment");
+  const [childTab, setChildTab] = useState(null);
+  const [navMobile, setNavMobile] = useState(false);
   const [consignmentSubView, setConsignmentSubView] = useState("regular");
   const [stores, setStores] = useState([]);
   const [salespeople, setSalespeople] = useState([]);
@@ -1087,6 +1093,21 @@ export default function MeraConsignmentApp() {
     );
   }
 
+  // Sections the signed-in person may actually open.
+  const visibleNav = NAV.filter((g) =>
+    g.needs === "payroll" ? canSeePayroll : g.needs === "accounting" ? canSeeAccounting : true
+  );
+
+  // One place that moves the app, so the sidebar, the overview cards and any
+  // future shortcut all land in the same state.
+  function goTo(item) {
+    setNavPick(item.label);
+    setChildTab(item.tab || null);
+    setPage(item.page);
+    if (item.sub) setSalesSubPage(item.sub);
+    if (item.view) setConsignmentSubView(item.view);
+  }
+
   return (
     <div className="mera-app-root" style={{ minHeight: "100vh", background: `linear-gradient(180deg, ${C.bg2} 0%, ${C.bg} 340px)`, fontFamily: "'Manrope', sans-serif", color: C.text, paddingBottom: 70 }}>
       <style>{`
@@ -1106,6 +1127,22 @@ export default function MeraConsignmentApp() {
         .statcard:hover { border-color: ${C.goldDim}; box-shadow: 0 0 0 1px ${C.goldDim}, 0 8px 24px rgba(201,169,97,0.08); }
         .primarybtn { transition: all 0.15s ease; }
         .primarybtn:hover { box-shadow: 0 4px 20px rgba(201,169,97,0.35); transform: translateY(-1px); }
+        /* The sidebar is fixed to the left edge, so the page is pushed over
+           to sit beside it. Below 900px it folds away behind the menu button
+           and the page gets the whole width back. */
+        .mera-app-root { padding-left: 214px; }
+        .mera-menu-btn { display: none; }
+        .mera-wordmark { display: none !important; }
+        @media (max-width: 900px) {
+          .mera-app-root { padding-left: 0; }
+          .mera-sidenav { display: none !important; }
+          .mera-menu-btn { display: inline-flex !important; }
+          .mera-wordmark { display: inline-flex !important; }
+        }
+        @media print {
+          .mera-app-root { padding-left: 0 !important; }
+          .mera-sidenav, .mera-sidenav-mobile { display: none !important; }
+        }
         ::-webkit-scrollbar { height: 6px; width: 6px; }
         ::-webkit-scrollbar-thumb { background: ${C.border}; border-radius: 3px; }
         /* Phones: the page must never scroll sideways, and the strip beside it
@@ -1120,11 +1157,35 @@ export default function MeraConsignmentApp() {
         }
       `}</style>
 
+      <SideNav
+        C={C}
+        nav={visibleNav}
+        active={navPick}
+        openGroup={navGroup}
+        onOpenGroup={setNavGroup}
+        onPick={goTo}
+        mobileOpen={navMobile}
+        onCloseMobile={() => setNavMobile(false)}
+      />
+
       <div className="mera-shell" style={{ maxWidth: 920, margin: "0 auto", padding: "40px 20px 0" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 14 }}>
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 17, letterSpacing: "0.2em", textTransform: "uppercase", color: C.gold, fontWeight: 700 }}>
-              <Sparkles size={17} /> MÈRA
+              <button
+                type="button"
+                className="mera-menu-btn"
+                onClick={() => setNavMobile(true)}
+                aria-label="Menu"
+                style={{ display: "none", alignItems: "center", justifyContent: "center", width: 34, height: 34, background: "none", border: `1px solid ${C.border}`, borderRadius: 8, color: C.goldBright, marginRight: 2 }}
+              >
+                <Menu size={17} />
+              </button>
+              {/* The sidebar already carries the wordmark on wide screens, so
+                  this one only shows when the sidebar is folded away. */}
+              <span className="mera-wordmark" style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+                <Sparkles size={17} /> MÈRA
+              </span>
             </div>
             <h1 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 34, margin: "6px 0 0", letterSpacing: "-0.01em" }}>
               {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? "Delivery & Invoices" : page === "stores" ? "Stores" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "sales" ? (salesSubPage === "total" ? "Sales Total" : salesSubPage === "credit" ? "Credit Operations" : "Consignment Operations") : "Consignment Operations"}
@@ -1184,127 +1245,37 @@ export default function MeraConsignmentApp() {
           </div>
         </div>
 
-        <div className="mera-tabs" style={{ display: "flex", gap: 6, marginTop: 22, marginBottom: 4, flexWrap: "wrap", rowGap: 8 }}>
-          <button
-            onClick={() => setPage("overview")}
-            style={{
-              background: page === "overview" ? C.surface : "none",
-              border: `1px solid ${page === "overview" ? C.gold : C.border}`,
-              color: page === "overview" ? C.goldBright : C.textFaint,
-              borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer",
-            }}
-          >
-            Overview
-          </button>
-          <button
-            onClick={() => setPage("sales")}
-            style={{
-              background: page === "sales" ? C.surface : "none",
-              border: `1px solid ${page === "sales" ? C.gold : C.border}`,
-              color: page === "sales" ? C.goldBright : C.textFaint,
-              borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer",
-            }}
-          >
-            Sales
-          </button>
-          <button
-            onClick={() => setPage("kol")}
-            style={{
-              background: page === "kol" ? C.surface : "none",
-              border: `1px solid ${page === "kol" ? C.gold : C.border}`,
-              color: page === "kol" ? C.goldBright : C.textFaint,
-              borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer",
-            }}
-          >
-            KOL &amp; Content
-          </button>
-          <button
-            onClick={() => setPage("delivery")}
-            style={{
-              background: page === "delivery" ? C.surface : "none",
-              border: `1px solid ${page === "delivery" ? C.gold : C.border}`,
-              color: page === "delivery" ? C.goldBright : C.textFaint,
-              borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer",
-            }}
-          >
-            Delivery &amp; Invoices
-          </button>
-          <button
-            onClick={() => setPage("stores")}
-            style={{
-              background: page === "stores" ? C.surface : "none",
-              border: `1px solid ${page === "stores" ? C.gold : C.border}`,
-              color: page === "stores" ? C.goldBright : C.textFaint,
-              borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer",
-            }}
-          >
-            Stores
-          </button>
-          {canSeePayroll && (
-            <button
-              onClick={() => setPage("profit")}
-              style={{
-                background: page === "profit" ? C.surface : "none",
-                border: `1px solid ${page === "profit" ? C.gold : C.border}`,
-                color: page === "profit" ? C.goldBright : C.textFaint,
-                borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer",
-              }}
-            >
-              Profit
-            </button>
-          )}
-          {canSeeAccounting && (
-            <button
-              onClick={() => setPage("accounting")}
-              style={{
-                background: page === "accounting" ? C.surface : "none",
-                border: `1px solid ${page === "accounting" ? C.gold : C.border}`,
-                color: page === "accounting" ? C.goldBright : C.textFaint,
-                borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer",
-              }}
-            >
-              Accounting
-            </button>
-          )}
-          {canSeePayroll && (
-            <button
-              onClick={() => setPage("payroll")}
-              style={{
-                background: page === "payroll" ? C.surface : "none",
-                border: `1px solid ${page === "payroll" ? C.gold : C.border}`,
-                color: page === "payroll" ? C.goldBright : C.textFaint,
-                borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer",
-              }}
-            >
-              Payroll
-            </button>
-          )}
-        </div>
-
         {page === "overview" ? (
           <OverviewPage
             authUser={authUser}
             C={C}
             sbFetch={sbFetch}
             onNavigate={(dest) => {
-              // Overview cards point at sub-views, not top-level pages — map them.
-              if (dest === "kol") { setPage("kol"); return; }
-              if (dest === "total") { setPage("sales"); setSalesSubPage("total"); return; }
-              if (dest === "credit") { setPage("sales"); setSalesSubPage("credit"); return; }
-              if (dest === "corporate") { setPage("sales"); setSalesSubPage("consignment"); setConsignmentSubView("bigco"); return; }
-              if (dest === "consignment") { setPage("sales"); setSalesSubPage("consignment"); setConsignmentSubView("regular"); return; }
+              // Overview cards point at sub-views, not top-level pages. Route
+              // them through the same nav list the sidebar uses, so the two
+              // can never disagree about where you are.
+              const MAP = {
+                kol: "KOL & Content", total: "Total", credit: "Credit Term",
+                corporate: "Corporate Accounts", consignment: "Consignment",
+                stores: "Stores", delivery: "Delivery notes",
+                accounting: "Post", payroll: "Payroll", profit: "Profit & Margin",
+                overview: "Overview",
+              };
+              const label = MAP[dest];
+              const item = NAV.flatMap((g) => g.items).find((i) => i.label === label);
+              if (item) { goTo(item); return; }
               setPage(dest);
             }}
           />
         ) : page === "kol" ? (
           <KolPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
         ) : page === "delivery" ? (
-          <DeliveryNotePage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} stockForStore={stockForStore} onStockHandled={() => setStockForStore(null)} onStoreDelivered={recordDeliveryToStore} />
+          <DeliveryNotePage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} stockForStore={stockForStore} onStockHandled={() => setStockForStore(null)} onStoreDelivered={recordDeliveryToStore} openPanel={childTab} />
         ) : page === "stores" ? (
           <StoresPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
         ) : page === "accounting" ? (
           canSeeAccounting
-            ? <AccountingPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
+            ? <AccountingPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} openTab={childTab} />
             : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to accounting.</div>
         ) : page === "profit" ? (
           canSeePayroll
@@ -4083,6 +4054,53 @@ const ACCOUNT_TYPES = [
 ];
 
 // Each kind gets its own running number: EX000043, IN000012, and so on.
+// ============================================================================
+// NAVIGATION — the left sidebar. One list, so a new section is a new entry
+// here rather than another button squeezed into a row that already wraps.
+//
+//   page / sub / view   the state a child sets when picked
+//   needs               "payroll" or "accounting" hides it from everyone else
+//   tab                 opens a child page on one of its own inner tabs
+// ============================================================================
+const NAV = [
+  { name: "Dashboard", items: [
+    { label: "Overview", page: "overview" },
+  ]},
+  { name: "Sales", items: [
+    { label: "Total",              page: "sales", sub: "total" },
+    { label: "Consignment",        page: "sales", sub: "consignment", view: "regular" },
+    { label: "Corporate Accounts", page: "sales", sub: "consignment", view: "bigco" },
+    { label: "Credit Term",        page: "sales", sub: "credit" },
+    { label: "Stores",             page: "stores" },
+  ]},
+  { name: "Warehouse", items: [
+    { label: "Stock on hand",       page: "delivery", tab: "stock" },
+    { label: "Products & barcodes", page: "delivery", tab: "products" },
+  ]},
+  { name: "Documents", items: [
+    { label: "Delivery notes", page: "delivery", tab: "notes" },
+    { label: "Invoices",       page: "delivery", tab: "invoices" },
+  ]},
+  { name: "Marketing", items: [
+    { label: "KOL & Content", page: "kol" },
+  ]},
+  { name: "Accounting", needs: "accounting", items: [
+    { label: "Post",          page: "accounting", tab: "post" },
+    { label: "From sales",    page: "accounting", tab: "sales" },
+    { label: "Journal entry", page: "accounting", tab: "journal" },
+    { label: "Vendor",        page: "accounting", tab: "vendor" },
+    { label: "Entries",       page: "accounting", tab: "ledger" },
+    { label: "Reports",       page: "accounting", tab: "reports" },
+    { label: "Accounts",      page: "accounting", tab: "accounts" },
+  ]},
+  { name: "People", needs: "payroll", items: [
+    { label: "Payroll", page: "payroll" },
+  ]},
+  { name: "Insights", needs: "payroll", items: [
+    { label: "Profit & Margin", page: "profit" },
+  ]},
+];
+
 const KIND_PREFIX = {
   expense: "EX", income: "IN", deposit: "DP", withdraw: "WD", transfer: "TR", journal: "JV",
   // purchasing
@@ -4112,8 +4130,10 @@ const POST_KINDS = [
   { key: "transfer", label: "Cash Transfer", help: "Between any two cash or bank accounts." },
 ];
 
-function AccountingPage({ authUser, C, sbFetch, logActivity }) {
-  const [tab, setTab] = useState("post");
+function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
+  const [tab, setTab] = useState(openTab || "post");
+  // The sidebar can point straight at an inner tab.
+  useEffect(() => { if (openTab) setTab(openTab); }, [openTab]);
   const [loading, setLoading] = useState(true);
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState("");
@@ -5663,6 +5683,65 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
         </div>
       )}
     </div>
+  );
+}
+
+function SideNav({ C, nav, active, openGroup, onOpenGroup, onPick, mobileOpen, onCloseMobile }) {
+  const panel = (
+    <div style={{ width: 214, flexShrink: 0, background: C.surface, borderRight: `1px solid ${C.border}`, height: "100%", overflowY: "auto", padding: "16px 0 30px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 16px 16px", fontSize: 15, letterSpacing: "0.18em", textTransform: "uppercase", color: C.gold, fontWeight: 700 }}>
+        <Sparkles size={15} /> MÈRA
+      </div>
+      {nav.map((g, gi) => {
+        const open = openGroup === gi;
+        return (
+          <div key={g.name} style={{ padding: "0 8px" }}>
+            <div
+              onClick={() => onOpenGroup(open ? -1 : gi)}
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "9px 10px", borderRadius: 8, cursor: "pointer", color: open ? C.goldBright : C.textDim, fontWeight: 600, fontSize: 13 }}
+            >
+              <span>{g.name}</span>
+              {open ? <ChevronDown size={13} color={C.textFaint} /> : <ChevronRight size={13} color={C.textFaint} />}
+            </div>
+            {open && (
+              <div style={{ padding: "2px 0 6px" }}>
+                {g.items.map((it) => {
+                  const on = active === it.label;
+                  return (
+                    <div
+                      key={it.label}
+                      onClick={() => { onPick(it); onCloseMobile(); }}
+                      style={{ padding: "7px 10px 7px 24px", borderRadius: 7, cursor: "pointer", fontSize: 12.5, fontWeight: on ? 700 : 400, color: on ? "#1A1508" : C.textFaint, background: on ? C.gold : "transparent" }}
+                    >
+                      {it.label}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  return (
+    <>
+      {/* desktop: always there, fixed to the left edge */}
+      <div className="mera-sidenav" style={{ position: "fixed", top: 0, left: 0, bottom: 0, zIndex: 30, display: "flex" }}>
+        {panel}
+      </div>
+      {/* phone: slides over only when asked for */}
+      {mobileOpen && (
+        <div
+          className="mera-sidenav-mobile"
+          onClick={onCloseMobile}
+          style={{ position: "fixed", inset: 0, background: "rgba(6,7,9,0.72)", backdropFilter: "blur(3px)", zIndex: 60, display: "flex" }}
+        >
+          <div onClick={(e) => e.stopPropagation()} style={{ height: "100%" }}>{panel}</div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -7290,7 +7369,7 @@ const PRODUCT_FALLBACK = SKUS.map((x, i) => ({ code: x.code, name: x.name, barco
 
 const STOCK_PRODUCTS = SKUS.map((x) => ({ key: x.code, label: x.label }));
 
-function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, onStockHandled, onStoreDelivered }) {
+function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, onStockHandled, onStoreDelivered, openPanel }) {
   const [loading, setLoading] = useState(true);
   const [notes, setNotes] = useState([]);
   const [invoices, setInvoices] = useState([]);
@@ -7309,6 +7388,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
   const [stockForm, setStockForm] = useState({ product: "pl", qty: "", reason: "opening", reference: "" });
   const [stockBusy, setStockBusy] = useState(false);
   const [stockError, setStockError] = useState("");
+  const [historyProduct, setHistoryProduct] = useState("pl");
   // Product names and barcodes. Falls back to the old hardcoded values so
   // documents print correctly before the products table exists.
   const [products, setProducts] = useState(PRODUCT_FALLBACK);
@@ -7377,6 +7457,13 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
   // Arriving from "+ New delivery note" on a consignment store: open a note
   // already pointed at that store, with its agreed prices filled in. Waits for
   // the note list to load so the document number is the right next one.
+  // The sidebar can open this page straight onto one of its panels.
+  useEffect(() => {
+    if (openPanel === "stock") { setShowStock(true); setShowProducts(false); }
+    else if (openPanel === "products") { setShowProducts(true); setShowStock(false); if (!productDraft) setProductDraft({}); }
+    else if (openPanel === "notes" || openPanel === "invoices") { setShowStock(false); setShowProducts(false); }
+  }, [openPanel]);
+
   useEffect(() => {
     if (!stockForStore || loading) return;
     setDnForm({
@@ -7775,6 +7862,66 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                   {stockBusy ? "Saving…" : "Save"}
                 </button>
               </div>
+              {/* Every movement, newest first, with a running balance. Stock is
+                  kept as a list of movements rather than one number, so an
+                  opening count and a purchase add up instead of replacing
+                  each other — and this is where you can see that happen. */}
+              <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, gap: 10, flexWrap: "wrap" }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.07em" }}>
+                    Every movement of {stockLabel(historyProduct)}
+                  </div>
+                  <select value={historyProduct} onChange={(e) => setHistoryProduct(e.target.value)}
+                    style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 7, padding: "6px 9px", fontSize: 12 }}>
+                    {STOCK_PRODUCTS.map((pr) => <option key={pr.key} value={pr.key}>{pr.label}</option>)}
+                  </select>
+                </div>
+                {(() => {
+                  const mine = stockMoves
+                    .filter((m) => m.product === historyProduct)
+                    .slice()
+                    .sort((a, b) => String(a.move_date || "").localeCompare(String(b.move_date || "")) || String(a.id).localeCompare(String(b.id)));
+                  if (!mine.length) {
+                    return <div style={{ fontSize: 12, color: C.textFaint, padding: "8px 0" }}>Nothing yet for this product.</div>;
+                  }
+                  let run = 0;
+                  const rowsOut = mine.map((m) => { run += Number(m.qty) || 0; return { ...m, run }; }).reverse();
+                  const REASON = { opening: "Opening count", received: "Received in", adjustment: "Correction", return: "Back from a store", delivery: "Sent on a delivery note", purchase: "Bought from a supplier", "purchase return": "Returned to supplier" };
+                  return (
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 430 }}>
+                        <thead>
+                          <tr style={{ color: C.textFaint, textAlign: "left" }}>
+                            <th style={{ padding: "5px 7px", fontWeight: 500 }}>Date</th>
+                            <th style={{ padding: "5px 7px", fontWeight: 500 }}>What happened</th>
+                            <th style={{ padding: "5px 7px", fontWeight: 500 }}>Ref</th>
+                            <th style={{ padding: "5px 7px", fontWeight: 500, textAlign: "right" }}>In / out</th>
+                            <th style={{ padding: "5px 7px", fontWeight: 500, textAlign: "right" }}>Balance</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rowsOut.slice(0, 40).map((m, i) => {
+                            const q = Number(m.qty) || 0;
+                            return (
+                              <tr key={m.id || i} style={{ borderTop: `1px solid ${C.border}` }}>
+                                <td style={{ padding: "7px 7px", color: C.textDim }}>{m.move_date ? fmtDate(m.move_date) : "—"}</td>
+                                <td style={{ padding: "7px 7px" }}>{REASON[m.reason] || m.reason || "—"}</td>
+                                <td style={{ padding: "7px 7px", color: C.textFaint, fontFamily: "'IBM Plex Mono', monospace", fontSize: 11 }}>{m.reference || "—"}</td>
+                                <td style={{ padding: "7px 7px", textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", color: q >= 0 ? C.emerald : C.amber }}>{q >= 0 ? "+" : ""}{q}</td>
+                                <td style={{ padding: "7px 7px", textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 }}>{m.run}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                      {rowsOut.length > 40 && (
+                        <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 6 }}>Showing the most recent 40 of {rowsOut.length}.</div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+
               <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 10, lineHeight: 1.6 }}>
                 Stock moves on its own most of the time: a <b>Purchase</b> in Accounting brings
                 boxes in, and a <b>delivery note</b> takes them out. Use this panel for the
