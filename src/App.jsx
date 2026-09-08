@@ -367,7 +367,7 @@ export default function MeraConsignmentApp() {
   const canSeeAccounting = ACCOUNTING_EMAILS.includes(String(authUser?.email || "").toLowerCase());
 
   const [page, setPage] = useState("sales");
-  // Set when "+ Add stock" is pressed on a consignment store. Delivery &
+  // Set when "+ New delivery note" is pressed on a consignment store. Delivery &
   // Invoices reads it once on open to pre-fill a delivery note for that
   // store, then clears it so it doesn't fire again on the next visit.
   const [stockForStore, setStockForStore] = useState(null);
@@ -753,10 +753,11 @@ export default function MeraConsignmentApp() {
     }
   }
 
-  // "+ Add stock" on a store. Hands the store over to Delivery & Invoices so
+  // "+ New delivery note" on a store. Hands the store over to Delivery & Invoices
+  // so
   // the restock is recorded the way every other shipment is — as a delivery
   // note the store can sign — rather than as a number typed over the old one.
-  function openAddStock(store) {
+  function openDeliveryNoteFor(store) {
     setStockForStore({
       id: store.id,
       name: store.name,
@@ -767,10 +768,11 @@ export default function MeraConsignmentApp() {
     setPage("delivery");
   }
 
-  // Called back once that delivery note is saved. Raises the store's stocked
-  // total by what was sent, so Sales shows it without a reload. A store that
-  // had hit zero and dropped into "no longer stocking" comes back on its own.
-  async function receiveStock(storeId, q) {
+  // Called back once that delivery note is saved. This is stock leaving our
+  // warehouse and landing on the store's shelf, so the store's delivered
+  // total goes up and Sales shows it without a reload. A store that had hit
+  // zero and dropped into "no longer stocking" comes back on its own.
+  async function recordDeliveryToStore(storeId, q) {
     const s = stores.find((x) => x.id === storeId);
     if (!s) return;
     const next = {
@@ -1256,7 +1258,7 @@ export default function MeraConsignmentApp() {
         ) : page === "kol" ? (
           <KolPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
         ) : page === "delivery" ? (
-          <DeliveryNotePage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} stockForStore={stockForStore} onStockHandled={() => setStockForStore(null)} onStoreStocked={receiveStock} />
+          <DeliveryNotePage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} stockForStore={stockForStore} onStockHandled={() => setStockForStore(null)} onStoreDelivered={recordDeliveryToStore} />
         ) : page === "stores" ? (
           <StoresPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
         ) : page === "accounting" ? (
@@ -1591,7 +1593,7 @@ export default function MeraConsignmentApp() {
                   salespeople={salespeople}
                   onAddSalesperson={addSalesperson}
                   onLogVisit={() => { setLogForm({ ...emptyLogForm, storeId: s.id }); setStoreQuery(s.name); setShowStoreList(false); setShowLog(true); }}
-                  onAddStock={() => openAddStock(s)}
+                  onNewDeliveryNote={() => openDeliveryNoteFor(s)}
                 />
               ))}
             </div>
@@ -1623,7 +1625,7 @@ export default function MeraConsignmentApp() {
                 salespeople={salespeople}
                 onAddSalesperson={addSalesperson}
                 onLogVisit={() => { setLogForm({ ...emptyLogForm, storeId: s.id }); setStoreQuery(s.name); setShowStoreList(false); setShowLog(true); }}
-                  onAddStock={() => openAddStock(s)}
+                  onNewDeliveryNote={() => openDeliveryNoteFor(s)}
               />
             ))}
           </div>
@@ -6684,7 +6686,7 @@ const STOCK_PRODUCTS = [
   { key: "day", label: "Day (ថ្ងៃ)" },
 ];
 
-function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, onStockHandled, onStoreStocked }) {
+function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, onStockHandled, onStoreDelivered }) {
   const [loading, setLoading] = useState(true);
   const [notes, setNotes] = useState([]);
   const [invoices, setInvoices] = useState([]);
@@ -6757,7 +6759,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
     })();
   }, []);
 
-  // Arriving from "+ Add stock" on a consignment store: open a delivery note
+  // Arriving from "+ New delivery note" on a consignment store: open a note
   // already pointed at that store, with its agreed prices filled in. Waits for
   // the note list to load so the document number is the right next one.
   useEffect(() => {
@@ -6941,8 +6943,8 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
       // A consignment drop is also a restock of that store's shelf, so raise
       // what Sales shows sitting there. Corporate and credit stores bill per
       // invoice and hold no consignment shelf, so they are left alone.
-      if (dnForm.businessType === "consignment" && onStoreStocked) {
-        await onStoreStocked(storeId, {
+      if (dnForm.businessType === "consignment" && onStoreDelivered) {
+        await onStoreDelivered(storeId, {
           pl: parseFloat(dnForm.plQty) || 0,
           night: parseFloat(dnForm.nightQty) || 0,
           day: parseFloat(dnForm.dayQty) || 0,
@@ -7090,14 +7092,18 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                 </div>
               );
             })}
-            <span style={{ fontSize: 11, color: C.textFaint }}>{showStock ? "close" : "adjust"}</span>
+            {/* This is the one place "add stock" is the right phrase: product
+                arriving from the factory into our own warehouse. */}
+            <span style={{ fontSize: 11.5, fontWeight: 700, padding: "6px 12px", borderRadius: 7, border: `1px solid ${showStock ? C.border : C.gold + "80"}`, color: showStock ? C.textFaint : C.goldBright }}>
+              {showStock ? "close" : "+ Add stock"}
+            </span>
           </div>
         </div>
 
         {stockEmpty && !showStock && (
           <div style={{ background: C.amberBg, color: C.amber, padding: "10px 12px", borderRadius: 8, fontSize: 12.5, marginTop: 11, border: `1px solid ${C.amber}35`, lineHeight: 1.5 }}>
             Nothing has been counted into the warehouse yet, so every delivery note will
-            be refused. Press <b>adjust</b> above and enter how many boxes of each product
+            be refused. Press <b>+ Add stock</b> above and enter how many boxes of each product
             you have on hand — you only do this once.
           </div>
         )}
@@ -7492,9 +7498,9 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                 {stockEmpty && (
                   <div style={{ color: C.textDim, marginTop: 8, lineHeight: 1.5 }}>
                     Your warehouse is still empty because nothing has been counted in yet.
-                    Close this, open <b>Stock on hand</b> at the top of this page, press
-                    <b> adjust</b>, and add how many boxes of each product you actually
-                    have. Then come back and save this note.
+                    Close this, find <b>Stock on hand</b> at the top of this page, press
+                    <b> + Add stock</b>, and enter how many boxes of each product you
+                    actually have. Then come back and save this note.
                   </div>
                 )}
               </div>
@@ -8542,7 +8548,7 @@ function StatCard({ icon: Icon, label, value, subtitle, onClick, active }) {
   );
 }
 
-function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, showAllTimePayments, onToggleAllTimePayments, onDeleteVisit, onUpdateVisit, onUpdatePrices, onUpdateStoreDetails, salespeople, onAddSalesperson, onLogVisit, onAddStock }) {
+function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, showAllTimePayments, onToggleAllTimePayments, onDeleteVisit, onUpdateVisit, onUpdatePrices, onUpdateStoreDetails, salespeople, onAddSalesperson, onLogVisit, onNewDeliveryNote }) {
   const [showHistory, setShowHistory] = useState(false);
   const [editingVisitId, setEditingVisitId] = useState(null);
   const [editForm, setEditForm] = useState(null);
@@ -8590,10 +8596,10 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
             </button>
             <button
               type="button"
-              onClick={(e) => { e.stopPropagation(); onAddStock && onAddStock(); }}
+              onClick={(e) => { e.stopPropagation(); onNewDeliveryNote && onNewDeliveryNote(); }}
               style={{ flex: 1, background: "none", border: `1px solid ${C.gold}80`, borderRadius: 8, padding: "9px 0", fontSize: 12, fontWeight: 700, color: C.goldBright, cursor: "pointer" }}
             >
-              + Add stock
+              + New delivery note
             </button>
           </div>
 
