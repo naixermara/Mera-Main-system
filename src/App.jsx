@@ -92,11 +92,66 @@ async function verifyToken(token) {
 // Money is shown with thousands separators everywhere: 11765.83 -> 11,765.83
 const MONEY2 = { minimumFractionDigits: 2, maximumFractionDigits: 2 };
 
-const PRODUCTS = [
-  { key: "Panty Liner", label: "Panty Liner", initKey: "pl", priceKey: "plPrice" },
-  { key: "Night", label: "Night (យប់)", initKey: "night", priceKey: "nightPrice" },
-  { key: "Day", label: "Day (ថ្ងៃ)", initKey: "dayp", priceKey: "dayPrice" },
+// ============================================================================
+// SKUS — the one place a product is defined. Everything else in the app is
+// derived from this list, so adding a product means adding a row here plus
+// the matching database columns; nothing else has to be hunted down.
+//
+//   code       short tag, and the product code in stock_moves and products
+//   visitKey   the exact string stored in visits.product — NEVER change these
+//              for an existing product or its history stops matching
+//   label      short name for on-screen lists
+//   initKey    field on the in-memory store object. "dayp" not "day", because
+//              a store already has a `day` field for its visit day
+//   priceKey   price field on the in-memory store object
+//   *Col       the real database column names
+//   form*      the delivery-note / report form field names
+//   name/barcode/unit  defaults for printed documents when the products
+//              table has not been created yet
+// ============================================================================
+const SKUS = [
+  {
+    code: "pl", visitKey: "Panty Liner", label: "Panty Liner",
+    initKey: "pl", priceKey: "plPrice",
+    initCol: "pl_initial", priceCol: "pl_price", qtyCol: "pl_qty", soldCol: "pl_sold",
+    formQty: "plQty", formPrice: "plPrice", formSold: "plSold", formReturned: "plReturned",
+    name: "Mera Panty Liner (ប្រចាំថ្ងៃ)", barcode: "8849308071235", unit: "Box",
+  },
+  {
+    code: "night", visitKey: "Night", label: "Night (យប់)",
+    initKey: "night", priceKey: "nightPrice",
+    initCol: "night_initial", priceCol: "night_price", qtyCol: "night_qty", soldCol: "night_sold",
+    formQty: "nightQty", formPrice: "nightPrice", formSold: "nightSold", formReturned: "nightReturned",
+    name: "Mera for night time(យប់)", barcode: "8849308071259", unit: "Box",
+  },
+  {
+    code: "day", visitKey: "Day", label: "Day (ថ្ងៃ)",
+    initKey: "dayp", priceKey: "dayPrice",
+    initCol: "day_initial", priceCol: "day_price", qtyCol: "day_qty", soldCol: "day_sold",
+    formQty: "dayQty", formPrice: "dayPrice", formSold: "daySold", formReturned: "dayReturned",
+    name: "Mera for day(ថ្ងៃ)", barcode: "8849308071242", unit: "Box",
+  },
+  {
+    code: "pant", visitKey: "Period Pant", label: "Period Pant",
+    initKey: "pant", priceKey: "pantPrice",
+    initCol: "pant_initial", priceCol: "pant_price", qtyCol: "pant_qty", soldCol: "pant_sold",
+    formQty: "pantQty", formPrice: "pantPrice", formSold: "pantSold", formReturned: "pantReturned",
+    name: "Mera Period Pant", barcode: "8849308071273", unit: "Box",
+  },
+  {
+    code: "short", visitKey: "Summer Short", label: "Summer Short (Coolmint)",
+    initKey: "short", priceKey: "shortPrice",
+    initCol: "short_initial", priceCol: "short_price", qtyCol: "short_qty", soldCol: "short_sold",
+    formQty: "shortQty", formPrice: "shortPrice", formSold: "shortSold", formReturned: "shortReturned",
+    name: "Mera Summer Short (Coolmint)", barcode: "8849308071266", unit: "Box",
+  },
 ];
+
+const skuByCode = (code) => SKUS.find((x) => x.code === code);
+
+// The shapes the rest of the app already expects, built from SKUS so there is
+// only ever one list to edit.
+const PRODUCTS = SKUS.map((x) => ({ key: x.visitKey, label: x.label, initKey: x.initKey, priceKey: x.priceKey }));
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -145,12 +200,7 @@ function fmtDate(d) {
 const emptyLogForm = {
   date: todayStr(),
   storeId: "",
-  plSold: "",
-  plReturned: "",
-  nightSold: "",
-  nightReturned: "",
-  daySold: "",
-  dayReturned: "",
+  ...Object.fromEntries(SKUS.flatMap((x) => [[x.formSold, ""], [x.formReturned, ""]])),
   paid: "",
   owed: "",
   invoiceNumber: "",
@@ -398,7 +448,8 @@ export default function MeraConsignmentApp() {
   const [activityEntries, setActivityEntries] = useState(null);
   const [activityLoading, setActivityLoading] = useState(false);
   const [newStoreForm, setNewStoreForm] = useState({
-    name: "", day: "", firstSent: todayStr(), pl: "", night: "", dayp: "", plPrice: "", nightPrice: "", dayPrice: "",
+    name: "", day: "", firstSent: todayStr(),
+    ...Object.fromEntries(SKUS.flatMap((x) => [[x.initKey, ""], [x.priceKey, ""]])),
   });
   const [logForm, setLogForm] = useState(emptyLogForm);
   const [logFormError, setLogFormError] = useState(null);
@@ -478,12 +529,10 @@ export default function MeraConsignmentApp() {
           day: r.day,
           name: r.name,
           firstSent: r.first_sent,
-          pl: r.pl_initial,
-          night: r.night_initial,
-          dayp: r.day_initial,
-          plPrice: Number(r.pl_price || 0),
-          nightPrice: Number(r.night_price || 0),
-          dayPrice: Number(r.day_price || 0),
+          ...Object.fromEntries(SKUS.flatMap((x) => [
+            [x.initKey, r[x.initCol]],
+            [x.priceKey, Number(r[x.priceCol] || 0)],
+          ])),
           salesperson: r.salesperson || "",
         }))
       );
@@ -644,12 +693,10 @@ export default function MeraConsignmentApp() {
           day: newStore.day,
           name: newStore.name,
           first_sent: newStore.firstSent,
-          pl_initial: newStore.pl,
-          night_initial: newStore.night,
-          day_initial: newStore.dayp,
-          pl_price: newStore.plPrice,
-          night_price: newStore.nightPrice,
-          day_price: newStore.dayPrice,
+          ...Object.fromEntries(SKUS.flatMap((x) => [
+            [x.initCol, newStore[x.initKey]],
+            [x.priceCol, newStore[x.priceKey]],
+          ])),
         }),
       });
       setStores((prev) => [
@@ -659,12 +706,10 @@ export default function MeraConsignmentApp() {
           day: inserted.day,
           name: inserted.name,
           firstSent: inserted.first_sent,
-          pl: inserted.pl_initial,
-          night: inserted.night_initial,
-          dayp: inserted.day_initial,
-          plPrice: Number(inserted.pl_price || 0),
-          nightPrice: Number(inserted.night_price || 0),
-          dayPrice: Number(inserted.day_price || 0),
+          ...Object.fromEntries(SKUS.flatMap((x) => [
+            [x.initKey, inserted[x.initCol]],
+            [x.priceKey, Number(inserted[x.priceCol] || 0)],
+          ])),
         },
       ]);
       setSaveError(false);
@@ -682,16 +727,14 @@ export default function MeraConsignmentApp() {
       await sbFetch(`stores?id=eq.${storeId}`, {
         method: "PATCH",
         body: JSON.stringify({
-          pl_price: prices.plPrice,
-          night_price: prices.nightPrice,
-          day_price: prices.dayPrice,
+          ...Object.fromEntries(SKUS.map((x) => [x.priceCol, prices[x.priceKey]])),
         }),
       });
       setStores((prev) =>
         prev.map((s) => (s.id === storeId ? { ...s, ...prices } : s))
       );
       setSaveError(false);
-      logActivity("Updated prices", store?.name, `PL $${prices.plPrice.toLocaleString("en-US", MONEY2)}, Night $${prices.nightPrice.toLocaleString("en-US", MONEY2)}, Day $${prices.dayPrice.toLocaleString("en-US", MONEY2)}`);
+      logActivity("Updated prices", store?.name, SKUS.map((x) => `${x.label} ${money(prices[x.priceKey])}`).join(", "));
       return true;
     } catch (e) {
       setSaveError(true);
@@ -775,15 +818,15 @@ export default function MeraConsignmentApp() {
   async function recordDeliveryToStore(storeId, q) {
     const s = stores.find((x) => x.id === storeId);
     if (!s) return;
-    const next = {
-      pl: (Number(s.pl) || 0) + (Number(q.pl) || 0),
-      night: (Number(s.night) || 0) + (Number(q.night) || 0),
-      dayp: (Number(s.dayp) || 0) + (Number(q.day) || 0),
-    };
+    // q is keyed by SKU code; the store object uses initKey (pl/night/dayp)
+    // and the database uses initCol (pl_initial/...). Keep all three aligned.
+    const next = Object.fromEntries(
+      SKUS.map((x) => [x.initKey, (Number(s[x.initKey]) || 0) + (Number(q[x.code]) || 0)])
+    );
     try {
       await sbFetch(`stores?id=eq.${storeId}`, {
         method: "PATCH",
-        body: JSON.stringify({ pl_initial: next.pl, night_initial: next.night, day_initial: next.dayp }),
+        body: JSON.stringify(Object.fromEntries(SKUS.map((x) => [x.initCol, next[x.initKey]]))),
       });
       setStores((prev) => prev.map((x) => (x.id === storeId ? { ...x, ...next } : x)));
     } catch (e) {
@@ -797,11 +840,11 @@ export default function MeraConsignmentApp() {
     const store = stores.find((s) => s.id === logForm.storeId);
     if (!store) return;
 
-    const productEntries = [
-      { key: "Panty Liner", sold: parseFloat(logForm.plSold) || 0, returned: parseFloat(logForm.plReturned) || 0 },
-      { key: "Night", sold: parseFloat(logForm.nightSold) || 0, returned: parseFloat(logForm.nightReturned) || 0 },
-      { key: "Day", sold: parseFloat(logForm.daySold) || 0, returned: parseFloat(logForm.dayReturned) || 0 },
-    ];
+    const productEntries = SKUS.map((x) => ({
+      key: x.visitKey,
+      sold: parseFloat(logForm[x.formSold]) || 0,
+      returned: parseFloat(logForm[x.formReturned]) || 0,
+    }));
 
     // Block entries that would take any product below zero at this store
     const enrichedStore = enriched.find((s) => s.id === store.id);
@@ -867,7 +910,7 @@ export default function MeraConsignmentApp() {
 
   function closeNewStoreModal() {
     setShowNewStore(false);
-    setNewStoreForm({ name: "", day: "", firstSent: todayStr(), pl: "", night: "", dayp: "", plPrice: "", nightPrice: "", dayPrice: "" });
+    setNewStoreForm({ name: "", day: "", firstSent: todayStr(), ...Object.fromEntries(SKUS.flatMap((x) => [[x.initKey, ""], [x.priceKey, ""]])) });
   }
 
   async function submitNewStore(e) {
@@ -877,12 +920,10 @@ export default function MeraConsignmentApp() {
       name: newStoreForm.name.trim(),
       day: parseInt(newStoreForm.day, 10),
       firstSent: newStoreForm.firstSent,
-      pl: parseFloat(newStoreForm.pl) || 0,
-      night: parseFloat(newStoreForm.night) || 0,
-      dayp: parseFloat(newStoreForm.dayp) || 0,
-      plPrice: parseFloat(newStoreForm.plPrice) || 0,
-      nightPrice: parseFloat(newStoreForm.nightPrice) || 0,
-      dayPrice: parseFloat(newStoreForm.dayPrice) || 0,
+      ...Object.fromEntries(SKUS.flatMap((x) => [
+        [x.initKey, parseFloat(newStoreForm[x.initKey]) || 0],
+        [x.priceKey, parseFloat(newStoreForm[x.priceKey]) || 0],
+      ])),
     });
     if (ok) closeNewStoreModal();
   }
@@ -1679,11 +1720,7 @@ export default function MeraConsignmentApp() {
                 <span style={{ fontSize: 10, color: C.textFaint, textAlign: "center" }}>Sold</span>
                 <span style={{ fontSize: 10, color: C.textFaint, textAlign: "center" }}>Returned</span>
               </div>
-              {[
-                { label: "Panty Liner", soldKey: "plSold", retKey: "plReturned" },
-                { label: "Night (យប់)", soldKey: "nightSold", retKey: "nightReturned" },
-                { label: "Day (ថ្ងៃ)", soldKey: "daySold", retKey: "dayReturned" },
-              ].map((p) => (
+              {SKUS.map((x) => ({ label: x.label, soldKey: x.formSold, retKey: x.formReturned })).map((p) => (
                 <div key={p.soldKey} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 6, alignItems: "center" }}>
                   <span style={{ fontSize: 13, color: C.text }}>{p.label}</span>
                   <input type="number" value={logForm[p.soldKey]} onChange={(e) => setLogForm({ ...logForm, [p.soldKey]: e.target.value })} style={{ ...inputStyle, padding: "7px 8px", textAlign: "center" }} placeholder="0" />
@@ -1749,19 +1786,13 @@ export default function MeraConsignmentApp() {
               <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.03em" }}>
                 Opening stock (units given)
               </label>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
-                <div>
-                  <label style={{ fontSize: 9, color: C.textFaint }}>Panty Liner</label>
-                  <input type="number" value={newStoreForm.pl} onChange={(e) => setNewStoreForm({ ...newStoreForm, pl: e.target.value })} style={{ ...inputStyle, padding: "8px 9px" }} placeholder="0" />
-                </div>
-                <div>
-                  <label style={{ fontSize: 9, color: C.textFaint }}>Night</label>
-                  <input type="number" value={newStoreForm.night} onChange={(e) => setNewStoreForm({ ...newStoreForm, night: e.target.value })} style={{ ...inputStyle, padding: "8px 9px" }} placeholder="0" />
-                </div>
-                <div>
-                  <label style={{ fontSize: 9, color: C.textFaint }}>Day</label>
-                  <input type="number" value={newStoreForm.dayp} onChange={(e) => setNewStoreForm({ ...newStoreForm, dayp: e.target.value })} style={{ ...inputStyle, padding: "8px 9px" }} placeholder="0" />
-                </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(90px, 1fr))", gap: 6 }}>
+                {SKUS.map((x) => (
+                  <div key={x.code}>
+                    <label style={{ fontSize: 9, color: C.textFaint }}>{x.label}</label>
+                    <input type="number" value={newStoreForm[x.initKey]} onChange={(e) => setNewStoreForm({ ...newStoreForm, [x.initKey]: e.target.value })} style={{ ...inputStyle, padding: "8px 9px" }} placeholder="0" />
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -1769,19 +1800,13 @@ export default function MeraConsignmentApp() {
               <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.03em" }}>
                 Price per unit $ (optional)
               </label>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
-                <div>
-                  <label style={{ fontSize: 9, color: C.textFaint }}>Panty Liner</label>
-                  <input type="number" step="0.01" value={newStoreForm.plPrice} onChange={(e) => setNewStoreForm({ ...newStoreForm, plPrice: e.target.value })} style={{ ...inputStyle, padding: "8px 9px" }} placeholder="0.00" />
-                </div>
-                <div>
-                  <label style={{ fontSize: 9, color: C.textFaint }}>Night</label>
-                  <input type="number" step="0.01" value={newStoreForm.nightPrice} onChange={(e) => setNewStoreForm({ ...newStoreForm, nightPrice: e.target.value })} style={{ ...inputStyle, padding: "8px 9px" }} placeholder="0.00" />
-                </div>
-                <div>
-                  <label style={{ fontSize: 9, color: C.textFaint }}>Day</label>
-                  <input type="number" step="0.01" value={newStoreForm.dayPrice} onChange={(e) => setNewStoreForm({ ...newStoreForm, dayPrice: e.target.value })} style={{ ...inputStyle, padding: "8px 9px" }} placeholder="0.00" />
-                </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(90px, 1fr))", gap: 6 }}>
+                {SKUS.map((x) => (
+                  <div key={x.code}>
+                    <label style={{ fontSize: 9, color: C.textFaint }}>{x.label}</label>
+                    <input type="number" step="0.01" value={newStoreForm[x.priceKey]} onChange={(e) => setNewStoreForm({ ...newStoreForm, [x.priceKey]: e.target.value })} style={{ ...inputStyle, padding: "8px 9px" }} placeholder="0.00" />
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -4039,11 +4064,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity }) {
 // pack sale would be charged at a whole box's cost.
 // ============================================================================
 
-const COST_PRODUCTS = [
-  { key: "pl", label: "Panty Liner", visitKey: "Panty Liner", soldCol: "pl_sold", priceCol: "pl_price" },
-  { key: "night", label: "Night (យប់)", visitKey: "Night", soldCol: "night_sold", priceCol: "night_price" },
-  { key: "day", label: "Day (ថ្ងៃ)", visitKey: "Day", soldCol: "day_sold", priceCol: "day_price" },
-];
+const COST_PRODUCTS = SKUS.map((x) => ({ key: x.code, label: x.label, visitKey: x.visitKey, soldCol: x.soldCol, priceCol: x.priceCol }));
 
 // ============================================================================
 // ACCOUNTING  —  a real double-entry ledger, visible only to ACCOUNTING_EMAILS.
@@ -6683,17 +6704,9 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
 // What prints on a delivery note or invoice when the products table has
 // not been created yet. These are the exact names and barcodes that were
 // hardcoded before, so documents look identical either way.
-const PRODUCT_FALLBACK = [
-  { code: "pl",    name: "Mera Panty Liner (ប្រចាំថ្ងៃ)", barcode: "8849308071235", unit: "Box", sort: 1 },
-  { code: "night", name: "Mera for night time(យប់)",      barcode: "8849308071259", unit: "Box", sort: 2 },
-  { code: "day",   name: "Mera for day(ថ្ងៃ)",            barcode: "8849308071242", unit: "Box", sort: 3 },
-];
+const PRODUCT_FALLBACK = SKUS.map((x, i) => ({ code: x.code, name: x.name, barcode: x.barcode, unit: x.unit, sort: i + 1 }));
 
-const STOCK_PRODUCTS = [
-  { key: "pl", label: "Panty Liner" },
-  { key: "night", label: "Night (យប់)" },
-  { key: "day", label: "Day (ថ្ងៃ)" },
-];
+const STOCK_PRODUCTS = SKUS.map((x) => ({ key: x.code, label: x.label }));
 
 function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, onStockHandled, onStoreDelivered }) {
   const [loading, setLoading] = useState(true);
@@ -6742,8 +6755,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
     issuedDate: new Date().toISOString().slice(0, 10),
     saleDate: new Date().toISOString().slice(0, 10),
     issuedBy: "", saleRep: "", paymentMethod: "",
-    plQty: "", nightQty: "", dayQty: "",
-    plPrice: "", nightPrice: "", dayPrice: "",
+    ...Object.fromEntries(SKUS.flatMap((x) => [[x.formQty, ""], [x.formPrice, ""]])),
     notes: "",
   };
   const [dnForm, setDnForm] = useState(emptyDNForm);
@@ -6912,11 +6924,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
       setStockError("");
       // Refuse to send out more than is held. Checked before anything is
       // written, so a rejected note leaves no half-made records behind.
-      const wanted = [
-        { product: "pl", qty: parseFloat(dnForm.plQty) || 0 },
-        { product: "night", qty: parseFloat(dnForm.nightQty) || 0 },
-        { product: "day", qty: parseFloat(dnForm.dayQty) || 0 },
-      ];
+      const wanted = SKUS.map((x) => ({ product: x.code, qty: parseFloat(dnForm[x.formQty]) || 0 }));
       if (!stockMissing) {
         const short = wanted.filter((w) => w.qty > (stock[w.product] || 0));
         if (short.length) {
@@ -6945,12 +6953,10 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
           issued_by: dnForm.issuedBy,
           sale_rep: dnForm.saleRep,
           payment_method: dnForm.paymentMethod,
-          pl_qty: parseFloat(dnForm.plQty) || 0,
-          night_qty: parseFloat(dnForm.nightQty) || 0,
-          day_qty: parseFloat(dnForm.dayQty) || 0,
-          pl_price: parseFloat(dnForm.plPrice) || 0,
-          night_price: parseFloat(dnForm.nightPrice) || 0,
-          day_price: parseFloat(dnForm.dayPrice) || 0,
+          ...Object.fromEntries(SKUS.flatMap((x) => [
+            [x.qtyCol, parseFloat(dnForm[x.formQty]) || 0],
+            [x.priceCol, parseFloat(dnForm[x.formPrice]) || 0],
+          ])),
           notes: dnForm.notes,
           created_by: authUser?.email || "unknown",
         }),
@@ -6965,11 +6971,9 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
       // what Sales shows sitting there. Corporate and credit stores bill per
       // invoice and hold no consignment shelf, so they are left alone.
       if (dnForm.businessType === "consignment" && onStoreDelivered) {
-        await onStoreDelivered(storeId, {
-          pl: parseFloat(dnForm.plQty) || 0,
-          night: parseFloat(dnForm.nightQty) || 0,
-          day: parseFloat(dnForm.dayQty) || 0,
-        });
+        await onStoreDelivered(storeId, Object.fromEntries(
+          SKUS.map((x) => [x.code, parseFloat(dnForm[x.formQty]) || 0])
+        ));
       }
       logActivity?.("Created delivery note", storeName, inserted.dn_number);
       return true;
@@ -7581,15 +7585,11 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
               <div style={{ fontSize: 9, color: C.textFaint }}>Qty (Box)</div>
               <div style={{ fontSize: 9, color: C.textFaint }}>Price $ (internal only)</div>
             </div>
-            {[
-              { key: "pl", label: "Panty Liner" },
-              { key: "night", label: "Night (យប់)" },
-              { key: "day", label: "Day (ថ្ងៃ)" },
-            ].map((p) => (
+            {SKUS.map((x) => ({ key: x.code, label: x.label, qk: x.formQty, pk: x.formPrice })).map((p) => (
               <div key={p.key} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 8, alignItems: "center" }}>
                 <div style={{ fontSize: 13, color: C.textDim }}>{p.label}</div>
-                <input type="number" value={dnForm[p.key + "Qty"]} onChange={(e) => setDnForm({ ...dnForm, [p.key + "Qty"]: e.target.value })} placeholder="0" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 13, background: C.bg2, color: C.text }} />
-                <input type="number" step="0.01" value={dnForm[p.key + "Price"]} onChange={(e) => setDnForm({ ...dnForm, [p.key + "Price"]: e.target.value })} placeholder="0.00" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 13, background: C.bg2, color: C.text }} />
+                <input type="number" value={dnForm[p.qk]} onChange={(e) => setDnForm({ ...dnForm, [p.qk]: e.target.value })} placeholder="0" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 13, background: C.bg2, color: C.text }} />
+                <input type="number" step="0.01" value={dnForm[p.pk]} onChange={(e) => setDnForm({ ...dnForm, [p.pk]: e.target.value })} placeholder="0.00" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 13, background: C.bg2, color: C.text }} />
               </div>
             ))}
             <div style={{ fontSize: 10, color: C.textFaint, marginBottom: 14 }}>Price won't show on the printed delivery note — it carries over automatically when you generate an invoice.</div>
@@ -7826,11 +7826,8 @@ function SingleDocument({ d, isDN, pageBreak, catalog }) {
   const look = (code) =>
     (catalog || []).find((p) => p.code === code) ||
     PRODUCT_FALLBACK.find((p) => p.code === code) || { name: code, barcode: "", unit: "Box" };
-  const products = [
-    { key: "pl", qty: Number(d.pl_qty || 0), price: Number(d.pl_price || 0) },
-    { key: "night", qty: Number(d.night_qty || 0), price: Number(d.night_price || 0) },
-    { key: "day", qty: Number(d.day_qty || 0), price: Number(d.day_price || 0) },
-  ]
+  const products = SKUS
+    .map((x) => ({ key: x.code, qty: Number(d[x.qtyCol] || 0), price: Number(d[x.priceCol] || 0) }))
     .map((p) => { const m = look(p.key); return { ...p, code: m.barcode || "", label: m.name, unit: m.unit || "Box" }; })
     .filter((p) => p.qty > 0);
 
@@ -8764,11 +8761,9 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
             onClick={(e) => {
               e.stopPropagation();
               if (!editingPrices) {
-                setPriceForm({
-                  plPrice: store.products[0].price || "",
-                  nightPrice: store.products[1].price || "",
-                  dayPrice: store.products[2].price || "",
-                });
+                setPriceForm(Object.fromEntries(
+                  SKUS.map((x) => [x.priceKey, (store.products.find((pp) => pp.initKey === x.initKey) || {}).price || ""])
+                ));
               }
               setEditingPrices(!editingPrices);
             }}
@@ -8779,29 +8774,21 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
 
           {editingPrices && (
             <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 9, padding: 10, marginBottom: 13 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 8 }}>
-                <div>
-                  <label style={{ fontSize: 9, color: C.textFaint }}>Panty Liner $</label>
-                  <input type="number" step="0.01" value={priceForm.plPrice} onChange={(e) => setPriceForm({ ...priceForm, plPrice: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
-                </div>
-                <div>
-                  <label style={{ fontSize: 9, color: C.textFaint }}>Night $</label>
-                  <input type="number" step="0.01" value={priceForm.nightPrice} onChange={(e) => setPriceForm({ ...priceForm, nightPrice: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
-                </div>
-                <div>
-                  <label style={{ fontSize: 9, color: C.textFaint }}>Day $</label>
-                  <input type="number" step="0.01" value={priceForm.dayPrice} onChange={(e) => setPriceForm({ ...priceForm, dayPrice: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
-                </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(88px, 1fr))", gap: 6, marginBottom: 8 }}>
+                {SKUS.map((x) => (
+                  <div key={x.code}>
+                    <label style={{ fontSize: 9, color: C.textFaint }}>{x.label} $</label>
+                    <input type="number" step="0.01" value={priceForm[x.priceKey]} onChange={(e) => setPriceForm({ ...priceForm, [x.priceKey]: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
+                  </div>
+                ))}
               </div>
               <button
                 type="button"
                 onClick={async (e) => {
                   e.stopPropagation();
-                  const ok = await onUpdatePrices(store.id, {
-                    plPrice: parseFloat(priceForm.plPrice) || 0,
-                    nightPrice: parseFloat(priceForm.nightPrice) || 0,
-                    dayPrice: parseFloat(priceForm.dayPrice) || 0,
-                  });
+                  const ok = await onUpdatePrices(store.id, Object.fromEntries(
+                    SKUS.map((x) => [x.priceKey, parseFloat(priceForm[x.priceKey]) || 0])
+                  ));
                   if (ok) setEditingPrices(false);
                 }}
                 style={{ width: "100%", background: C.gold, border: "none", borderRadius: 6, padding: "7px 0", fontSize: 12, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}
@@ -8819,9 +8806,7 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
                 setDetailsForm({
                   day: store.day,
                   firstSent: store.firstSent,
-                  pl: store.products[0].init,
-                  night: store.products[1].init,
-                  dayp: store.products[2].init,
+                  ...Object.fromEntries(SKUS.map((x) => [x.initKey, (store.products.find((pp) => pp.initKey === x.initKey) || {}).init])),
                   salesperson: store.salesperson || "",
                 });
               }
@@ -8893,19 +8878,13 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
                 <input type="date" value={detailsForm.firstSent} onChange={(e) => setDetailsForm({ ...detailsForm, firstSent: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
               </div>
               <div style={{ fontSize: 9, color: C.textFaint, marginBottom: 4 }}>Opening stock (ដើមគ្រា)</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 8 }}>
-                <div>
-                  <label style={{ fontSize: 9, color: C.textFaint }}>Panty Liner</label>
-                  <input type="number" value={detailsForm.pl} onChange={(e) => setDetailsForm({ ...detailsForm, pl: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
-                </div>
-                <div>
-                  <label style={{ fontSize: 9, color: C.textFaint }}>Night</label>
-                  <input type="number" value={detailsForm.night} onChange={(e) => setDetailsForm({ ...detailsForm, night: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
-                </div>
-                <div>
-                  <label style={{ fontSize: 9, color: C.textFaint }}>Day</label>
-                  <input type="number" value={detailsForm.dayp} onChange={(e) => setDetailsForm({ ...detailsForm, dayp: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
-                </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(88px, 1fr))", gap: 6, marginBottom: 8 }}>
+                {SKUS.map((x) => (
+                  <div key={x.code}>
+                    <label style={{ fontSize: 9, color: C.textFaint }}>{x.label}</label>
+                    <input type="number" value={detailsForm[x.initKey]} onChange={(e) => setDetailsForm({ ...detailsForm, [x.initKey]: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
+                  </div>
+                ))}
               </div>
               <button
                 type="button"
@@ -8914,9 +8893,7 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
                   const ok = await onUpdateStoreDetails(store.id, {
                     day: parseInt(detailsForm.day, 10) || store.day,
                     firstSent: detailsForm.firstSent,
-                    pl: parseFloat(detailsForm.pl) || 0,
-                    night: parseFloat(detailsForm.night) || 0,
-                    dayp: parseFloat(detailsForm.dayp) || 0,
+                    ...Object.fromEntries(SKUS.map((x) => [x.initKey, parseFloat(detailsForm[x.initKey]) || 0])),
                     salesperson: detailsForm.salesperson || "",
                   });
                   if (ok) setEditingDetails(false);
