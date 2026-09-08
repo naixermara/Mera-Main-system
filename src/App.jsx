@@ -139,11 +139,11 @@ const SKUS = [
     name: "Mera Period Pant", barcode: "8849308071273", unit: "Box",
   },
   {
-    code: "short", visitKey: "Summer Short", label: "Summer Short (Coolmint)",
+    code: "short", visitKey: "Summer Short", label: "Summer (Coolmint)",
     initKey: "short", priceKey: "shortPrice",
     initCol: "short_initial", priceCol: "short_price", qtyCol: "short_qty", soldCol: "short_sold",
     formQty: "shortQty", formPrice: "shortPrice", formSold: "shortSold", formReturned: "shortReturned",
-    name: "Mera Summer Short (Coolmint)", barcode: "8849308071266", unit: "Box",
+    name: "Mera Summer (Coolmint)", barcode: "8849308071266", unit: "Box",
   },
 ];
 
