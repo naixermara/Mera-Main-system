@@ -10,7 +10,7 @@ const OWNER_EMAIL = "rosamaramfi@gmail.com";
 const PAYROLL_EMAILS = ["rosamaramfi@gmail.com", "kimlychea116@gmail.com"];
 // Accounting is its own list so the accountant can be added here without
 // also giving them payroll. Keep it in step with is_accounting_user() in SQL.
-const ACCOUNTING_EMAILS = ["rosamaramfi@gmail.com", "kimlychea116@gmail.com"];
+const ACCOUNTING_EMAILS = ["rosamaramfi@gmail.com", "kimlychea116@gmail.com", "acc@rolyamfi.com.kh"];
 
 let currentAccessToken = null;
 
@@ -6680,6 +6680,15 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
 
 // Stock is keyed by product code, so adding an SKU later means adding a code
 // here (and to the sales forms) rather than reshaping the stock tables.
+// What prints on a delivery note or invoice when the products table has
+// not been created yet. These are the exact names and barcodes that were
+// hardcoded before, so documents look identical either way.
+const PRODUCT_FALLBACK = [
+  { code: "pl",    name: "Mera Panty Liner (ប្រចាំថ្ងៃ)", barcode: "8849308071235", unit: "Box", sort: 1 },
+  { code: "night", name: "Mera for night time(យប់)",      barcode: "8849308071259", unit: "Box", sort: 2 },
+  { code: "day",   name: "Mera for day(ថ្ងៃ)",            barcode: "8849308071242", unit: "Box", sort: 3 },
+];
+
 const STOCK_PRODUCTS = [
   { key: "pl", label: "Panty Liner" },
   { key: "night", label: "Night (យប់)" },
@@ -6705,6 +6714,13 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
   const [stockForm, setStockForm] = useState({ product: "pl", qty: "", reason: "received", reference: "" });
   const [stockBusy, setStockBusy] = useState(false);
   const [stockError, setStockError] = useState("");
+  // Product names and barcodes. Falls back to the old hardcoded values so
+  // documents print correctly before the products table exists.
+  const [products, setProducts] = useState(PRODUCT_FALLBACK);
+  const [productsMissing, setProductsMissing] = useState(false);
+  const [showProducts, setShowProducts] = useState(false);
+  const [productDraft, setProductDraft] = useState(null);
+  const [productBusy, setProductBusy] = useState(false);
   const [showNewDN, setShowNewDN] = useState(false);
   const [printingDoc, setPrintingDoc] = useState(null); // { type: 'dn'|'invoice', data }
   const [printingMulti, setPrintingMulti] = useState(null); // array of { type, data, linkedDN? }
@@ -6751,6 +6767,11 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
         setSalespeople((salespeopleRows || []).map((r) => r.name));
         try { setStockMoves((await sbFetch("stock_moves?select=*")) || []); setStockMissing(false); }
         catch (err) { setStockMissing(true); }
+        try {
+          const prod = await sbFetch("products?select=*&order=sort.asc");
+          if (prod && prod.length) setProducts(prod);
+          setProductsMissing(false);
+        } catch (err) { setProductsMissing(true); }
       } catch (e) {
         setSaveError(true);
       } finally {
@@ -6990,6 +7011,28 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
     }
   }
 
+  async function saveProduct(code) {
+    const row = productDraft && productDraft[code];
+    if (!row) return;
+    setProductBusy(true);
+    try {
+      await sbFetch(`products?code=eq.${encodeURIComponent(code)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: row.name.trim(), barcode: row.barcode.trim() || null }),
+      });
+      setProducts((prev) => prev.map((p) => (p.code === code ? { ...p, name: row.name.trim(), barcode: row.barcode.trim() } : p)));
+      setProductDraft((prev) => { const n = { ...prev }; delete n[code]; return n; });
+      logActivity?.("Edited product", row.name.trim(), row.barcode.trim() || "(no barcode)");
+    } catch (e) {
+      setSaveError(true);
+    }
+    setProductBusy(false);
+  }
+
+  function productFor(code) {
+    return products.find((p) => p.code === code) || PRODUCT_FALLBACK.find((p) => p.code === code) || { code, name: code, barcode: "", unit: "Box" };
+  }
+
   async function submitStockForm() {
     const qty = parseFloat(stockForm.qty) || 0;
     if (!qty) return;
@@ -7147,6 +7190,75 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
               </div>
               <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 10 }}>
                 Delivery notes take stock out automatically. Enter what arrives from the factory here.
+              </div>
+            </div>
+          )
+        )}
+      </div>
+
+      {/* Product names and barcodes — what prints on every document. */}
+      <div style={{ background: C.surface, border: `1px solid ${showProducts ? C.gold : C.border}`, borderRadius: 12, padding: "13px 16px", marginBottom: 16 }}>
+        <div
+          onClick={() => {
+            const next = !showProducts;
+            setShowProducts(next);
+            if (next && !productDraft) setProductDraft({});
+          }}
+          style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, cursor: "pointer", flexWrap: "wrap" }}
+        >
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+            Products &amp; barcodes
+          </div>
+          <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontSize: 11.5, color: C.textFaint }}>
+              {products.length} product{products.length === 1 ? "" : "s"}
+              {products.some((pr) => !pr.barcode) && <span style={{ color: C.amber }}> · one has no barcode</span>}
+            </span>
+            <span style={{ fontSize: 11.5, fontWeight: 700, padding: "6px 12px", borderRadius: 7, border: `1px solid ${showProducts ? C.border : C.gold + "80"}`, color: showProducts ? C.textFaint : C.goldBright }}>
+              {showProducts ? "close" : "Edit"}
+            </span>
+          </div>
+        </div>
+
+        {showProducts && (
+          productsMissing ? (
+            <div style={{ background: C.roseBg, color: C.rose, padding: "11px 13px", borderRadius: 8, fontSize: 12.5, marginTop: 12, border: `1px solid ${C.rose}30`, lineHeight: 1.5 }}>
+              The <b>products</b> table doesn't exist yet — run <b>products-setup.sql</b> in Supabase, then reload.
+              Until then your documents print the names and barcodes shown below, but you can't change them here.
+            </div>
+          ) : (
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.border}`, display: "flex", flexDirection: "column", gap: 10 }}>
+              {products.map((pr) => {
+                const draft = (productDraft || {})[pr.code];
+                const cur = draft || { name: pr.name || "", barcode: pr.barcode || "" };
+                const dirty = !!draft && (draft.name !== (pr.name || "") || draft.barcode !== (pr.barcode || ""));
+                const edit = (patch) => setProductDraft((prev) => ({ ...prev, [pr.code]: { ...cur, ...patch } }));
+                return (
+                  <div key={pr.code} style={{ display: "grid", gridTemplateColumns: "70px 1.6fr 1fr auto", gap: 8, alignItems: "end" }}>
+                    <div>
+                      <label style={{ fontSize: 10, color: C.textFaint, display: "block", marginBottom: 4 }}>Code</label>
+                      <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5, color: C.textDim, padding: "9px 0" }}>{pr.code}</div>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 10, color: C.textFaint, display: "block", marginBottom: 4 }}>Name on the document</label>
+                      <input value={cur.name} onChange={(e) => edit({ name: e.target.value })}
+                        style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "9px 10px", fontSize: 13, width: "100%" }} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 10, color: C.textFaint, display: "block", marginBottom: 4 }}>Barcode</label>
+                      <input value={cur.barcode} onChange={(e) => edit({ barcode: e.target.value })} placeholder="none yet" inputMode="numeric"
+                        style={{ background: C.bg2, border: `1px solid ${cur.barcode ? C.border : C.amber + "60"}`, color: C.text, borderRadius: 8, padding: "9px 10px", fontSize: 13, width: "100%", fontFamily: "'IBM Plex Mono', monospace" }} />
+                    </div>
+                    <button onClick={() => saveProduct(pr.code)} disabled={!dirty || productBusy}
+                      style={{ background: dirty ? C.gold : "none", border: dirty ? "none" : `1px solid ${C.border}`, color: dirty ? "#1A1508" : C.textFaint, borderRadius: 8, padding: "10px 16px", fontSize: 12.5, fontWeight: 700, cursor: dirty ? "pointer" : "default", whiteSpace: "nowrap" }}>
+                      {productBusy ? "…" : dirty ? "Save" : "Saved"}
+                    </button>
+                  </div>
+                );
+              })}
+              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4, lineHeight: 1.5 }}>
+                This is exactly what prints in the Description and Barcode columns of every
+                delivery note and invoice. To add a new SKU, add a row to the products table.
               </div>
             </div>
           )
@@ -7538,6 +7650,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
 
       {printingDoc && (
         <DocumentPrintView
+          catalog={products}
           doc={printingDoc}
           onClose={() => setPrintingDoc(null)}
           linkedDN={printingDoc.type === "invoice" ? notes.find((n) => n.id === printingDoc.data.delivery_note_id) : null}
@@ -7546,6 +7659,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
 
       {printingMulti && (
         <MultiDocumentPrintView
+          catalog={products}
           docs={printingMulti}
           onClose={() => { setPrintingMulti(null); setSelectMode(false); setSelectedKeys(new Set()); }}
         />
@@ -7705,12 +7819,20 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
 }
 
 
-function SingleDocument({ d, isDN, pageBreak }) {
+function SingleDocument({ d, isDN, pageBreak, catalog }) {
+  // Names and barcodes come from the products table when it exists, and
+  // from the old hardcoded values when it doesn't, so a document printed
+  // before the SQL is run looks exactly the same as one printed after.
+  const look = (code) =>
+    (catalog || []).find((p) => p.code === code) ||
+    PRODUCT_FALLBACK.find((p) => p.code === code) || { name: code, barcode: "", unit: "Box" };
   const products = [
-    { code: "8849308071235", label: "Mera Panty Liner (ប្រចាំថ្ងៃ)", qty: Number(d.pl_qty || 0), price: Number(d.pl_price || 0) },
-    { code: "8849308071259", label: "Mera for night time(យប់)", qty: Number(d.night_qty || 0), price: Number(d.night_price || 0) },
-    { code: "8849308071242", label: "Mera for day(ថ្ងៃ)", qty: Number(d.day_qty || 0), price: Number(d.day_price || 0) },
-  ].filter((p) => p.qty > 0);
+    { key: "pl", qty: Number(d.pl_qty || 0), price: Number(d.pl_price || 0) },
+    { key: "night", qty: Number(d.night_qty || 0), price: Number(d.night_price || 0) },
+    { key: "day", qty: Number(d.day_qty || 0), price: Number(d.day_price || 0) },
+  ]
+    .map((p) => { const m = look(p.key); return { ...p, code: m.barcode || "", label: m.name, unit: m.unit || "Box" }; })
+    .filter((p) => p.qty > 0);
 
   const subtotal = products.reduce((a, p) => a + p.qty * p.price, 0);
   const discountAmt = isDN ? 0 : subtotal * ((Number(d.discount_percent) || 0) / 100);
@@ -7836,11 +7958,11 @@ function SingleDocument({ d, isDN, pageBreak }) {
           </thead>
           <tbody>
             {products.map((p, i) => (
-              <tr key={p.code}>
+              <tr key={p.key}>
                 <td style={{ ...td, textAlign: "center" }}>{i + 1}</td>
                 <td style={{ ...td, textAlign: "center" }}>{p.code}</td>
                 <td style={td}>{p.label}</td>
-                <td style={{ ...td, textAlign: "center" }}>Box</td>
+                <td style={{ ...td, textAlign: "center" }}>{p.unit}</td>
                 <td style={{ ...td, textAlign: "center" }}>{p.qty}</td>
                 {!isDN && <>
                   <td style={{ ...td, textAlign: "right" }}>${p.price.toLocaleString("en-US", MONEY2)}</td>
@@ -7933,7 +8055,7 @@ function SingleDocument({ d, isDN, pageBreak }) {
   );
 }
 
-function DocumentPrintView({ doc, onClose, linkedDN }) {
+function DocumentPrintView({ doc, onClose, linkedDN, catalog }) {
   const isDN = doc.type === "dn";
   const invoiceData = doc.data;
   const showBothPages = !isDN && linkedDN;
@@ -7961,14 +8083,14 @@ function DocumentPrintView({ doc, onClose, linkedDN }) {
         </div>
       </div>
 
-      {showBothPages && <SingleDocument d={linkedDN} isDN={true} pageBreak={true} />}
-      <SingleDocument d={invoiceData} isDN={isDN} pageBreak={false} />
+      {showBothPages && <SingleDocument d={linkedDN} isDN={true} pageBreak={true} catalog={catalog} />}
+      <SingleDocument d={invoiceData} isDN={isDN} pageBreak={false} catalog={catalog} />
     </div>,
     document.body
   );
 }
 
-function MultiDocumentPrintView({ docs, onClose }) {
+function MultiDocumentPrintView({ docs, onClose, catalog }) {
   // docs: array of { type: 'dn'|'invoice', data, linkedDN? }
   return createPortal(
     <div className="doc-print-root" style={{ position: "fixed", inset: 0, background: "#fff", zIndex: 999999, overflowY: "auto" }}>
@@ -7998,8 +8120,8 @@ function MultiDocumentPrintView({ docs, onClose }) {
         const showLinked = !isDN && doc.linkedDN;
         return (
           <React.Fragment key={`${doc.type}-${doc.data.id}`}>
-            {showLinked && <SingleDocument d={doc.linkedDN} isDN={true} pageBreak={true} />}
-            <SingleDocument d={doc.data} isDN={isDN} pageBreak={!isLast} />
+            {showLinked && <SingleDocument d={doc.linkedDN} isDN={true} pageBreak={true} catalog={catalog} />}
+            <SingleDocument d={doc.data} isDN={isDN} pageBreak={!isLast} catalog={catalog} />
           </React.Fragment>
         );
       })}
