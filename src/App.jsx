@@ -7306,7 +7306,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
   const [stockMoves, setStockMoves] = useState([]);
   const [stockMissing, setStockMissing] = useState(false);
   const [showStock, setShowStock] = useState(false);
-  const [stockForm, setStockForm] = useState({ product: "pl", qty: "", reason: "received", reference: "" });
+  const [stockForm, setStockForm] = useState({ product: "pl", qty: "", reason: "opening", reference: "" });
   const [stockBusy, setStockBusy] = useState(false);
   const [stockError, setStockError] = useState("");
   // Product names and barcodes. Falls back to the old hardcoded values so
@@ -7623,7 +7623,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
     const qty = parseFloat(stockForm.qty) || 0;
     if (!qty) return;
     setStockBusy(true);
-    const signed = stockForm.reason === "received" ? Math.abs(qty) : qty;
+    const signed = (stockForm.reason === "received" || stockForm.reason === "opening") ? Math.abs(qty) : qty;
     const ok = await addStockMove([{ product: stockForm.product, qty: signed }], stockForm.reason, stockForm.reference);
     if (ok) {
       logActivity?.("Stock " + stockForm.reason, stockLabel(stockForm.product), `${signed > 0 ? "+" : ""}${signed}`);
@@ -7759,9 +7759,10 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                 <div>
                   <label style={{ fontSize: 10, color: C.textFaint, display: "block", marginBottom: 4 }}>What happened</label>
                   <select value={stockForm.reason} onChange={(e) => setStockForm({ ...stockForm, reason: e.target.value })} style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "9px 10px", fontSize: 13, width: "100%" }}>
-                    <option value="received">Received in</option>
-                    <option value="adjustment">Correction (use −5 to reduce)</option>
+                    <option value="opening">Opening count (first time only)</option>
+                    <option value="adjustment">Correction after a stock count (use −5 to reduce)</option>
                     <option value="return">Returned from a store</option>
+                    <option value="received">Received in — no supplier bill</option>
                   </select>
                 </div>
                 <div>
@@ -7774,8 +7775,15 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                   {stockBusy ? "Saving…" : "Save"}
                 </button>
               </div>
-              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 10 }}>
-                Delivery notes take stock out automatically. Enter what arrives from the factory here.
+              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 10, lineHeight: 1.6 }}>
+                Stock moves on its own most of the time: a <b>Purchase</b> in Accounting brings
+                boxes in, and a <b>delivery note</b> takes them out. Use this panel for the
+                things no document covers — your first count, a correction after counting the
+                shelves, or goods back from a store.
+                <div style={{ color: C.amber, marginTop: 6 }}>
+                  Don't add stock here for a delivery you also recorded as a Purchase — that
+                  would count the same boxes twice.
+                </div>
               </div>
             </div>
           )
