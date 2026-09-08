@@ -4083,7 +4083,26 @@ const ACCOUNT_TYPES = [
 ];
 
 // Each kind gets its own running number: EX000043, IN000012, and so on.
-const KIND_PREFIX = { expense: "EX", income: "IN", deposit: "DP", withdraw: "WD", transfer: "TR", journal: "JV" };
+const KIND_PREFIX = {
+  expense: "EX", income: "IN", deposit: "DP", withdraw: "WD", transfer: "TR", journal: "JV",
+  // purchasing
+  po: "PO", vdeposit: "VD", purchase: "PU", preturn: "PR", vpayment: "VP", vrefund: "VR",
+};
+
+// The seven vendor documents, in the order the accountant listed them.
+// `posts` says whether it creates a ledger entry; a purchase order is a
+// commitment, not a transaction, so it does not.
+const VENDOR_DOCS = [
+  { key: "master",   label: "Setup Master Data", posts: false, help: "Your suppliers — name, tax number, address. Everything else picks from this list." },
+  { key: "po",       label: "Purchase Order",    posts: false, help: "What you have ordered. A commitment, not yet a cost — nothing reaches the books until the goods and the bill arrive." },
+  { key: "vdeposit", label: "Vendor Deposit",    posts: true,  help: "Money paid up front. Held as an advance to that supplier until a purchase uses it." },
+  { key: "purchase", label: "Purchase",          posts: true,  help: "Their bill. Records the cost and the 10% VAT you reclaim, and what you now owe them." },
+  { key: "preturn",  label: "Purchase Return",   posts: true,  help: "Goods sent back. Reverses the cost and the VAT, and reduces what you owe." },
+  { key: "vpayment", label: "Vendor Payment",    posts: true,  help: "You pay a supplier. Clears what you owe, and can use up a deposit you already paid." },
+  { key: "vrefund",  label: "Vendor Refund",     posts: true,  help: "Money coming back from a supplier — an unused deposit, or an overpayment." },
+];
+
+const VAT_RATE_DEFAULT = 10;
 
 const POST_KINDS = [
   { key: "expense", label: "Post Expense", help: "Money spent. Debits the expense, credits where it was paid from." },
@@ -4102,6 +4121,11 @@ function AccountingPage({ authUser, C, sbFetch, logActivity }) {
 
   const [accounts, setAccounts] = useState([]);
   const [vendors, setVendors] = useState([]);
+  // Purchasing. vendorMissing means vendor-setup.sql has not been run.
+  const [purchaseDocs, setPurchaseDocs] = useState([]);
+  const [purchaseLines, setPurchaseLines] = useState([]);
+  const [vendorMissing, setVendorMissing] = useState(false);
+  const [vendorDoc, setVendorDoc] = useState("purchase");
   // Sales figures pulled from the rest of the app, so the month's takings can
   // be drafted into a journal entry instead of retyped.
   const [salesData, setSalesData] = useState(null);
@@ -4138,6 +4162,13 @@ function AccountingPage({ authUser, C, sbFetch, logActivity }) {
       ]);
       setAccounts(a || []); setEntries(e || []); setLines(l || []);
       try { setVendors((await sbFetch("vendors?select=*&order=name.asc")) || []); } catch (err) { /* optional table */ }
+      try {
+        const [pd, pl] = await Promise.all([
+          sbFetch("purchase_docs?select=*&order=doc_date.desc"),
+          sbFetch("purchase_lines?select=*"),
+        ]);
+        setPurchaseDocs(pd || []); setPurchaseLines(pl || []); setVendorMissing(false);
+      } catch (err) { setVendorMissing(true); }
       try {
         const [st, vi, br, ci, cp] = await Promise.all([
           sbFetch("stores?select=*"), sbFetch("visits?select=*"),
@@ -4213,7 +4244,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity }) {
       await reload();
       setError("");
       logActivity?.("Posted " + entryKind, memo || "", money(totalDr));
-      return true;
+      return head;   // truthy, and carries the id so a document can link to it
     } catch (err) {
       setError("Couldn't post that entry.");
       return false;
@@ -4221,6 +4252,210 @@ function AccountingPage({ authUser, C, sbFetch, logActivity }) {
       setBusy(false);
     }
   }
+
+  // ---- purchasing ----------------------------------------------------
+  // Next number in a purchase document series. Same idea as nextNumber, but
+  // read from purchase_docs rather than the ledger.
+  function nextDocNo(kindKey) {
+    const prefix = KIND_PREFIX[kindKey] || "PU";
+    const used = purchaseDocs
+      .filter((d) => d.doc_no && d.doc_no.startsWith(prefix))
+      .map((d) => parseInt(d.doc_no.slice(prefix.length), 10))
+      .filter((n) => !isNaN(n));
+    return prefix + String((used.length ? Math.max(...used) : 0) + 1).padStart(6, "0");
+  }
+
+  const accByCode = (code) => accounts.find((a) => a.code === code);
+
+  // What each document does to the books. Written out in one place so the
+  // debits and credits can be read against the accountant's expectations
+  // without chasing them through the form code.
+  //
+  //   deposit   Dr Advance to suppliers      Cr cash/bank
+  //   purchase  Dr cost + Dr VAT input       Cr Accounts payable
+  //   return    Dr Accounts payable          Cr cost + Cr VAT input
+  //   payment   Dr Accounts payable          Cr cash/bank and/or Advance
+  //   refund    Dr cash/bank                 Cr Advance to suppliers
+  //
+  // A purchase order posts nothing: ordering something is not yet a cost.
+  function vendorEntryRows(kindKey, form, lineRows) {
+    const ap = accByCode("2000");
+    const vatIn = accByCode("1150");
+    const advance = accByCode("1300");
+    if (kindKey === "purchase" || kindKey === "preturn") {
+      if (!ap || !vatIn) return { error: "Missing account 2000 or 1150 — run vendor-setup.sql." };
+      const vat = pnum(form.vatAmount);
+      const costRows = lineRows
+        .filter((r) => pnum(r.amount) > 0)
+        .map((r) => ({ account_id: r.account_id, amount: pnum(r.amount), memo: r.description }));
+      if (!costRows.length) return { error: "Add at least one line." };
+      if (costRows.some((r) => !r.account_id)) return { error: "Every line needs an account." };
+      const total = costRows.reduce((a, r) => a + r.amount, 0) + vat;
+      if (kindKey === "purchase") {
+        return { rows: [
+          ...costRows.map((r) => ({ account_id: r.account_id, debit: r.amount, credit: 0, memo: r.memo })),
+          ...(vat > 0 ? [{ account_id: vatIn.id, debit: vat, credit: 0, memo: "Input VAT" }] : []),
+          { account_id: ap.id, debit: 0, credit: total, memo: form.vendorName || "" },
+        ] };
+      }
+      return { rows: [
+        { account_id: ap.id, debit: total, credit: 0, memo: form.vendorName || "" },
+        ...costRows.map((r) => ({ account_id: r.account_id, debit: 0, credit: r.amount, memo: r.memo })),
+        ...(vat > 0 ? [{ account_id: vatIn.id, debit: 0, credit: vat, memo: "Input VAT reversed" }] : []),
+      ] };
+    }
+    const amt = pnum(form.amount);
+    if (amt <= 0) return { error: "Enter an amount." };
+    if (kindKey === "vdeposit") {
+      if (!advance) return { error: "Missing account 1300 — run vendor-setup.sql." };
+      if (!form.paidFrom) return { error: "Choose where the money came from." };
+      return { rows: [
+        { account_id: advance.id, debit: amt, credit: 0, memo: form.vendorName || "" },
+        { account_id: form.paidFrom, debit: 0, credit: amt, memo: "Deposit paid" },
+      ] };
+    }
+    if (kindKey === "vpayment") {
+      if (!ap) return { error: "Missing account 2000 — run vendor-setup.sql." };
+      // A payment can be settled partly out of a deposit already paid. That
+      // part credits the advance instead of cash, so the money is not counted
+      // as leaving the bank twice.
+      const fromDeposit = Math.min(pnum(form.applyDeposit), amt);
+      const fromCash = amt - fromDeposit;
+      if (fromCash > 0 && !form.paidFrom) return { error: "Choose where the money came from." };
+      if (fromDeposit > 0 && !advance) return { error: "Missing account 1300 — run vendor-setup.sql." };
+      return { rows: [
+        { account_id: ap.id, debit: amt, credit: 0, memo: form.vendorName || "" },
+        ...(fromCash > 0 ? [{ account_id: form.paidFrom, debit: 0, credit: fromCash, memo: "Paid" }] : []),
+        ...(fromDeposit > 0 ? [{ account_id: advance.id, debit: 0, credit: fromDeposit, memo: "Deposit applied" }] : []),
+      ] };
+    }
+    if (kindKey === "vrefund") {
+      if (!advance) return { error: "Missing account 1300 — run vendor-setup.sql." };
+      if (!form.paidFrom) return { error: "Choose where the money landed." };
+      return { rows: [
+        { account_id: form.paidFrom, debit: amt, credit: 0, memo: "Refund received" },
+        { account_id: advance.id, debit: 0, credit: amt, memo: form.vendorName || "" },
+      ] };
+    }
+    return { error: "Unknown document." };
+  }
+
+  // Save a vendor document: the document itself, its lines, the ledger entry
+  // it becomes, and — for stock lines — the warehouse movement. A purchase
+  // order writes only the document.
+  async function saveVendorDoc(kindKey, form, lineRows) {
+    setError("");
+    const def = VENDOR_DOCS.find((d) => d.key === kindKey);
+    if (!form.vendorName) { setError("Choose a supplier."); return false; }
+    let rows = null;
+    if (def.posts) {
+      const built = vendorEntryRows(kindKey, form, lineRows);
+      if (built.error) { setError(built.error); return false; }
+      rows = built.rows;
+    }
+    setBusy(true);
+    try {
+      const docNo = nextDocNo(kindKey);
+      let entryId = null;
+      if (rows) {
+        const head = await saveEntry(form.docDate, kindKey, form.memo || def.label, form.reference, rows, form.vendorName);
+        if (!head) { setBusy(false); return false; }
+        entryId = head.id || null;
+      }
+      const isBill = kindKey === "purchase" || kindKey === "preturn";
+      const subtotal = isBill ? lineRows.reduce((a, r) => a + pnum(r.amount), 0) : pnum(form.amount);
+      const vat = isBill ? pnum(form.vatAmount) : 0;
+      const [doc] = await sbFetch("purchase_docs", {
+        method: "POST",
+        body: JSON.stringify({
+          doc_no: docNo, kind: kindKey, doc_date: form.docDate,
+          vendor_id: form.vendorId || null, vendor_name: form.vendorName,
+          reference: form.reference || null, memo: form.memo || null,
+          subtotal, vat_rate: isBill ? pnum(form.vatRate) : 0, vat_amount: vat,
+          total: subtotal + vat,
+          paid_from_account: form.paidFrom || null,
+          applied_deposit: kindKey === "vpayment" ? pnum(form.applyDeposit) : 0,
+          entry_id: entryId,
+          created_by: authUser?.email || "unknown",
+        }),
+      });
+      const keep = (lineRows || []).filter((r) => pnum(r.amount) > 0 || pnum(r.qty) > 0);
+      if (keep.length) {
+        await sbFetch("purchase_lines", {
+          method: "POST",
+          body: JSON.stringify(keep.map((r) => ({
+            doc_id: doc.id, product_code: r.productCode || null,
+            description: r.description || "", qty: pnum(r.qty),
+            unit_price: pnum(r.unitPrice), amount: pnum(r.amount),
+            account_id: r.account_id || null,
+          }))),
+        });
+      }
+      // Stock. A purchase brings boxes in, a return sends them back out.
+      // Lines with no product are services and move nothing.
+      if (kindKey === "purchase" || kindKey === "preturn") {
+        const sign = kindKey === "purchase" ? 1 : -1;
+        const moves = keep
+          .filter((r) => r.productCode && pnum(r.qty) > 0)
+          .map((r) => ({
+            product: r.productCode, qty: sign * pnum(r.qty),
+            reason: kindKey === "purchase" ? "purchase" : "purchase return",
+            reference: docNo, move_date: form.docDate,
+            created_by: authUser?.email || "unknown",
+          }));
+        if (moves.length) {
+          try { await sbFetch("stock_moves", { method: "POST", body: JSON.stringify(moves) }); }
+          catch (err) { setError("Saved, but the warehouse was not updated — is stock-setup.sql run?"); }
+        }
+      }
+      await reload();
+      logActivity?.(def.label, form.vendorName, docNo);
+      return true;
+    } catch (err) {
+      setError("Couldn't save that document.");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveVendor(v) {
+    try {
+      if (v.id) {
+        await sbFetch(`vendors?id=eq.${v.id}`, { method: "PATCH", body: JSON.stringify({
+          name: v.name.trim(), tax_id: v.taxId || null, phone: v.phone || null,
+          address: v.address || null, email: v.email || null,
+          contact_name: v.contactName || null, payment_terms: v.paymentTerms || null,
+        }) });
+      } else {
+        await sbFetch("vendors", { method: "POST", body: JSON.stringify({
+          name: v.name.trim(), tax_id: v.taxId || null, phone: v.phone || null,
+          address: v.address || null, email: v.email || null,
+          contact_name: v.contactName || null, payment_terms: v.paymentTerms || null,
+        }) });
+      }
+      await reload();
+      setError("");
+      return true;
+    } catch (err) { setError("Couldn't save that supplier."); return false; }
+  }
+
+  // What each supplier still owes you or you owe them, from the documents.
+  const vendorBalances = useMemo(() => {
+    const by = {};
+    purchaseDocs.forEach((d) => {
+      const k = d.vendor_name || "(none)";
+      if (!by[k]) by[k] = { owed: 0, deposit: 0 };
+      const t = Number(d.total) || 0;
+      if (d.kind === "purchase") by[k].owed += t;
+      if (d.kind === "preturn") by[k].owed -= t;
+      if (d.kind === "vpayment") by[k].owed -= t;
+      if (d.kind === "vdeposit") by[k].deposit += t;
+      if (d.kind === "vrefund") by[k].deposit -= t;
+      if (d.kind === "vpayment") by[k].deposit -= Number(d.applied_deposit) || 0;
+    });
+    return by;
+  }, [purchaseDocs]);
 
   async function submitPost() {
     const amt = pnum(post.amount);
@@ -4410,7 +4645,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity }) {
   return (
     <div>
       <div style={{ display: "flex", gap: 6, marginTop: 22, marginBottom: 18, flexWrap: "wrap" }} className="mera-subtabs">
-        {[{ key: "post", label: "Post" }, { key: "sales", label: "From sales" }, { key: "journal", label: "Journal entry" }, { key: "ledger", label: "Entries" }, { key: "reports", label: "Reports" }, { key: "accounts", label: "Accounts" }].map((t) => (
+        {[{ key: "post", label: "Post" }, { key: "sales", label: "From sales" }, { key: "journal", label: "Journal entry" }, { key: "vendor", label: "Vendor" }, { key: "ledger", label: "Entries" }, { key: "reports", label: "Reports" }, { key: "accounts", label: "Accounts" }].map((t) => (
           <button key={t.key} onClick={() => { setTab(t.key); setError(""); }} style={{ background: "none", border: "none", padding: "6px 2px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginRight: 14, color: tab === t.key ? C.gold : C.textFaint, borderBottom: `2px solid ${tab === t.key ? C.gold : "transparent"}` }}>
             {t.label}
           </button>
@@ -4690,6 +4925,25 @@ function AccountingPage({ authUser, C, sbFetch, logActivity }) {
       )}
 
       {/* ---------------- entries list ---------------- */}
+      {tab === "vendor" && (
+        <VendorSection
+          C={C}
+          docs={purchaseDocs}
+          lines={purchaseLines}
+          vendors={vendors}
+          accounts={accounts}
+          balances={vendorBalances}
+          missing={vendorMissing}
+          busy={busy}
+          error={error}
+          selected={vendorDoc}
+          onSelect={setVendorDoc}
+          nextDocNo={nextDocNo}
+          onSave={saveVendorDoc}
+          onSaveVendor={saveVendor}
+        />
+      )}
+
       {tab === "ledger" && (
         <>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
@@ -5083,6 +5337,334 @@ function AccountingPage({ authUser, C, sbFetch, logActivity }) {
 
 // Visit product name -> the store's price column for it
 const PRICE_COL = COST_PRODUCTS.reduce((m, p) => ({ ...m, [p.visitKey]: p.priceCol }), {});
+
+// ============================================================================
+// VENDORS AND PURCHASING — the seven documents the accountant asked for.
+// All of them except the purchase order write into the same ledger the
+// reports and the export already read.
+// ============================================================================
+function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, busy, error, selected, onSelect, nextDocNo, onSave, onSaveVendor }) {
+  const def = VENDOR_DOCS.find((d) => d.key === selected) || VENDOR_DOCS[0];
+  const today = new Date().toISOString().slice(0, 10);
+  const blankLine = () => ({ productCode: "", description: "", qty: "", unitPrice: "", amount: "", account_id: "" });
+  const emptyForm = {
+    docDate: today, vendorId: "", vendorName: "", reference: "", memo: "",
+    amount: "", paidFrom: "", applyDeposit: "", vatRate: String(VAT_RATE_DEFAULT), vatAmount: "",
+  };
+  const [form, setForm] = useState(emptyForm);
+  const [rows, setRows] = useState([blankLine()]);
+  const [vendorForm, setVendorForm] = useState(null);
+  const [showDocs, setShowDocs] = useState(true);
+
+  const isBill = selected === "purchase" || selected === "preturn";
+  const needsCash = selected === "vdeposit" || selected === "vpayment" || selected === "vrefund";
+  const cashAccounts = accounts.filter((a) => a.is_cash && a.active);
+  const costAccounts = accounts.filter((a) => (a.type === "expense" || a.type === "asset") && a.active);
+
+  // Lines total, VAT and grand total, recomputed as you type.
+  const subtotal = rows.reduce((a, r) => a + (parseFloat(r.amount) || 0), 0);
+  const vatAuto = isBill ? subtotal * ((parseFloat(form.vatRate) || 0) / 100) : 0;
+  const vatUsed = form.vatAmount === "" ? vatAuto : parseFloat(form.vatAmount) || 0;
+  const grand = isBill ? subtotal + vatUsed : parseFloat(form.amount) || 0;
+
+  function setRow(i, patch) {
+    setRows((prev) => prev.map((r, j) => {
+      if (j !== i) return r;
+      const next = { ...r, ...patch };
+      // Typing a quantity and a unit price fills the amount; typing the
+      // amount directly still wins, so a lump-sum line needs no quantity.
+      if (("qty" in patch || "unitPrice" in patch) && next.qty !== "" && next.unitPrice !== "") {
+        next.amount = String(((parseFloat(next.qty) || 0) * (parseFloat(next.unitPrice) || 0)).toFixed(2));
+      }
+      return next;
+    }));
+  }
+
+  async function submit() {
+    const ok = await onSave(selected, { ...form, vatAmount: isBill ? String(vatUsed) : "" }, rows);
+    if (ok) { setForm({ ...emptyForm, docDate: form.docDate }); setRows([blankLine()]); }
+  }
+
+  const lbl = { display: "block", fontSize: 10, color: C.textFaint, marginBottom: 4 };
+  const inp = { background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "9px 10px", fontSize: 13, width: "100%" };
+  const mine = docs.filter((d) => d.kind === selected);
+
+  if (missing) {
+    return (
+      <div style={{ background: C.roseBg, color: C.rose, padding: "16px 18px", borderRadius: 11, fontSize: 13.5, border: `1px solid ${C.rose}30`, lineHeight: 1.6 }}>
+        The purchasing tables don't exist yet — run <b>vendor-setup.sql</b> in Supabase, then reload.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* the seven documents */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+        {VENDOR_DOCS.map((d) => (
+          <button
+            key={d.key}
+            onClick={() => { onSelect(d.key); setForm(emptyForm); setRows([blankLine()]); }}
+            style={{
+              background: selected === d.key ? C.gold : "none",
+              border: `1px solid ${selected === d.key ? C.gold : C.border}`,
+              color: selected === d.key ? "#1A1508" : C.textDim,
+              borderRadius: 8, padding: "8px 13px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap",
+            }}
+          >
+            {d.label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14, lineHeight: 1.55 }}>{def.help}</div>
+
+      {error && (
+        <div style={{ background: C.roseBg, color: C.rose, padding: "11px 13px", borderRadius: 9, fontSize: 13, marginBottom: 14, border: `1px solid ${C.rose}40` }}>{error}</div>
+      )}
+
+      {/* ---------------- Setup Master Data ---------------- */}
+      {selected === "master" ? (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>Suppliers ({vendors.length})</div>
+            <button onClick={() => setVendorForm({ name: "", taxId: "", phone: "", address: "", email: "", contactName: "", paymentTerms: "" })}
+              style={{ background: C.gold, border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>
+              + New supplier
+            </button>
+          </div>
+
+          {vendorForm && (
+            <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 9, padding: 13, marginBottom: 14 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 9, marginBottom: 10 }}>
+                <div><label style={lbl}>Name</label><input value={vendorForm.name} onChange={(e) => setVendorForm({ ...vendorForm, name: e.target.value })} style={inp} /></div>
+                <div><label style={lbl}>Tax / VAT number</label><input value={vendorForm.taxId} onChange={(e) => setVendorForm({ ...vendorForm, taxId: e.target.value })} style={inp} /></div>
+                <div><label style={lbl}>Contact person</label><input value={vendorForm.contactName} onChange={(e) => setVendorForm({ ...vendorForm, contactName: e.target.value })} style={inp} /></div>
+                <div><label style={lbl}>Phone</label><input value={vendorForm.phone} onChange={(e) => setVendorForm({ ...vendorForm, phone: e.target.value })} style={inp} /></div>
+                <div><label style={lbl}>Email</label><input value={vendorForm.email} onChange={(e) => setVendorForm({ ...vendorForm, email: e.target.value })} style={inp} /></div>
+                <div><label style={lbl}>Payment terms</label><input value={vendorForm.paymentTerms} onChange={(e) => setVendorForm({ ...vendorForm, paymentTerms: e.target.value })} placeholder="e.g. 30 days" style={inp} /></div>
+              </div>
+              <div style={{ marginBottom: 10 }}><label style={lbl}>Address</label><input value={vendorForm.address} onChange={(e) => setVendorForm({ ...vendorForm, address: e.target.value })} style={inp} /></div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button disabled={!vendorForm.name.trim()} onClick={async () => { const ok = await onSaveVendor(vendorForm); if (ok) setVendorForm(null); }}
+                  style={{ background: vendorForm.name.trim() ? C.gold : C.border, border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 12.5, fontWeight: 700, color: vendorForm.name.trim() ? "#1A1508" : C.textFaint, cursor: "pointer" }}>
+                  Save supplier
+                </button>
+                <button onClick={() => setVendorForm(null)} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 16px", fontSize: 12.5, color: C.textDim, cursor: "pointer" }}>Cancel</button>
+              </div>
+            </div>
+          )}
+
+          {vendors.length === 0 ? (
+            <div style={{ color: C.textFaint, fontSize: 13, padding: "18px 0" }}>No suppliers yet. Add one and it appears in every purchasing form.</div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 620 }}>
+                <thead>
+                  <tr style={{ color: C.textFaint, textAlign: "left" }}>
+                    <th style={{ padding: "7px 8px" }}>Supplier</th>
+                    <th style={{ padding: "7px 8px" }}>Tax number</th>
+                    <th style={{ padding: "7px 8px" }}>Contact</th>
+                    <th style={{ padding: "7px 8px", textAlign: "right" }}>You owe</th>
+                    <th style={{ padding: "7px 8px", textAlign: "right" }}>Deposit held</th>
+                    <th style={{ padding: "7px 8px" }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {vendors.map((v) => {
+                    const b = balances[v.name] || { owed: 0, deposit: 0 };
+                    return (
+                      <tr key={v.id} style={{ borderTop: `1px solid ${C.border}` }}>
+                        <td style={{ padding: "9px 8px", fontWeight: 600 }}>{v.name}</td>
+                        <td style={{ padding: "9px 8px", color: C.textDim, fontFamily: "'IBM Plex Mono', monospace" }}>{v.tax_id || "—"}</td>
+                        <td style={{ padding: "9px 8px", color: C.textDim }}>{v.contact_name || v.phone || "—"}</td>
+                        <td style={{ padding: "9px 8px", textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", color: b.owed > 0.005 ? C.amber : C.textFaint }}>{money(b.owed)}</td>
+                        <td style={{ padding: "9px 8px", textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", color: b.deposit > 0.005 ? C.emerald : C.textFaint }}>{money(b.deposit)}</td>
+                        <td style={{ padding: "9px 8px", textAlign: "right" }}>
+                          <button onClick={() => setVendorForm({ id: v.id, name: v.name, taxId: v.tax_id || "", phone: v.phone || "", address: v.address || "", email: v.email || "", contactName: v.contact_name || "", paymentTerms: v.payment_terms || "" })}
+                            style={{ background: "none", border: "none", color: C.textFaint, fontSize: 11.5, cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 3 }}>edit</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ) : (
+        /* ---------------- the six document forms ---------------- */
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 13, flexWrap: "wrap", gap: 8 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>New {def.label.toLowerCase()}</div>
+            <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: C.gold, fontWeight: 700 }}>{nextDocNo(selected)}</div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginBottom: 12 }}>
+            <div>
+              <label style={lbl}>Supplier</label>
+              <select value={form.vendorName} onChange={(e) => { const v = vendors.find((x) => x.name === e.target.value); setForm({ ...form, vendorName: e.target.value, vendorId: v ? v.id : "" }); }} style={inp}>
+                <option value="">Choose…</option>
+                {vendors.map((v) => <option key={v.id} value={v.name}>{v.name}</option>)}
+              </select>
+            </div>
+            <div><label style={lbl}>Date</label><input type="date" value={form.docDate} onChange={(e) => setForm({ ...form, docDate: e.target.value })} style={inp} /></div>
+            <div><label style={lbl}>Their invoice / ref</label><input value={form.reference} onChange={(e) => setForm({ ...form, reference: e.target.value })} style={inp} /></div>
+            <div><label style={lbl}>Note</label><input value={form.memo} onChange={(e) => setForm({ ...form, memo: e.target.value })} style={inp} /></div>
+          </div>
+
+          {vendors.length === 0 && (
+            <div style={{ background: C.amberBg, color: C.amber, padding: "10px 12px", borderRadius: 8, fontSize: 12.5, marginBottom: 12, border: `1px solid ${C.amber}35` }}>
+              No suppliers yet — add one under <b>Setup Master Data</b> first.
+            </div>
+          )}
+
+          {/* purchase and purchase return: line items */}
+          {isBill && (
+            <>
+              <div style={{ fontSize: 10, color: C.textFaint, marginBottom: 6 }}>
+                Lines. Pick a product to have the boxes counted into your warehouse; leave it blank for services, freight or anything not stocked.
+              </div>
+              {rows.map((r, i) => (
+                <div key={i} style={{ display: "grid", gridTemplateColumns: "1.1fr 1.4fr 0.6fr 0.7fr 0.8fr 1.2fr auto", gap: 6, marginBottom: 6, alignItems: "end" }}>
+                  <div>
+                    {i === 0 && <label style={lbl}>Product</label>}
+                    <select value={r.productCode} onChange={(e) => { const sk = SKUS.find((x) => x.code === e.target.value); setRow(i, { productCode: e.target.value, description: r.description || (sk ? sk.label : "") }); }} style={inp}>
+                      <option value="">— none —</option>
+                      {SKUS.map((x) => <option key={x.code} value={x.code}>{x.label}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    {i === 0 && <label style={lbl}>Description</label>}
+                    <input value={r.description} onChange={(e) => setRow(i, { description: e.target.value })} style={inp} />
+                  </div>
+                  <div>
+                    {i === 0 && <label style={lbl}>Qty</label>}
+                    <input inputMode="decimal" value={r.qty} onChange={(e) => setRow(i, { qty: e.target.value })} placeholder="0" style={{ ...inp, textAlign: "right" }} />
+                  </div>
+                  <div>
+                    {i === 0 && <label style={lbl}>Unit $</label>}
+                    <input inputMode="decimal" value={r.unitPrice} onChange={(e) => setRow(i, { unitPrice: e.target.value })} placeholder="0.00" style={{ ...inp, textAlign: "right" }} />
+                  </div>
+                  <div>
+                    {i === 0 && <label style={lbl}>Amount $</label>}
+                    <input inputMode="decimal" value={r.amount} onChange={(e) => setRow(i, { amount: e.target.value })} placeholder="0.00" style={{ ...inp, textAlign: "right" }} />
+                  </div>
+                  <div>
+                    {i === 0 && <label style={lbl}>Goes to account</label>}
+                    <select value={r.account_id} onChange={(e) => setRow(i, { account_id: e.target.value })} style={inp}>
+                      <option value="">Choose…</option>
+                      {costAccounts.map((a) => <option key={a.id} value={a.id}>{a.code} · {a.name}</option>)}
+                    </select>
+                  </div>
+                  <button onClick={() => setRows((prev) => prev.length === 1 ? [blankLine()] : prev.filter((_, j) => j !== i))}
+                    style={{ background: "none", border: `1px solid ${C.border}`, color: C.textFaint, borderRadius: 8, padding: "9px 11px", fontSize: 12, cursor: "pointer" }}>×</button>
+                </div>
+              ))}
+              <button onClick={() => setRows((prev) => [...prev, blankLine()])}
+                style={{ background: "none", border: `1px dashed ${C.border}`, color: C.textDim, borderRadius: 8, padding: "8px 14px", fontSize: 12, cursor: "pointer", marginBottom: 12 }}>
+                + Add line
+              </button>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 12, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+                <div><label style={lbl}>Sub-total</label><div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, padding: "8px 0" }}>{money(subtotal)}</div></div>
+                <div><label style={lbl}>VAT %</label><input inputMode="decimal" value={form.vatRate} onChange={(e) => setForm({ ...form, vatRate: e.target.value, vatAmount: "" })} style={{ ...inp, textAlign: "right" }} /></div>
+                <div>
+                  <label style={lbl}>VAT $ (reclaimable)</label>
+                  <input inputMode="decimal" value={form.vatAmount === "" ? vatAuto.toFixed(2) : form.vatAmount} onChange={(e) => setForm({ ...form, vatAmount: e.target.value })} style={{ ...inp, textAlign: "right" }} />
+                </div>
+                <div><label style={lbl}>Total</label><div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 16, fontWeight: 700, color: C.gold, padding: "8px 0" }}>{money(grand)}</div></div>
+              </div>
+            </>
+          )}
+
+          {/* deposit, payment, refund: a single amount */}
+          {!isBill && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 12 }}>
+              <div><label style={lbl}>Amount $</label><input inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0.00" style={{ ...inp, textAlign: "right" }} /></div>
+              {needsCash && (
+                <div>
+                  <label style={lbl}>{selected === "vrefund" ? "Money landed in" : "Paid from"}</label>
+                  <select value={form.paidFrom} onChange={(e) => setForm({ ...form, paidFrom: e.target.value })} style={inp}>
+                    <option value="">Choose…</option>
+                    {cashAccounts.map((a) => <option key={a.id} value={a.id}>{a.code} · {a.name}</option>)}
+                  </select>
+                </div>
+              )}
+              {selected === "vpayment" && (
+                <div>
+                  <label style={lbl}>Use deposit $</label>
+                  <input inputMode="decimal" value={form.applyDeposit} onChange={(e) => setForm({ ...form, applyDeposit: e.target.value })} placeholder="0.00" style={{ ...inp, textAlign: "right" }} />
+                  <div style={{ fontSize: 10, color: C.textFaint, marginTop: 4 }}>
+                    Held: {money((balances[form.vendorName] || {}).deposit || 0)}
+                  </div>
+                </div>
+              )}
+              {selected === "vpayment" && (
+                <div>
+                  <label style={lbl}>They are owed</label>
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, padding: "8px 0", color: C.amber }}>{money((balances[form.vendorName] || {}).owed || 0)}</div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <button onClick={submit} disabled={busy || !form.vendorName}
+            style={{ background: form.vendorName ? `linear-gradient(135deg, ${C.goldBright}, ${C.gold})` : C.border, color: form.vendorName ? "#1A1508" : C.textFaint, border: "none", borderRadius: 9, padding: "12px 26px", fontSize: 13.5, fontWeight: 700, cursor: form.vendorName ? "pointer" : "default" }}>
+            {busy ? "Saving…" : def.posts ? `Save and post ${def.label.toLowerCase()}` : `Save ${def.label.toLowerCase()}`}
+          </button>
+          {!def.posts && (
+            <div style={{ fontSize: 11, color: C.textFaint, marginTop: 8 }}>
+              A purchase order is a commitment, so nothing reaches the books yet. Record it as a <b>Purchase</b> when the bill arrives.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ---------------- what has been recorded ---------------- */}
+      {selected !== "master" && (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 }}>
+          <div onClick={() => setShowDocs(!showDocs)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", marginBottom: showDocs ? 12 : 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>{def.label} history ({mine.length})</div>
+            <span style={{ fontSize: 11, color: C.textFaint }}>{showDocs ? "hide" : "show"}</span>
+          </div>
+          {showDocs && (mine.length === 0 ? (
+            <div style={{ color: C.textFaint, fontSize: 13, padding: "12px 0" }}>Nothing recorded yet.</div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 620 }}>
+                <thead>
+                  <tr style={{ color: C.textFaint, textAlign: "left" }}>
+                    <th style={{ padding: "7px 8px" }}>No</th>
+                    <th style={{ padding: "7px 8px" }}>Date</th>
+                    <th style={{ padding: "7px 8px" }}>Supplier</th>
+                    <th style={{ padding: "7px 8px" }}>Their ref</th>
+                    {isBill && <th style={{ padding: "7px 8px", textAlign: "right" }}>VAT</th>}
+                    <th style={{ padding: "7px 8px", textAlign: "right" }}>Total</th>
+                    <th style={{ padding: "7px 8px" }}>In books</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {mine.map((d) => (
+                    <tr key={d.id} style={{ borderTop: `1px solid ${C.border}` }}>
+                      <td style={{ padding: "9px 8px", fontFamily: "'IBM Plex Mono', monospace", color: C.gold }}>{d.doc_no}</td>
+                      <td style={{ padding: "9px 8px", color: C.textDim }}>{fmtDate(d.doc_date)}</td>
+                      <td style={{ padding: "9px 8px" }}>{d.vendor_name}</td>
+                      <td style={{ padding: "9px 8px", color: C.textDim }}>{d.reference || "—"}</td>
+                      {isBill && <td style={{ padding: "9px 8px", textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", color: C.textDim }}>{money(d.vat_amount)}</td>}
+                      <td style={{ padding: "9px 8px", textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 }}>{money(d.total)}</td>
+                      <td style={{ padding: "9px 8px", fontSize: 11, color: d.entry_id ? C.emerald : C.textFaint }}>{d.entry_id ? "posted" : def.posts ? "—" : "n/a"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ProfitPage({ authUser, C, sbFetch, logActivity }) {
   const [loading, setLoading] = useState(true);
