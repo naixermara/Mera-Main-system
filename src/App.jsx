@@ -7760,7 +7760,11 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
     const qty = parseFloat(stockForm.qty) || 0;
     if (!qty) return;
     setStockBusy(true);
-    const signed = (stockForm.reason === "received" || stockForm.reason === "opening") ? Math.abs(qty) : qty;
+    const signed = (stockForm.reason === "received" || stockForm.reason === "opening")
+      ? Math.abs(qty)
+      : stockForm.reason === "sample"
+      ? -Math.abs(qty)
+      : qty;
     const ok = await addStockMove([{ product: stockForm.product, qty: signed }], stockForm.reason, stockForm.reference);
     if (ok) {
       logActivity?.("Stock " + stockForm.reason, stockLabel(stockForm.product), `${signed > 0 ? "+" : ""}${signed}`);
@@ -7900,6 +7904,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                     <option value="adjustment">Correction after a stock count (use −5 to reduce)</option>
                     <option value="return">Returned from a store</option>
                     <option value="received">Received in — no supplier bill</option>
+                    <option value="sample">Given away as a sample</option>
                   </select>
                 </div>
                 <div>
