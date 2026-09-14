@@ -6298,6 +6298,7 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
   const [creditPayments, setCreditPayments] = useState([]);
   const [bigcoReports, setBigcoReports] = useState([]);
   const [adRows, setAdRows] = useState([]);
+  const [showKolPaidBreakdown, setShowKolPaidBreakdown] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -6314,6 +6315,7 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
         setConsignmentVisits(visitRows || []);
         const mergedKols = (kolRows || []).map((k) => ({
           id: k.id,
+          name: k.name,
           packageCost: Number(k.package_cost || 0),
           packageVideos: Number(k.package_videos || 0),
           videos: (videoRows || []).filter((v) => v.kol_id === k.id),
@@ -6352,11 +6354,19 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
     const consignmentCollected = monthConsignmentVisits.reduce((a, v) => a + Number(v.paid || 0), 0);
 
     let kolSpend = 0;
+    let kolPaid = 0;
+    const kolPaidBreakdown = [];
     kols.forEach((k) => {
       const perVideoCost = k.packageVideos > 0 ? k.packageCost / k.packageVideos : 0;
       const monthVideos = k.videos.filter((v) => monthKey(v.posted_date) === selectedMonth);
       kolSpend += monthVideos.reduce((a, v) => a + perVideoCost + Number(v.video_cost || 0), 0);
+      const thisKolPaid = (k.payments || [])
+        .filter((p) => monthKey(p.paymentDate || p.payment_date) === selectedMonth)
+        .reduce((a, p) => a + Number(p.amount || 0), 0);
+      kolPaid += thisKolPaid;
+      if (thisKolPaid > 0) kolPaidBreakdown.push({ name: k.name || "Unnamed KOL", amount: thisKolPaid });
     });
+    kolPaidBreakdown.sort((a, b) => b.amount - a.amount);
 
     const monthInvoices = creditInvoices.filter((inv) => monthKey(inv.invoice_date) === selectedMonth);
     const creditBilled = monthInvoices.reduce((a, inv) => a + Number(inv.amount || 0), 0);
@@ -6372,7 +6382,7 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
 
     const adSpend = adRows.filter((r) => r.month === selectedMonth).reduce((a, r) => a + Number(r.amount || 0), 0);
 
-    return { consignmentCollected, kolSpend, adSpend, creditBilled, creditCollected, corporateBilled, corporateCollected };
+    return { consignmentCollected, kolSpend, kolPaid, kolPaidBreakdown, adSpend, creditBilled, creditCollected, corporateBilled, corporateCollected };
   }, [consignmentVisits, kols, creditInvoices, creditPayments, bigcoReports, adRows, selectedMonth]);
 
   const totalCollected = summary.consignmentCollected + summary.corporateCollected + summary.creditCollected;
@@ -6444,6 +6454,12 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
               <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Marketing</div>
               <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: C.gold }}>${marketingSpend.toLocaleString("en-US", MONEY2)}</div>
               <div style={{ fontSize: 11, color: C.textFaint, marginTop: 4 }}>KOL ${summary.kolSpend.toLocaleString("en-US", MONEY2)} · ads ${summary.adSpend.toLocaleString("en-US", MONEY2)}</div>
+              <div
+                onClick={(e) => { e.stopPropagation(); setShowKolPaidBreakdown(!showKolPaidBreakdown); }}
+                style={{ fontSize: 10.5, color: C.emerald, marginTop: 2, textDecoration: "underline", textUnderlineOffset: 2 }}
+              >
+                cash paid this month: ${summary.kolPaid.toLocaleString("en-US", MONEY2)} · tap to see by KOL
+              </div>
             </button>
 
             <button
@@ -6455,6 +6471,24 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
               <div style={{ fontSize: 11, color: C.textFaint, marginTop: 4 }}>collected of ${summary.creditBilled.toLocaleString("en-US", MONEY2)} billed</div>
             </button>
           </div>
+
+          {showKolPaidBreakdown && (
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px", marginTop: 14 }}>
+              <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 10 }}>
+                Cash paid this month — by KOL
+              </div>
+              {summary.kolPaidBreakdown.length === 0 ? (
+                <div style={{ fontSize: 12, color: C.textFaint, padding: "4px 0" }}>No payments logged this month.</div>
+              ) : (
+                summary.kolPaidBreakdown.map((row) => (
+                  <div key={row.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: `1px solid ${C.border}` }}>
+                    <span style={{ fontSize: 13 }}>{row.name}</span>
+                    <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 600, color: C.emerald }}>${row.amount.toLocaleString("en-US", MONEY2)}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
         </>
       )}
     </div>
