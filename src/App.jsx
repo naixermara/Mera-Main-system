@@ -2232,13 +2232,16 @@ function KolPage({ authUser, C, sbFetch, logActivity }) {
 
   const totals = useMemo(() => {
     const monthSpend = visibleKols.reduce((a, k) => a + k.monthSpend, 0);
+    // monthPaid uses enrichedKols (not visibleKols) so a payment made this month to a KOL that's
+    // "complete" and hidden under a different finishing month still counts toward cash paid this month.
+    const monthPaid = enrichedKols.reduce((a, k) => a + k.monthPaid, 0);
     // Paid/owed/videos-left are genuinely all-time figures — they must NOT be affected by which
     // month is selected or by completed KOLs being hidden from the visible list for other months.
     const videosLeft = enrichedKols.reduce((a, k) => a + k.videosLeft, 0);
     const totalPaid = enrichedKols.reduce((a, k) => a + k.totalPaid, 0);
     const totalOwed = enrichedKols.reduce((a, k) => a + k.owed, 0);
     const activeKols = visibleKols.length;
-    return { monthSpend, videosLeft, totalPaid, totalOwed, activeKols };
+    return { monthSpend, monthPaid, videosLeft, totalPaid, totalOwed, activeKols };
   }, [visibleKols, enrichedKols]);
 
   const spendBreakdown = useMemo(() => {
@@ -2301,6 +2304,15 @@ function KolPage({ authUser, C, sbFetch, logActivity }) {
           <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>KOL spend — {monthLabel(selectedMonth)}</div>
           <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 22, fontWeight: 600, marginTop: 6, color: C.gold }}>${totals.monthSpend.toLocaleString("en-US", MONEY2)}</div>
           <div style={{ fontSize: 10, color: C.textFaint, marginTop: 4 }}>with ads: ${(totals.monthSpend + adTotal).toLocaleString("en-US", MONEY2)} · tap to see by KOL</div>
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowSpendBreakdown(!showSpendBreakdown)}
+          style={{ textAlign: "left", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 18px", cursor: "pointer" }}
+        >
+          <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Paid this month</div>
+          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 22, fontWeight: 600, marginTop: 6, color: C.emerald }}>${totals.monthPaid.toLocaleString("en-US", MONEY2)}</div>
+          <div style={{ fontSize: 10, color: C.textFaint, marginTop: 4 }}>cash actually paid out · tap to see by KOL</div>
         </button>
         <button
           type="button"
@@ -2465,6 +2477,10 @@ function KolPage({ authUser, C, sbFetch, logActivity }) {
                   <div style={{ textAlign: "right" }}>
                     <div style={{ fontSize: 10, color: C.textFaint }}>Cost this month</div>
                     <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, fontSize: 15, color: C.gold }}>${k.monthSpend.toLocaleString("en-US", MONEY2)}</div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: 10, color: C.textFaint }}>Paid this month</div>
+                    <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, fontSize: 15, color: k.monthPaid > 0 ? C.emerald : C.textFaint }}>${k.monthPaid.toLocaleString("en-US", MONEY2)}</div>
                   </div>
                   <div style={{ textAlign: "right" }}>
                     <div style={{ fontSize: 10, color: C.textFaint }}>Owed</div>
