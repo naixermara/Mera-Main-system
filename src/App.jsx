@@ -9547,6 +9547,7 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
   const [showHistory, setShowHistory] = useState(false);
   const [editingVisitId, setEditingVisitId] = useState(null);
   const [editForm, setEditForm] = useState(null);
+  const [editVisitError, setEditVisitError] = useState(null);
   const [editingPrices, setEditingPrices] = useState(false);
   const [priceForm, setPriceForm] = useState(null);
   const [editingDetails, setEditingDetails] = useState(false);
@@ -9889,11 +9890,34 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
                         <label style={{ fontSize: 9, color: C.textFaint }}>Notes</label>
                         <input type="text" value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} placeholder="Optional" />
                       </div>
+                      {editVisitError && (
+                        <div style={{ background: C.roseBg, border: `1px solid ${C.rose}`, borderRadius: 6, padding: "6px 8px", fontSize: 10.5, color: C.rose, marginBottom: 8 }}>
+                          {editVisitError}
+                        </div>
+                      )}
                       <div style={{ display: "flex", gap: 6 }}>
                         <button
                           type="button"
                           onClick={async (e) => {
                             e.stopPropagation();
+                            // Block an edit that would make sold + returned exceed what was actually
+                            // delivered to this store — the same rule "Log a visit" already enforces,
+                            // computed here from this visit's OWN original numbers added back in, since
+                            // the displayed "at store now" already has this visit's rows baked into it.
+                            for (const row of visit.rows) {
+                              const p = editForm.products[row.product] || { sold: 0, returned: 0 };
+                              const newSold = parseFloat(p.sold) || 0;
+                              const newReturned = parseFloat(p.returned) || 0;
+                              const stat = store.products.find((x) => x.key === row.product);
+                              if (stat) {
+                                const availableExcludingThisVisit = stat.init - (stat.sold - row.sold) - (stat.returned - row.returned);
+                                if (newSold + newReturned > availableExcludingThisVisit) {
+                                  setEditVisitError(`${row.product}: only ${Math.max(0, availableExcludingThisVisit)} would be available, but you entered ${newSold + newReturned} (sold + returned).`);
+                                  return;
+                                }
+                              }
+                            }
+                            setEditVisitError(null);
                             // Update each underlying product row that belongs to this visit.
                             // The last row (by original order) carries the shared paid/owed/notes/invoice, matching how it was saved.
                             const lastId = visit.ids[visit.ids.length - 1];
@@ -9918,7 +9942,7 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
                         </button>
                         <button
                           type="button"
-                          onClick={(e) => { e.stopPropagation(); setEditingVisitId(null); }}
+                          onClick={(e) => { e.stopPropagation(); setEditingVisitId(null); setEditVisitError(null); }}
                           style={{ flex: 1, background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "7px 0", fontSize: 12, color: C.textDim, cursor: "pointer" }}
                         >
                           Cancel
@@ -9940,6 +9964,7 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
                         });
                         setEditForm({ date: visit.date, products: productsForm, paid: visit.paid, owed: visit.owed, notes: visit.notes, invoiceNumber: visit.invoiceNumber });
                         setEditingVisitId(visit.date);
+                        setEditVisitError(null);
                       }}
                     >
                       <div style={{ fontWeight: 600, color: C.text }}>{fmtDate(visit.date)}</div>
