@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { Plus, X, Search, ChevronDown, ChevronRight, AlertCircle, Package, Wallet, Calendar, ClipboardList, Sparkles, Trash2, LogOut, Download, Menu } from "lucide-react";
 
@@ -451,6 +451,13 @@ export default function MeraConsignmentApp() {
   const [showNewStore, setShowNewStore] = useState(false);
   const [showActivityLog, setShowActivityLog] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
+  const [toast, setToast] = useState(null); // { message, kind: "success" | "error" }
+  const toastTimerRef = useRef(null);
+  const notify = useCallback((message, kind = "success") => {
+    setToast({ message, kind });
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), kind === "error" ? 5000 : 2800);
+  }, []);
   const [activityEntries, setActivityEntries] = useState(null);
   const [activityLoading, setActivityLoading] = useState(false);
   const [newStoreForm, setNewStoreForm] = useState({
@@ -564,6 +571,10 @@ export default function MeraConsignmentApp() {
   }
 
   async function logActivity(action, storeName, details) {
+    // Fires a success toast for every action logged from anywhere in the app,
+    // since this same function is passed down as a prop to every page — one
+    // change here covers all of them instead of touching each save site.
+    notify(storeName ? `${action}: ${storeName}` : action, "success");
     try {
       await sbFetch("activity_log", {
         method: "POST",
@@ -633,6 +644,7 @@ export default function MeraConsignmentApp() {
     } catch (e) {
       alert("Save failed: " + e.message);
       setSaveError(true);
+      notify("Save failed — " + e.message, "error");
     }
   }
 
@@ -644,6 +656,7 @@ export default function MeraConsignmentApp() {
       const check = await sbFetch(`visits?id=eq.${id}&select=id`);
       if (check && check.length > 0) {
         alert("The delete request was sent, but the row is STILL in the database. This means the database is rejecting the delete silently (likely a permissions issue), not the app itself.");
+        notify("Delete blocked — row still in database (permissions issue)", "error");
         return;
       }
       setVisits((prev) => (prev || []).filter((v) => v.id !== id));
@@ -654,6 +667,7 @@ export default function MeraConsignmentApp() {
     } catch (e) {
       alert("Delete failed with an error: " + e.message);
       setSaveError(true);
+      notify("Delete failed — " + e.message, "error");
     }
   }
 
@@ -1835,6 +1849,29 @@ export default function MeraConsignmentApp() {
         </div>
       )}
       </div>
+      {toast && (
+        <div
+          role="status"
+          style={{
+            position: "fixed",
+            bottom: 24,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 9999,
+            background: toast.kind === "error" ? C.roseBg : C.surface,
+            border: `1px solid ${toast.kind === "error" ? C.rose : C.emerald}`,
+            color: toast.kind === "error" ? C.rose : C.text,
+            borderRadius: 10,
+            padding: "10px 18px",
+            fontSize: 13,
+            fontWeight: 600,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+            maxWidth: "90vw",
+          }}
+        >
+          {toast.kind === "error" ? "⚠ " : "✓ "}{toast.message}
+        </div>
+      )}
     </div>
   );
 }
@@ -5768,6 +5805,7 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
   const [costDraft, setCostDraft] = useState([]);
   const [costsMissing, setCostsMissing] = useState(false);
   const [showCosts, setShowCosts] = useState(false);
+  const [showSampleBreakdown, setShowSampleBreakdown] = useState(false);
   // Same choice as the accounting tab: consignment "sold" is a shelf count,
   // so by default only the part the stores have actually paid for counts.
   const [consignBasis, setConsignBasis] = useState("collected");
@@ -5776,6 +5814,8 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
   const [visits, setVisits] = useState([]);
   const [bigcoReports, setBigcoReports] = useState([]);
   const [creditInvoices, setCreditInvoices] = useState([]);
+
+  const [stockMoves, setStockMoves] = useState([]);
 
   useEffect(() => {
     (async () => {
@@ -5792,6 +5832,11 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
         setCreditInvoices(invoiceRows || []);
       } catch (e) {
         // sales data missing just means zeroes, not a broken page
+      }
+      try {
+        setStockMoves((await sbFetch("stock_moves?select=*&reason=eq.sample")) || []);
+      } catch (e) {
+        // stock_moves table missing just means no sample cost tracked yet
       }
       try {
         setCosts((await sbFetch("product_costs?select=*")) || []);
@@ -5897,14 +5942,26 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
     const creditRevenue = monthInvoices.reduce((a, i) => a + Number(i.amount || 0), 0);
     const consignRevenue = lines.reduce((a, l) => a + l.consignRevenue, 0);
 
+    // Samples given away deduct stock (recorded as negative stock_moves with
+    // reason "sample") but were previously invisible in Profit/Overview. They
+    // are counted here at cost price — the real cash/value lost — not at the
+    // retail price of a sale that never happened.
+    const monthSampleMoves = stockMoves.filter((m) => monthKey(m.move_date) === selectedMonth);
+    const sampleBreakdown = COST_PRODUCTS.map((p) => {
+      const { perBox } = costOf(p.key);
+      const qty = monthSampleMoves.filter((m) => m.product === p.key).reduce((a, m) => a + Math.abs(Number(m.qty || 0)), 0);
+      return { key: p.key, label: p.label, qty, cost: qty * perBox };
+    }).filter((s) => s.qty > 0);
+    const sampleCost = sampleBreakdown.reduce((a, s) => a + s.cost, 0);
+
     const revenue = consignRevenue + corpRevenue + creditRevenue;
     const cogs = lines.reduce((a, l) => a + l.cogs, 0);
-    const profit = revenue - cogs;
+    const profit = revenue - cogs - sampleCost;
     const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
     const priced = lines.every((l) => l.perBox > 0);
 
-    return { lines, revenue, consignRevenue, corpRevenue, creditRevenue, cogs, profit, margin, priced, stockValueAll, collectedAll, paidRatio };
-  }, [visits, bigcoReports, creditInvoices, stores, costs, selectedMonth, consignBasis]);
+    return { lines, revenue, consignRevenue, corpRevenue, creditRevenue, cogs, sampleCost, sampleBreakdown, profit, margin, priced, stockValueAll, collectedAll, paidRatio };
+  }, [visits, bigcoReports, creditInvoices, stores, costs, stockMoves, selectedMonth, consignBasis]);
 
   const cell = { padding: "10px 8px", textAlign: "right", whiteSpace: "nowrap" };
   const th = { textAlign: "right", padding: "11px 8px", fontWeight: 700 };
@@ -5997,10 +6054,19 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
               <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: C.amber }}>${report.cogs.toLocaleString("en-US", MONEY2)}</div>
               <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>what those goods cost you</div>
             </div>
+            <button
+              type="button"
+              onClick={() => setShowSampleBreakdown(!showSampleBreakdown)}
+              style={{ textAlign: "left", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "18px 20px", cursor: "pointer" }}
+            >
+              <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Samples given</div>
+              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: C.amber }}>${report.sampleCost.toLocaleString("en-US", MONEY2)}</div>
+              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>at cost · tap to see by product</div>
+            </button>
             <div style={{ background: C.surface, border: `1px solid ${C.gold}50`, borderRadius: 12, padding: "18px 20px" }}>
               <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Gross profit</div>
               <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: report.profit >= 0 ? C.emerald : C.rose }}>${report.profit.toLocaleString("en-US", MONEY2)}</div>
-              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>before salaries and marketing</div>
+              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>after samples, before salaries and marketing</div>
             </div>
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "18px 20px" }}>
               <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Margin</div>
@@ -6008,6 +6074,24 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
               <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>profit per dollar sold</div>
             </div>
           </div>
+
+          {showSampleBreakdown && (
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px", marginBottom: 18 }}>
+              <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 10 }}>
+                Samples given this month — by product
+              </div>
+              {report.sampleBreakdown.length === 0 ? (
+                <div style={{ fontSize: 12, color: C.textFaint, padding: "4px 0" }}>No samples logged this month.</div>
+              ) : (
+                report.sampleBreakdown.map((s) => (
+                  <div key={s.key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: `1px solid ${C.border}` }}>
+                    <span style={{ fontSize: 13 }}>{s.label} <span style={{ color: C.textFaint }}>× {s.qty}</span></span>
+                    <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 600, color: C.amber }}>${s.cost.toLocaleString("en-US", MONEY2)}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
 
           <div style={{ overflowX: "auto", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, marginBottom: 16 }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 760 }}>
