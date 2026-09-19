@@ -1213,7 +1213,7 @@ export default function MeraConsignmentApp() {
               </span>
             </div>
             <h1 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 34, margin: "6px 0 0", letterSpacing: "-0.01em" }}>
-              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? "Delivery & Invoices" : page === "stores" ? "Stores" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "sales" ? (salesSubPage === "total" ? "Sales Total" : salesSubPage === "credit" ? "Credit Operations" : "Consignment Operations") : "Consignment Operations"}
+              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? "Delivery & Invoices" : page === "stores" ? "Stores" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "sales" ? (salesSubPage === "total" ? "Sales Total" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online Sales" : "Consignment Operations") : "Consignment Operations"}
             </h1>
             <div style={{ height: 2, width: 46, background: `linear-gradient(90deg, ${C.gold}, transparent)`, marginTop: 10 }} />
           </div>
@@ -1343,6 +1343,16 @@ export default function MeraConsignmentApp() {
               >
                 Credit Term
               </button>
+              <button
+                onClick={() => setSalesSubPage("online")}
+                style={{
+                  background: "none", border: "none", padding: "6px 2px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginLeft: 14,
+                  color: salesSubPage === "online" ? C.gold : C.textFaint,
+                  borderBottom: `2px solid ${salesSubPage === "online" ? C.gold : "transparent"}`,
+                }}
+              >
+                Online Sales
+              </button>
             </div>
             {salesSubPage === "total" ? (
               <SalesTotalPage
@@ -1356,6 +1366,8 @@ export default function MeraConsignmentApp() {
               />
             ) : salesSubPage === "credit" ? (
               <CreditTermPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
+            ) : salesSubPage === "online" ? (
+              <OnlineSalesPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             ) : (
         <>
 
@@ -2867,6 +2879,146 @@ function KolPage({ authUser, C, sbFetch, logActivity }) {
   );
 }
 
+// Online Sales — a third, separate sales channel alongside Consignment and
+// Corporate Accounts. Tracked here only: it never posts to Accounting (no
+// tax declaration for this channel), but it does count as real revenue on
+// Profit & Margin, same principle as the private-expenses log.
+function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
+  const [loading, setLoading] = useState(true);
+  const [missing, setMissing] = useState(false);
+  const [sales, setSales] = useState([]);
+  const [selectedMonth, setSelectedMonth] = useState(currentMonthKey());
+  const [form, setForm] = useState({ date: todayStr(), customer_name: "", description: "", amount: "" });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function reload() {
+    try {
+      setSales((await sbFetch("online_sales?select=*&order=date.desc")) || []);
+      setMissing(false);
+    } catch (e) {
+      setMissing(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => { reload(); }, []);
+
+  async function addSale() {
+    const amount = parseFloat(form.amount);
+    if (!form.customer_name.trim()) { setError("Add a customer name or order reference."); return; }
+    if (!amount || amount <= 0) { setError("Enter an amount greater than 0."); return; }
+    setError("");
+    setBusy(true);
+    try {
+      await sbFetch("online_sales", {
+        method: "POST",
+        body: JSON.stringify({
+          date: form.date,
+          customer_name: form.customer_name.trim(),
+          description: form.description.trim(),
+          amount,
+          created_by: authUser?.email || "unknown",
+        }),
+      });
+      logActivity?.("Logged online sale", form.customer_name.trim(), money(amount));
+      setForm({ date: form.date, customer_name: "", description: "", amount: "" });
+      await reload();
+    } catch (e) {
+      setError("Couldn't save. Run the online_sales.sql setup if this is the first time.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteSale(id) {
+    if (!window.confirm("Delete this online sale?")) return;
+    try {
+      await sbFetch(`online_sales?id=eq.${id}`, { method: "DELETE" });
+      setSales((prev) => prev.filter((x) => x.id !== id));
+    } catch (e) {
+      setError("Couldn't delete: " + e.message);
+    }
+  }
+
+  const monthSales = sales.filter((s) => monthKey(s.date) === selectedMonth);
+  const monthTotal = monthSales.reduce((a, s) => a + Number(s.amount || 0), 0);
+  const availableMonths = useMemo(() => monthsThrough(sales.map((s) => monthKey(s.date))), [sales]);
+
+  if (loading) return <div style={{ padding: 40, color: C.textFaint }}>Loading…</div>;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: 0 }}>Online Sales</h2>
+          <div style={{ fontSize: 12, color: C.textFaint, marginTop: 4 }}>Tracked here only — never posted to Accounting. Counts toward Profit &amp; Margin.</div>
+        </div>
+        <select value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 9, padding: "11px 12px", fontSize: 13, fontWeight: 600 }}>
+          {availableMonths.map((k) => <option key={k} value={k}>{monthLabel(k)}</option>)}
+        </select>
+      </div>
+
+      {missing && (
+        <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, color: C.amber, borderRadius: 9, padding: "11px 14px", fontSize: 12.5, marginBottom: 16 }}>
+          This needs a one-time setup: create an <b>online_sales</b> table in Supabase (columns: date, customer_name, description, amount, created_by).
+        </div>
+      )}
+
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "18px 20px", marginBottom: 18, maxWidth: 260 }}>
+        <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Total — {monthLabel(selectedMonth)}</div>
+        <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: C.emerald }}>${monthTotal.toLocaleString("en-US", MONEY2)}</div>
+        <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>{monthSales.length} order{monthSales.length === 1 ? "" : "s"}</div>
+      </div>
+
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 18px", marginBottom: 18 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Log an online sale</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div>
+            <label style={{ fontSize: 9, color: C.textFaint }}>Date</label>
+            <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, display: "block" }} />
+          </div>
+          <div style={{ minWidth: 150 }}>
+            <label style={{ fontSize: 9, color: C.textFaint }}>Customer / order ref</label>
+            <input type="text" value={form.customer_name} onChange={(e) => setForm({ ...form, customer_name: e.target.value })} placeholder="e.g. FB order #123" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", display: "block" }} />
+          </div>
+          <div style={{ flex: 1, minWidth: 150 }}>
+            <label style={{ fontSize: 9, color: C.textFaint }}>Notes (optional)</label>
+            <input type="text" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="what they ordered" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", display: "block" }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 9, color: C.textFaint }}>Amount</label>
+            <input type="number" inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0.00" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: 100, display: "block" }} />
+          </div>
+          <button type="button" onClick={addSale} disabled={busy} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>
+            {busy ? "Saving…" : "Add"}
+          </button>
+        </div>
+        {error && <div style={{ fontSize: 11.5, color: C.rose, marginTop: 10 }}>{error}</div>}
+      </div>
+
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "6px 18px" }}>
+        {monthSales.length === 0 ? (
+          <div style={{ fontSize: 12, color: C.textFaint, padding: "14px 0" }}>No online sales logged for {monthLabel(selectedMonth)}.</div>
+        ) : (
+          monthSales.map((s) => (
+            <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${C.border}`, gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>{s.customer_name}</div>
+                <div style={{ fontSize: 11, color: C.textFaint }}>{fmtDate(s.date)}{s.description ? ` · ${s.description}` : ""}</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, fontWeight: 700, color: C.emerald }}>${Number(s.amount).toLocaleString("en-US", MONEY2)}</span>
+                <button type="button" onClick={() => deleteSale(s.id)} style={{ background: "none", border: "none", color: C.textFaint, cursor: "pointer" }}><Trash2 size={14} /></button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CreditTermPage({ authUser, C, sbFetch, logActivity }) {
   const [stores, setStores] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -4135,6 +4287,7 @@ const NAV = [
     { label: "Consignment",        page: "sales", sub: "consignment", view: "regular" },
     { label: "Corporate Accounts", page: "sales", sub: "consignment", view: "bigco" },
     { label: "Credit Term",        page: "sales", sub: "credit" },
+    { label: "Online Sales",       page: "sales", sub: "online" },
     { label: "Stores",             page: "stores" },
   ]},
   { name: "Warehouse", items: [
@@ -5827,6 +5980,7 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
   const [creditInvoices, setCreditInvoices] = useState([]);
 
   const [stockMoves, setStockMoves] = useState([]);
+  const [onlineSales, setOnlineSales] = useState([]);
   const [miscExpenses, setMiscExpenses] = useState([]);
   const [showExpenseBreakdown, setShowExpenseBreakdown] = useState(false);
   const [expenseForm, setExpenseForm] = useState({ date: todayStr(), description: "", amount: "" });
@@ -5890,6 +6044,11 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
         setStockMoves((await sbFetch("stock_moves?select=*&reason=eq.sample")) || []);
       } catch (e) {
         // stock_moves table missing just means no sample cost tracked yet
+      }
+      try {
+        setOnlineSales((await sbFetch("online_sales?select=*")) || []);
+      } catch (e) {
+        // online_sales table missing just means no online revenue tracked yet
       }
       await reloadMiscExpenses();
       try {
@@ -6013,14 +6172,22 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
     const monthExpenses = miscExpenses.filter((m) => monthKey(m.date) === selectedMonth);
     const otherExpenseCost = monthExpenses.reduce((a, m) => a + Number(m.amount || 0), 0);
 
-    const revenue = consignRevenue + corpRevenue + creditRevenue;
+    // Online Sales — a third channel tracked only here, never posted to
+    // Accounting (not declared for that channel), but it's real revenue for
+    // the purpose of seeing actual profit. No COGS is attributed to it since
+    // it isn't broken down by product here, so margin is slightly overstated
+    // for the online-sales share specifically.
+    const monthOnlineSales = onlineSales.filter((s) => monthKey(s.date) === selectedMonth);
+    const onlineRevenue = monthOnlineSales.reduce((a, s) => a + Number(s.amount || 0), 0);
+
+    const revenue = consignRevenue + corpRevenue + creditRevenue + onlineRevenue;
     const cogs = lines.reduce((a, l) => a + l.cogs, 0);
     const profit = revenue - cogs - sampleCost - otherExpenseCost;
     const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
     const priced = lines.every((l) => l.perBox > 0);
 
-    return { lines, revenue, consignRevenue, corpRevenue, creditRevenue, cogs, sampleCost, sampleBreakdown, otherExpenseCost, monthExpenses, profit, margin, priced, stockValueAll, collectedAll, paidRatio };
-  }, [visits, bigcoReports, creditInvoices, stores, costs, stockMoves, miscExpenses, selectedMonth, consignBasis]);
+    return { lines, revenue, consignRevenue, corpRevenue, creditRevenue, onlineRevenue, cogs, sampleCost, sampleBreakdown, otherExpenseCost, monthExpenses, profit, margin, priced, stockValueAll, collectedAll, paidRatio };
+  }, [visits, bigcoReports, creditInvoices, stores, costs, stockMoves, miscExpenses, onlineSales, selectedMonth, consignBasis]);
 
   const cell = { padding: "10px 8px", textAlign: "right", whiteSpace: "nowrap" };
   const th = { textAlign: "right", padding: "11px 8px", fontWeight: 700 };
@@ -6106,7 +6273,7 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "18px 20px" }}>
               <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Goods sold</div>
               <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: C.text }}>${report.revenue.toLocaleString("en-US", MONEY2)}</div>
-              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>value sold this month</div>
+              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>{report.onlineRevenue > 0 ? `incl. $${report.onlineRevenue.toLocaleString("en-US", MONEY2)} online` : "value sold this month"}</div>
             </div>
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "18px 20px" }}>
               <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Cost of goods</div>
