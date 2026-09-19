@@ -116,6 +116,7 @@ const SKUS = [
     initCol: "pl_initial", priceCol: "pl_price", qtyCol: "pl_qty", soldCol: "pl_sold",
     formQty: "plQty", formPrice: "plPrice", formSold: "plSold", formReturned: "plReturned",
     name: "Mera Panty Liner (ប្រចាំថ្ងៃ)", barcode: "8849308071235", unit: "Box",
+    priceOptions: [1.40, 1.30, 1.15],
   },
   {
     code: "night", visitKey: "Night", label: "Night (យប់)",
@@ -123,6 +124,7 @@ const SKUS = [
     initCol: "night_initial", priceCol: "night_price", qtyCol: "night_qty", soldCol: "night_sold",
     formQty: "nightQty", formPrice: "nightPrice", formSold: "nightSold", formReturned: "nightReturned",
     name: "Mera for night time(យប់)", barcode: "8849308071259", unit: "Box",
+    priceOptions: [2.00, 1.90, 1.70, 1.55],
   },
   {
     code: "day", visitKey: "Day", label: "Day (ថ្ងៃ)",
@@ -130,6 +132,7 @@ const SKUS = [
     initCol: "day_initial", priceCol: "day_price", qtyCol: "day_qty", soldCol: "day_sold",
     formQty: "dayQty", formPrice: "dayPrice", formSold: "daySold", formReturned: "dayReturned",
     name: "Mera for day(ថ្ងៃ)", barcode: "8849308071242", unit: "Box",
+    priceOptions: [2.00, 1.90, 1.70, 1.55],
   },
   {
     code: "pant", visitKey: "Period Pant", label: "Period Pant",
@@ -137,6 +140,7 @@ const SKUS = [
     initCol: "pant_initial", priceCol: "pant_price", qtyCol: "pant_qty", soldCol: "pant_sold",
     formQty: "pantQty", formPrice: "pantPrice", formSold: "pantSold", formReturned: "pantReturned",
     name: "Mera Period Pant", barcode: "8849308071273", unit: "Box",
+    priceOptions: [1.90, 1.80, 1.70, 1.65],
   },
   {
     code: "short", visitKey: "Summer Short", label: "Summer (Coolmint)",
@@ -144,8 +148,15 @@ const SKUS = [
     initCol: "short_initial", priceCol: "short_price", qtyCol: "short_qty", soldCol: "short_sold",
     formQty: "shortQty", formPrice: "shortPrice", formSold: "shortSold", formReturned: "shortReturned",
     name: "Mera Summer (Coolmint)", barcode: "8849308071266", unit: "Box",
+    priceOptions: [1.75, 1.60, 1.55, 1.40],
   },
 ];
+
+// COD discount: wholesale stores paying cash on delivery get an immediate 2%
+// off whichever tier price is selected. Kept as one shared constant so the
+// same rate is used everywhere a price is picked, not retyped per form.
+const COD_DISCOUNT = 0.02;
+const codPrice = (price) => Math.round(price * (1 - COD_DISCOUNT) * 100) / 100;
 
 const skuByCode = (code) => SKUS.find((x) => x.code === code);
 
@@ -1785,11 +1796,11 @@ export default function MeraConsignmentApp() {
               <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.03em" }}>
                 Price per unit $ (optional)
               </label>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(90px, 1fr))", gap: 6 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
                 {SKUS.map((x) => (
                   <div key={x.code}>
                     <label style={{ fontSize: 9, color: C.textFaint }}>{x.label}</label>
-                    <input type="number" step="0.01" value={newStoreForm[x.priceKey]} onChange={(e) => setNewStoreForm({ ...newStoreForm, [x.priceKey]: e.target.value })} style={{ ...inputStyle, padding: "8px 9px" }} placeholder="0.00" />
+                    <PriceDropdown skuCode={x.code} value={newStoreForm[x.priceKey]} onChange={(v) => setNewStoreForm({ ...newStoreForm, [x.priceKey]: v })} C={C} />
                   </div>
                 ))}
               </div>
@@ -8568,11 +8579,11 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
               <div style={{ fontSize: 9, color: C.textFaint }}>Qty (Box)</div>
               <div style={{ fontSize: 9, color: C.textFaint }}>Price $ (internal only)</div>
             </div>
-            {SKUS.map((x) => ({ key: x.code, label: x.label, qk: x.formQty, pk: x.formPrice })).map((p) => (
-              <div key={p.key} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 8, alignItems: "center" }}>
-                <div style={{ fontSize: 13, color: C.textDim }}>{p.label}</div>
+            {SKUS.map((x) => ({ code: x.code, key: x.code, label: x.label, qk: x.formQty, pk: x.formPrice })).map((p) => (
+              <div key={p.key} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.4fr", gap: 6, marginBottom: 8, alignItems: "start" }}>
+                <div style={{ fontSize: 13, color: C.textDim, paddingTop: 8 }}>{p.label}</div>
                 <input type="number" value={dnForm[p.qk]} onChange={(e) => setDnForm({ ...dnForm, [p.qk]: e.target.value })} placeholder="0" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 13, background: C.bg2, color: C.text }} />
-                <input type="number" step="0.01" value={dnForm[p.pk]} onChange={(e) => setDnForm({ ...dnForm, [p.pk]: e.target.value })} placeholder="0.00" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 13, background: C.bg2, color: C.text }} />
+                <PriceDropdown skuCode={p.code} value={dnForm[p.pk]} onChange={(v) => setDnForm({ ...dnForm, [p.pk]: v })} C={C} />
               </div>
             ))}
             <div style={{ fontSize: 10, color: C.textFaint, marginBottom: 14 }}>Price won't show on the printed delivery note — it carries over automatically when you generate an invoice.</div>
@@ -9394,6 +9405,46 @@ function StoresPage({ authUser, C, sbFetch, logActivity }) {
   );
 }
 
+// A price picker for one product: a dropdown of the fixed wholesale tiers
+// (there are only ever a few valid selling prices per product, so free typing
+// invites typos) plus a "Paying COD" checkbox that knocks the standard 2% off
+// whichever tier is chosen. `value` is the actual price to be saved (a plain
+// number/string) — this component reverse-matches it to a tier + COD state
+// on mount so editing an existing store's price shows the right selection.
+function PriceDropdown({ skuCode, value, onChange, C }) {
+  const sku = SKUS.find((s) => s.code === skuCode);
+  const options = sku?.priceOptions || [];
+  const current = parseFloat(value) || 0;
+
+  let tier = options.find((o) => Math.abs(o - current) < 0.005);
+  let cod = false;
+  if (tier === undefined) {
+    const codMatch = options.find((o) => Math.abs(codPrice(o) - current) < 0.005);
+    if (codMatch !== undefined) { tier = codMatch; cod = true; }
+  }
+  if (tier === undefined) tier = options[0];
+
+  function fire(nextTier, nextCod) {
+    onChange(String(nextCod ? codPrice(nextTier) : nextTier));
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <select
+        value={tier}
+        onChange={(e) => fire(parseFloat(e.target.value), cod)}
+        style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 9px", fontSize: 13, width: "100%" }}
+      >
+        {options.map((o) => <option key={o} value={o}>${o.toFixed(2)}</option>)}
+      </select>
+      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, color: C.textFaint, cursor: "pointer" }}>
+        <input type="checkbox" checked={cod} onChange={(e) => fire(tier, e.target.checked)} />
+        Paying COD (−2% → ${codPrice(tier).toFixed(2)})
+      </label>
+    </div>
+  );
+}
+
 function StoreFormFields({ form, setForm, activeType, C, showName, salespeople = [] }) {
   return (
     <>
@@ -9758,11 +9809,11 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
 
           {editingPrices && (
             <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 9, padding: 10, marginBottom: 13 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(88px, 1fr))", gap: 6, marginBottom: 8 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 8 }}>
                 {SKUS.map((x) => (
                   <div key={x.code}>
-                    <label style={{ fontSize: 9, color: C.textFaint }}>{x.label} $</label>
-                    <input type="number" step="0.01" value={priceForm[x.priceKey]} onChange={(e) => setPriceForm({ ...priceForm, [x.priceKey]: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
+                    <label style={{ fontSize: 9, color: C.textFaint }}>{x.label}</label>
+                    <PriceDropdown skuCode={x.code} value={priceForm[x.priceKey]} onChange={(v) => setPriceForm({ ...priceForm, [x.priceKey]: v })} C={C} />
                   </div>
                 ))}
               </div>
