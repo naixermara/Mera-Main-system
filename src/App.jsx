@@ -5816,6 +5816,48 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
   const [creditInvoices, setCreditInvoices] = useState([]);
 
   const [stockMoves, setStockMoves] = useState([]);
+  const [miscExpenses, setMiscExpenses] = useState([]);
+  const [showExpenseBreakdown, setShowExpenseBreakdown] = useState(false);
+  const [expenseForm, setExpenseForm] = useState({ date: todayStr(), description: "", amount: "" });
+  const [expenseError, setExpenseError] = useState("");
+  const [expenseMissing, setExpenseMissing] = useState(false);
+
+  async function reloadMiscExpenses() {
+    try {
+      setMiscExpenses((await sbFetch("misc_expenses?select=*&order=date.desc")) || []);
+      setExpenseMissing(false);
+    } catch (e) {
+      setExpenseMissing(true);
+    }
+  }
+
+  async function addPrivateExpense() {
+    const amount = parseFloat(expenseForm.amount);
+    if (!expenseForm.description.trim()) { setExpenseError("Add a short description."); return; }
+    if (!amount || amount <= 0) { setExpenseError("Enter an amount greater than 0."); return; }
+    setExpenseError("");
+    try {
+      await sbFetch("misc_expenses", {
+        method: "POST",
+        body: JSON.stringify({ date: expenseForm.date, description: expenseForm.description.trim(), amount, created_by: authUser?.email || "unknown" }),
+      });
+      setExpenseForm({ date: expenseForm.date, description: "", amount: "" });
+      logActivity?.("Logged private expense", expenseForm.description.trim(), money(amount));
+      await reloadMiscExpenses();
+    } catch (e) {
+      setExpenseError("Couldn't save. Run the misc_expenses.sql setup if this is the first time.");
+    }
+  }
+
+  async function deletePrivateExpense(id) {
+    if (!window.confirm("Delete this expense?")) return;
+    try {
+      await sbFetch(`misc_expenses?id=eq.${id}`, { method: "DELETE" });
+      setMiscExpenses((prev) => prev.filter((x) => x.id !== id));
+    } catch (e) {
+      setExpenseError("Couldn't delete: " + e.message);
+    }
+  }
 
   useEffect(() => {
     (async () => {
@@ -5838,6 +5880,7 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
       } catch (e) {
         // stock_moves table missing just means no sample cost tracked yet
       }
+      await reloadMiscExpenses();
       try {
         setCosts((await sbFetch("product_costs?select=*")) || []);
         setCostsMissing(false);
@@ -5954,14 +5997,19 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
     }).filter((s) => s.qty > 0);
     const sampleCost = sampleBreakdown.reduce((a, s) => a + s.cost, 0);
 
+    // Private expenses — logged only here, never posted to the Accounting
+    // ledger. Still a real cost, so they reduce profit like anything else.
+    const monthExpenses = miscExpenses.filter((m) => monthKey(m.date) === selectedMonth);
+    const otherExpenseCost = monthExpenses.reduce((a, m) => a + Number(m.amount || 0), 0);
+
     const revenue = consignRevenue + corpRevenue + creditRevenue;
     const cogs = lines.reduce((a, l) => a + l.cogs, 0);
-    const profit = revenue - cogs - sampleCost;
+    const profit = revenue - cogs - sampleCost - otherExpenseCost;
     const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
     const priced = lines.every((l) => l.perBox > 0);
 
-    return { lines, revenue, consignRevenue, corpRevenue, creditRevenue, cogs, sampleCost, sampleBreakdown, profit, margin, priced, stockValueAll, collectedAll, paidRatio };
-  }, [visits, bigcoReports, creditInvoices, stores, costs, stockMoves, selectedMonth, consignBasis]);
+    return { lines, revenue, consignRevenue, corpRevenue, creditRevenue, cogs, sampleCost, sampleBreakdown, otherExpenseCost, monthExpenses, profit, margin, priced, stockValueAll, collectedAll, paidRatio };
+  }, [visits, bigcoReports, creditInvoices, stores, costs, stockMoves, miscExpenses, selectedMonth, consignBasis]);
 
   const cell = { padding: "10px 8px", textAlign: "right", whiteSpace: "nowrap" };
   const th = { textAlign: "right", padding: "11px 8px", fontWeight: 700 };
@@ -6063,10 +6111,19 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
               <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: C.amber }}>${report.sampleCost.toLocaleString("en-US", MONEY2)}</div>
               <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>at cost · tap to see by product</div>
             </button>
+            <button
+              type="button"
+              onClick={() => setShowExpenseBreakdown(!showExpenseBreakdown)}
+              style={{ textAlign: "left", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "18px 20px", cursor: "pointer" }}
+            >
+              <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Other expenses</div>
+              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: C.amber }}>${report.otherExpenseCost.toLocaleString("en-US", MONEY2)}</div>
+              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>private, not in Accounting · tap to view</div>
+            </button>
             <div style={{ background: C.surface, border: `1px solid ${C.gold}50`, borderRadius: 12, padding: "18px 20px" }}>
               <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Gross profit</div>
               <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: report.profit >= 0 ? C.emerald : C.rose }}>${report.profit.toLocaleString("en-US", MONEY2)}</div>
-              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>after samples, before salaries and marketing</div>
+              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>after samples and other expenses</div>
             </div>
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "18px 20px" }}>
               <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Margin</div>
@@ -6087,6 +6144,56 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
                   <div key={s.key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: `1px solid ${C.border}` }}>
                     <span style={{ fontSize: 13 }}>{s.label} <span style={{ color: C.textFaint }}>× {s.qty}</span></span>
                     <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 600, color: C.amber }}>${s.cost.toLocaleString("en-US", MONEY2)}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          {showExpenseBreakdown && (
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px", marginBottom: 18 }}>
+              <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 4 }}>
+                Private expenses — {monthLabel(selectedMonth)}
+              </div>
+              <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 12 }}>
+                Reduces profit here only. Never posted to Accounting — for anything that needs to be declared for tax, use Accounting → Post Expense instead.
+              </div>
+
+              {expenseMissing && (
+                <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, color: C.amber, borderRadius: 8, padding: "8px 10px", fontSize: 11.5, marginBottom: 12 }}>
+                  This needs a one-time setup: create a <code>misc_expenses</code> table in Supabase (columns: date, description, amount, created_by).
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, alignItems: "flex-end" }}>
+                <div>
+                  <label style={{ fontSize: 9, color: C.textFaint }}>Date</label>
+                  <input type="date" value={expenseForm.date} onChange={(e) => setExpenseForm({ ...expenseForm, date: e.target.value })} style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, display: "block" }} />
+                </div>
+                <div style={{ flex: 1, minWidth: 160 }}>
+                  <label style={{ fontSize: 9, color: C.textFaint }}>Description</label>
+                  <input type="text" value={expenseForm.description} onChange={(e) => setExpenseForm({ ...expenseForm, description: e.target.value })} placeholder="e.g. fuel, small supplies" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", display: "block" }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 9, color: C.textFaint }}>Amount</label>
+                  <input type="number" inputMode="decimal" value={expenseForm.amount} onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })} placeholder="0.00" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: 100, display: "block" }} />
+                </div>
+                <button type="button" onClick={addPrivateExpense} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>
+                  Add
+                </button>
+              </div>
+              {expenseError && <div style={{ fontSize: 11.5, color: C.rose, marginBottom: 10 }}>{expenseError}</div>}
+
+              {report.monthExpenses.length === 0 ? (
+                <div style={{ fontSize: 12, color: C.textFaint, padding: "4px 0" }}>No private expenses logged this month.</div>
+              ) : (
+                report.monthExpenses.map((m) => (
+                  <div key={m.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: `1px solid ${C.border}`, gap: 10 }}>
+                    <span style={{ fontSize: 13 }}>{m.description} <span style={{ color: C.textFaint }}>· {fmtDate(m.date)}</span></span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 600, color: C.amber }}>${Number(m.amount).toLocaleString("en-US", MONEY2)}</span>
+                      <button type="button" onClick={() => deletePrivateExpense(m.id)} style={{ background: "none", border: "none", color: C.textFaint, cursor: "pointer" }}><Trash2 size={13} /></button>
+                    </span>
                   </div>
                 ))
               )}
