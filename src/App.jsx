@@ -10378,6 +10378,24 @@ function PayrollPage({ authUser, C, sbFetch, logActivity }) {
   }
   function unpayRow(r) { return setRowFlag(r.id, "paid_at", null); }
 
+  // Removes one person's payslip from THIS month's run — for when someone left
+  // partway through and shouldn't be paid this month after all. Deactivating
+  // them in the Staff tab only keeps them out of FUTURE runs; a run already
+  // started keeps a snapshot of who was active at the time, so this is the
+  // separate step needed to take them out of a run already in progress.
+  async function removeRowFromRun(r) {
+    if (r.paid_at) { setError("Already marked paid — undo that first, then remove."); return; }
+    if (!window.confirm(`Remove ${r.staff_name_kh || r.staff_name} from ${monthLabel(month)}'s payroll? This deletes their payslip for this month only.`)) return;
+    try {
+      await sbFetch(`payslips?id=eq.${r.id}`, { method: "DELETE" });
+      setRows((prev) => prev.filter((x) => x.id !== r.id));
+      setError("");
+      logActivity?.("Removed from payroll run", r.staff_name_kh || r.staff_name, monthLabel(month));
+    } catch (e) {
+      setError("Couldn't remove: " + e.message);
+    }
+  }
+
   async function confirmAll() {
     if (dirty) { setError("Save your changes first."); return; }
     setBusy(true);
@@ -10752,6 +10770,11 @@ function PayrollPage({ authUser, C, sbFetch, logActivity }) {
                             <button onClick={() => unpayRow(r)} title="Mark this person as not paid again" style={{ background: "none", border: `1px solid ${C.border}`, color: C.textFaint, borderRadius: 8, padding: "6px 8px", fontSize: 11.5, cursor: "pointer", marginRight: 6 }}>Undo</button>
                           )}
                           <button onClick={() => setPrintSlips([r])} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "6px 10px", fontSize: 11.5, cursor: "pointer" }}>Payslip</button>
+                          {!locked && !r.paid_at && (
+                            <button onClick={() => removeRowFromRun(r)} title="Take this person out of this month's payroll entirely" style={{ background: "none", border: "none", color: C.textFaint, borderRadius: 8, padding: "6px 6px", marginLeft: 6, cursor: "pointer" }}>
+                              <Trash2 size={13} />
+                            </button>
+                          )}
                         </td>
                       </tr>
                       );
