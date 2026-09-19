@@ -8778,6 +8778,14 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
           <div>
             <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase" }}>Discount %</label>
             <input type="number" value={form.discountPercent} onChange={(e) => setForm({ ...form, discountPercent: e.target.value })} style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 14, background: C.bg2, color: C.text }} />
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, color: C.textFaint, marginTop: 6, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={Math.abs((parseFloat(form.discountPercent) || 0) - COD_DISCOUNT * 100) < 0.005}
+                onChange={(e) => setForm({ ...form, discountPercent: e.target.checked ? String(COD_DISCOUNT * 100) : "0" })}
+              />
+              Paying COD (−{COD_DISCOUNT * 100}% off total)
+            </label>
           </div>
           {invoiceType === "tax" && (
             <div>
@@ -9407,41 +9415,22 @@ function StoresPage({ authUser, C, sbFetch, logActivity }) {
 
 // A price picker for one product: a dropdown of the fixed wholesale tiers
 // (there are only ever a few valid selling prices per product, so free typing
-// invites typos) plus a "Paying COD" checkbox that knocks the standard 2% off
-// whichever tier is chosen. `value` is the actual price to be saved (a plain
-// number/string) — this component reverse-matches it to a tier + COD state
-// on mount so editing an existing store's price shows the right selection.
+// invites typos). The COD discount is applied once to an invoice's total,
+// not per line — see the invoice generator for that.
 function PriceDropdown({ skuCode, value, onChange, C }) {
   const sku = SKUS.find((s) => s.code === skuCode);
   const options = sku?.priceOptions || [];
   const current = parseFloat(value) || 0;
-
-  let tier = options.find((o) => Math.abs(o - current) < 0.005);
-  let cod = false;
-  if (tier === undefined) {
-    const codMatch = options.find((o) => Math.abs(codPrice(o) - current) < 0.005);
-    if (codMatch !== undefined) { tier = codMatch; cod = true; }
-  }
-  if (tier === undefined) tier = options[0];
-
-  function fire(nextTier, nextCod) {
-    onChange(String(nextCod ? codPrice(nextTier) : nextTier));
-  }
+  const selected = options.find((o) => Math.abs(o - current) < 0.005) ?? options[0];
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <select
-        value={tier}
-        onChange={(e) => fire(parseFloat(e.target.value), cod)}
-        style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 9px", fontSize: 13, width: "100%" }}
-      >
-        {options.map((o) => <option key={o} value={o}>${o.toFixed(2)}</option>)}
-      </select>
-      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, color: C.textFaint, cursor: "pointer" }}>
-        <input type="checkbox" checked={cod} onChange={(e) => fire(tier, e.target.checked)} />
-        Paying COD (−2% → ${codPrice(tier).toFixed(2)})
-      </label>
-    </div>
+    <select
+      value={selected}
+      onChange={(e) => onChange(e.target.value)}
+      style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 9px", fontSize: 13, width: "100%" }}
+    >
+      {options.map((o) => <option key={o} value={o}>${o.toFixed(2)}</option>)}
+    </select>
   );
 }
 
