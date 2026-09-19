@@ -462,6 +462,24 @@ export default function MeraConsignmentApp() {
   const [showNewStore, setShowNewStore] = useState(false);
   const [showActivityLog, setShowActivityLog] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
+  const [pendingPaymentCount, setPendingPaymentCount] = useState(0);
+
+  // Polled independently of whichever page is open, so the sidebar badge
+  // stays current even if the person never visits Pending Payments directly.
+  useEffect(() => {
+    let cancelled = false;
+    async function checkPending() {
+      try {
+        const rows = await sbFetch("pending_payments?select=id&status=eq.pending");
+        if (!cancelled) setPendingPaymentCount((rows || []).length);
+      } catch (e) {
+        // table may not exist yet — badge just stays at 0, not an error state
+      }
+    }
+    checkPending();
+    const interval = setInterval(checkPending, 60000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
   const [toast, setToast] = useState(null); // { message, kind: "success" | "error" }
   const toastTimerRef = useRef(null);
   const notify = useCallback((message, kind = "success") => {
@@ -1191,6 +1209,7 @@ export default function MeraConsignmentApp() {
         onPick={goTo}
         mobileOpen={navMobile}
         onCloseMobile={() => setNavMobile(false)}
+        pendingCount={pendingPaymentCount}
       />
 
       <div className="mera-shell" style={{ maxWidth: 920, margin: "0 auto", padding: "40px 20px 0" }}>
@@ -1379,7 +1398,7 @@ export default function MeraConsignmentApp() {
             ) : salesSubPage === "online" ? (
               <OnlineSalesPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             ) : salesSubPage === "pending" ? (
-              <PendingPaymentsPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
+              <PendingPaymentsPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} onCountChange={setPendingPaymentCount} />
             ) : (
         <>
 
@@ -3037,7 +3056,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
 // payment, a Corporate Account, a Credit Term invoice, or an Online Sale),
 // since the bank notification itself never says what was bought or by whom
 // in your system — only that money arrived.
-function PendingPaymentsPage({ authUser, C, sbFetch, logActivity }) {
+function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange }) {
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState([]);
   const [assignedRecent, setAssignedRecent] = useState([]);
@@ -3061,6 +3080,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity }) {
       setPending(p || []); setAssignedRecent(a || []);
       setStores(s || []); setBigcoStores(b || []); setCreditStores(c || []);
       setMissing(false);
+      onCountChange?.((p || []).length);
     } catch (e) {
       setMissing(true);
     } finally {
@@ -6193,7 +6213,7 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
   );
 }
 
-function SideNav({ C, nav, active, openGroup, onOpenGroup, onPick, mobileOpen, onCloseMobile }) {
+function SideNav({ C, nav, active, openGroup, onOpenGroup, onPick, mobileOpen, onCloseMobile, pendingCount = 0 }) {
   const panel = (
     <div style={{ width: 214, flexShrink: 0, background: C.surface, borderRight: `1px solid ${C.border}`, height: "100%", overflowY: "auto", padding: "16px 0 30px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 16px 16px", fontSize: 15, letterSpacing: "0.18em", textTransform: "uppercase", color: C.gold, fontWeight: 700 }}>
@@ -6201,26 +6221,40 @@ function SideNav({ C, nav, active, openGroup, onOpenGroup, onPick, mobileOpen, o
       </div>
       {nav.map((g, gi) => {
         const open = openGroup === gi;
+        const groupHasPending = g.items.some((it) => it.label === "Pending Payments") && pendingCount > 0;
         return (
           <div key={g.name} style={{ padding: "0 8px" }}>
             <div
               onClick={() => onOpenGroup(open ? -1 : gi)}
               style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "9px 10px", borderRadius: 8, cursor: "pointer", color: open ? C.goldBright : C.textDim, fontWeight: 600, fontSize: 13 }}
             >
-              <span>{g.name}</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                {g.name}
+                {groupHasPending && !open && (
+                  <span style={{ background: C.rose, color: "#fff", borderRadius: 999, fontSize: 10, fontWeight: 700, padding: "1px 6px", lineHeight: 1.4, fontFamily: "'IBM Plex Mono', monospace" }}>
+                    {pendingCount}
+                  </span>
+                )}
+              </span>
               {open ? <ChevronDown size={13} color={C.textFaint} /> : <ChevronRight size={13} color={C.textFaint} />}
             </div>
             {open && (
               <div style={{ padding: "2px 0 6px" }}>
                 {g.items.map((it) => {
                   const on = active === it.label;
+                  const showBadge = it.label === "Pending Payments" && pendingCount > 0;
                   return (
                     <div
                       key={it.label}
                       onClick={() => { onPick(it); onCloseMobile(); }}
-                      style={{ padding: "7px 10px 7px 24px", borderRadius: 7, cursor: "pointer", fontSize: 12.5, fontWeight: on ? 700 : 400, color: on ? "#1A1508" : C.textFaint, background: on ? C.gold : "transparent" }}
+                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 10px 7px 24px", borderRadius: 7, cursor: "pointer", fontSize: 12.5, fontWeight: on ? 700 : 400, color: on ? "#1A1508" : C.textFaint, background: on ? C.gold : "transparent" }}
                     >
-                      {it.label}
+                      <span>{it.label}</span>
+                      {showBadge && (
+                        <span style={{ background: on ? "#1A1508" : C.rose, color: "#fff", borderRadius: 999, fontSize: 10, fontWeight: 700, padding: "1px 6px", marginRight: 4, fontFamily: "'IBM Plex Mono', monospace" }}>
+                          {pendingCount}
+                        </span>
+                      )}
                     </div>
                   );
                 })}
