@@ -2918,14 +2918,21 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
   const [loading, setLoading] = useState(true);
   const [missing, setMissing] = useState(false);
   const [sales, setSales] = useState([]);
+  const [items, setItems] = useState([]); // online_sale_items, all of them, keyed by sale_id client-side
   const [selectedMonth, setSelectedMonth] = useState(currentMonthKey());
-  const [form, setForm] = useState({ date: todayStr(), customer_name: "", description: "", amount: "" });
+  const [form, setForm] = useState({ date: todayStr(), customer_name: "", description: "" });
+  const [lineForm, setLineForm] = useState(() => Object.fromEntries(SKUS.map((x) => [x.code, { qty: "", price: String(x.priceOptions[0]) }])));
+  const [expandedId, setExpandedId] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function reload() {
     try {
-      setSales((await sbFetch("online_sales?select=*&order=date.desc")) || []);
+      const [s, i] = await Promise.all([
+        sbFetch("online_sales?select=*&order=date.desc"),
+        sbFetch("online_sale_items?select=*"),
+      ]);
+      setSales(s || []); setItems(i || []);
       setMissing(false);
     } catch (e) {
       setMissing(true);
@@ -2935,38 +2942,50 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
   }
   useEffect(() => { reload(); }, []);
 
+  const activeLines = SKUS
+    .map((x) => ({ code: x.code, label: x.label, qty: parseFloat(lineForm[x.code]?.qty) || 0, price: parseFloat(lineForm[x.code]?.price) || 0 }))
+    .filter((l) => l.qty > 0);
+  const draftTotal = activeLines.reduce((a, l) => a + l.qty * l.price, 0);
+
   async function addSale() {
-    const amount = parseFloat(form.amount);
     if (!form.customer_name.trim()) { setError("Add a customer name or order reference."); return; }
-    if (!amount || amount <= 0) { setError("Enter an amount greater than 0."); return; }
+    if (activeLines.length === 0) { setError("Add at least one product with a quantity."); return; }
     setError("");
     setBusy(true);
     try {
-      await sbFetch("online_sales", {
+      const [inserted] = await sbFetch("online_sales", {
         method: "POST",
         body: JSON.stringify({
           date: form.date,
           customer_name: form.customer_name.trim(),
           description: form.description.trim(),
-          amount,
+          amount: draftTotal,
           created_by: authUser?.email || "unknown",
         }),
       });
-      logActivity?.("Logged online sale", form.customer_name.trim(), money(amount));
-      setForm({ date: form.date, customer_name: "", description: "", amount: "" });
+      await sbFetch("online_sale_items", {
+        method: "POST",
+        body: JSON.stringify(activeLines.map((l) => ({
+          sale_id: inserted.id, product: l.code, qty: l.qty, price: l.price, line_total: l.qty * l.price,
+        }))),
+      });
+      logActivity?.("Logged online sale", form.customer_name.trim(), `${activeLines.map((l) => `${l.qty} ${l.label}`).join(", ")} — ${money(draftTotal)}`);
+      setForm({ date: form.date, customer_name: "", description: "" });
+      setLineForm(Object.fromEntries(SKUS.map((x) => [x.code, { qty: "", price: String(x.priceOptions[0]) }])));
       await reload();
     } catch (e) {
-      setError("Couldn't save. Run the online_sales.sql setup if this is the first time.");
+      setError("Couldn't save. Run the online_sales.sql / online_sale_items.sql setup if this is the first time.");
     } finally {
       setBusy(false);
     }
   }
 
   async function deleteSale(id) {
-    if (!window.confirm("Delete this online sale?")) return;
+    if (!window.confirm("Delete this online sale and its product lines?")) return;
     try {
-      await sbFetch(`online_sales?id=eq.${id}`, { method: "DELETE" });
+      await sbFetch(`online_sales?id=eq.${id}`, { method: "DELETE" }); // online_sale_items cascade-deletes
       setSales((prev) => prev.filter((x) => x.id !== id));
+      setItems((prev) => prev.filter((x) => x.sale_id !== id));
     } catch (e) {
       setError("Couldn't delete: " + e.message);
     }
@@ -2975,6 +2994,8 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
   const monthSales = sales.filter((s) => monthKey(s.date) === selectedMonth);
   const monthTotal = monthSales.reduce((a, s) => a + Number(s.amount || 0), 0);
   const availableMonths = useMemo(() => monthsThrough(sales.map((s) => monthKey(s.date))), [sales]);
+  const itemsBySale = (saleId) => items.filter((i) => i.sale_id === saleId);
+  const labelFor = (code) => SKUS.find((x) => x.code === code)?.label || code;
 
   if (loading) return <div style={{ padding: 40, color: C.textFaint }}>Loading…</div>;
 
@@ -2983,7 +3004,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexWrap: "wrap", gap: 12 }}>
         <div>
           <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: 0 }}>Online Sales</h2>
-          <div style={{ fontSize: 12, color: C.textFaint, marginTop: 4 }}>Tracked here only — never posted to Accounting. Counts toward Profit &amp; Margin.</div>
+          <div style={{ fontSize: 12, color: C.textFaint, marginTop: 4 }}>Tracked here only — never posted to Accounting. Counts toward Profit &amp; Margin, with real COGS now that products are itemized.</div>
         </div>
         <select value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 9, padding: "11px 12px", fontSize: 13, fontWeight: 600 }}>
           {availableMonths.map((k) => <option key={k} value={k}>{monthLabel(k)}</option>)}
@@ -2992,7 +3013,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
 
       {missing && (
         <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, color: C.amber, borderRadius: 9, padding: "11px 14px", fontSize: 12.5, marginBottom: 16 }}>
-          This needs a one-time setup: create an <b>online_sales</b> table in Supabase (columns: date, customer_name, description, amount, created_by).
+          This needs a one-time setup: create <b>online_sales</b> and <b>online_sale_items</b> tables in Supabase.
         </div>
       )}
 
@@ -3004,46 +3025,93 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
 
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 18px", marginBottom: 18 }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Log an online sale</div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
           <div>
             <label style={{ fontSize: 9, color: C.textFaint }}>Date</label>
             <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, display: "block" }} />
           </div>
-          <div style={{ minWidth: 150 }}>
+          <div style={{ minWidth: 170 }}>
             <label style={{ fontSize: 9, color: C.textFaint }}>Customer / order ref</label>
             <input type="text" value={form.customer_name} onChange={(e) => setForm({ ...form, customer_name: e.target.value })} placeholder="e.g. FB order #123" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", display: "block" }} />
           </div>
-          <div style={{ flex: 1, minWidth: 150 }}>
+          <div style={{ flex: 1, minWidth: 170 }}>
             <label style={{ fontSize: 9, color: C.textFaint }}>Notes (optional)</label>
-            <input type="text" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="what they ordered" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", display: "block" }} />
+            <input type="text" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="delivery address, etc." style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", display: "block" }} />
           </div>
-          <div>
-            <label style={{ fontSize: 9, color: C.textFaint }}>Amount</label>
-            <input type="number" inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0.00" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: 100, display: "block" }} />
+        </div>
+
+        <div style={{ fontSize: 10, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Products</div>
+        <div style={{ display: "grid", gap: 8, marginBottom: 12 }}>
+          {SKUS.map((x) => (
+            <div key={x.code} style={{ display: "grid", gridTemplateColumns: "130px 90px 1fr", gap: 10, alignItems: "center" }}>
+              <div style={{ fontSize: 13, color: C.textDim }}>{x.label}</div>
+              <input
+                type="number" placeholder="qty" value={lineForm[x.code]?.qty || ""}
+                onChange={(e) => setLineForm({ ...lineForm, [x.code]: { ...lineForm[x.code], qty: e.target.value } })}
+                style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13 }}
+              />
+              <PriceDropdown
+                skuCode={x.code}
+                value={lineForm[x.code]?.price}
+                onChange={(v) => setLineForm({ ...lineForm, [x.code]: { ...lineForm[x.code], price: v } })}
+                C={C}
+              />
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
+          <div style={{ fontSize: 13 }}>
+            Order total: <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: C.goldBright }}>${draftTotal.toLocaleString("en-US", MONEY2)}</span>
           </div>
-          <button type="button" onClick={addSale} disabled={busy} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>
-            {busy ? "Saving…" : "Add"}
+          <button type="button" onClick={addSale} disabled={busy} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "9px 20px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>
+            {busy ? "Saving…" : "Add sale"}
           </button>
         </div>
         {error && <div style={{ fontSize: 11.5, color: C.rose, marginTop: 10 }}>{error}</div>}
       </div>
 
-      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "6px 18px" }}>
+      <div style={{ display: "grid", gap: 8 }}>
         {monthSales.length === 0 ? (
-          <div style={{ fontSize: 12, color: C.textFaint, padding: "14px 0" }}>No online sales logged for {monthLabel(selectedMonth)}.</div>
+          <div style={{ background: C.surface, border: `1px dashed ${C.border}`, borderRadius: 12, padding: 30, textAlign: "center", fontSize: 12, color: C.textFaint }}>
+            No online sales logged for {monthLabel(selectedMonth)}.
+          </div>
         ) : (
-          monthSales.map((s) => (
-            <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${C.border}`, gap: 10 }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 700 }}>{s.customer_name}</div>
-                <div style={{ fontSize: 11, color: C.textFaint }}>{fmtDate(s.date)}{s.description ? ` · ${s.description}` : ""}</div>
+          monthSales.map((s) => {
+            const lines = itemsBySale(s.id);
+            const expanded = expandedId === s.id;
+            return (
+              <div key={s.id} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px" }}>
+                <div
+                  onClick={() => setExpandedId(expanded ? null : s.id)}
+                  style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", gap: 10 }}
+                >
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>{s.customer_name}</div>
+                    <div style={{ fontSize: 11, color: C.textFaint }}>
+                      {fmtDate(s.date)} · {lines.map((l) => `${l.qty} ${labelFor(l.product)}`).join(", ") || "no items"}
+                      {s.description ? ` · ${s.description}` : ""}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, fontWeight: 700, color: C.emerald }}>${Number(s.amount).toLocaleString("en-US", MONEY2)}</span>
+                    <button type="button" onClick={(e) => { e.stopPropagation(); deleteSale(s.id); }} style={{ background: "none", border: "none", color: C.textFaint, cursor: "pointer" }}><Trash2 size={14} /></button>
+                  </div>
+                </div>
+                {expanded && (
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
+                    {lines.map((l) => (
+                      <div key={l.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0", color: C.textDim }}>
+                        <span>{labelFor(l.product)} × {l.qty} @ ${Number(l.price).toFixed(2)}</span>
+                        <span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>${Number(l.line_total).toLocaleString("en-US", MONEY2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, fontWeight: 700, color: C.emerald }}>${Number(s.amount).toLocaleString("en-US", MONEY2)}</span>
-                <button type="button" onClick={() => deleteSale(s.id)} style={{ background: "none", border: "none", color: C.textFaint, cursor: "pointer" }}><Trash2 size={14} /></button>
-              </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>
@@ -6305,6 +6373,7 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
 
   const [stockMoves, setStockMoves] = useState([]);
   const [onlineSales, setOnlineSales] = useState([]);
+  const [onlineSaleItems, setOnlineSaleItems] = useState([]);
   const [miscExpenses, setMiscExpenses] = useState([]);
   const [showExpenseBreakdown, setShowExpenseBreakdown] = useState(false);
   const [expenseForm, setExpenseForm] = useState({ date: todayStr(), description: "", amount: "" });
@@ -6371,8 +6440,9 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
       }
       try {
         setOnlineSales((await sbFetch("online_sales?select=*")) || []);
+        setOnlineSaleItems((await sbFetch("online_sale_items?select=*")) || []);
       } catch (e) {
-        // online_sales table missing just means no online revenue tracked yet
+        // online_sales tables missing just means no online revenue tracked yet
       }
       await reloadMiscExpenses();
       try {
@@ -6498,20 +6568,21 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
 
     // Online Sales — a third channel tracked only here, never posted to
     // Accounting (not declared for that channel), but it's real revenue for
-    // the purpose of seeing actual profit. No COGS is attributed to it since
-    // it isn't broken down by product here, so margin is slightly overstated
-    // for the online-sales share specifically.
+    // Profit & Margin. Now itemized by product, so COGS is real, not guessed.
     const monthOnlineSales = onlineSales.filter((s) => monthKey(s.date) === selectedMonth);
     const onlineRevenue = monthOnlineSales.reduce((a, s) => a + Number(s.amount || 0), 0);
+    const onlineSaleIds = new Set(monthOnlineSales.map((s) => s.id));
+    const monthOnlineItems = onlineSaleItems.filter((i) => onlineSaleIds.has(i.sale_id));
+    const onlineCogs = monthOnlineItems.reduce((a, i) => a + (costOf(i.product).perBox * (Number(i.qty) || 0)), 0);
 
     const revenue = consignRevenue + corpRevenue + creditRevenue + onlineRevenue;
-    const cogs = lines.reduce((a, l) => a + l.cogs, 0);
+    const cogs = lines.reduce((a, l) => a + l.cogs, 0) + onlineCogs;
     const profit = revenue - cogs - sampleCost - otherExpenseCost;
     const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
     const priced = lines.every((l) => l.perBox > 0);
 
-    return { lines, revenue, consignRevenue, corpRevenue, creditRevenue, onlineRevenue, cogs, sampleCost, sampleBreakdown, otherExpenseCost, monthExpenses, profit, margin, priced, stockValueAll, collectedAll, paidRatio };
-  }, [visits, bigcoReports, creditInvoices, stores, costs, stockMoves, miscExpenses, onlineSales, selectedMonth, consignBasis]);
+    return { lines, revenue, consignRevenue, corpRevenue, creditRevenue, onlineRevenue, onlineCogs, cogs, sampleCost, sampleBreakdown, otherExpenseCost, monthExpenses, profit, margin, priced, stockValueAll, collectedAll, paidRatio };
+  }, [visits, bigcoReports, creditInvoices, stores, costs, stockMoves, miscExpenses, onlineSales, onlineSaleItems, selectedMonth, consignBasis]);
 
   const cell = { padding: "10px 8px", textAlign: "right", whiteSpace: "nowrap" };
   const th = { textAlign: "right", padding: "11px 8px", fontWeight: 700 };
