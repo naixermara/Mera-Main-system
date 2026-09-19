@@ -2923,6 +2923,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
   const [form, setForm] = useState({ date: todayStr(), customer_name: "", description: "" });
   const [lineForm, setLineForm] = useState(() => Object.fromEntries(SKUS.map((x) => [x.code, { qty: "", price: String(x.priceOptions[0]) }])));
   const [expandedId, setExpandedId] = useState(null);
+  const [printSale, setPrintSale] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -2996,6 +2997,31 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
   const availableMonths = useMemo(() => monthsThrough(sales.map((s) => monthKey(s.date))), [sales]);
   const itemsBySale = (saleId) => items.filter((i) => i.sale_id === saleId);
   const labelFor = (code) => SKUS.find((x) => x.code === code)?.label || code;
+
+  // Builds a document shaped exactly like a sales_invoices row, purely in
+  // memory — nothing is written to sales_invoices or gl_entries, so this
+  // stays out of Accounting entirely while still giving a proper, numbered,
+  // printable invoice for a wholesale online order.
+  function buildInvoiceDoc(sale) {
+    const lines = itemsBySale(sale.id);
+    const fields = {};
+    SKUS.forEach((x) => {
+      const line = lines.find((l) => l.product === x.code);
+      fields[x.qtyCol] = line ? Number(line.qty) : 0;
+      fields[x.priceCol] = line ? Number(line.price) : 0;
+    });
+    return {
+      ...fields,
+      invoice_number: `OS${String(sale.id).padStart(6, "0")}`,
+      invoice_date: sale.date,
+      customer_name: sale.customer_name,
+      send_to: sale.description || "",
+      invoice_type: "commercial",
+      discount_percent: 0,
+      vat_percent: 0,
+      exchange_rate: 4046,
+    };
+  }
 
   if (loading) return <div style={{ padding: 40, color: C.textFaint }}>Loading…</div>;
 
@@ -3096,6 +3122,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, fontWeight: 700, color: C.emerald }}>${Number(s.amount).toLocaleString("en-US", MONEY2)}</span>
+                    <button type="button" onClick={(e) => { e.stopPropagation(); setPrintSale(s); }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "5px 10px", fontSize: 11, cursor: "pointer" }}>Invoice</button>
                     <button type="button" onClick={(e) => { e.stopPropagation(); deleteSale(s.id); }} style={{ background: "none", border: "none", color: C.textFaint, cursor: "pointer" }}><Trash2 size={14} /></button>
                   </div>
                 </div>
@@ -3114,6 +3141,15 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
           })
         )}
       </div>
+
+      {printSale && (
+        <DocumentPrintView
+          doc={{ type: "invoice", data: buildInvoiceDoc(printSale) }}
+          onClose={() => setPrintSale(null)}
+          linkedDN={null}
+          catalog={[]}
+        />
+      )}
     </div>
   );
 }
