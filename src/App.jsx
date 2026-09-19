@@ -1213,7 +1213,7 @@ export default function MeraConsignmentApp() {
               </span>
             </div>
             <h1 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 34, margin: "6px 0 0", letterSpacing: "-0.01em" }}>
-              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? "Delivery & Invoices" : page === "stores" ? "Stores" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "sales" ? (salesSubPage === "total" ? "Sales Total" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online Sales" : "Consignment Operations") : "Consignment Operations"}
+              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? "Delivery & Invoices" : page === "stores" ? "Stores" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "sales" ? (salesSubPage === "total" ? "Sales Total" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online Sales" : salesSubPage === "pending" ? "Pending Payments" : "Consignment Operations") : "Consignment Operations"}
             </h1>
             <div style={{ height: 2, width: 46, background: `linear-gradient(90deg, ${C.gold}, transparent)`, marginTop: 10 }} />
           </div>
@@ -1353,6 +1353,16 @@ export default function MeraConsignmentApp() {
               >
                 Online Sales
               </button>
+              <button
+                onClick={() => setSalesSubPage("pending")}
+                style={{
+                  background: "none", border: "none", padding: "6px 2px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginLeft: 14,
+                  color: salesSubPage === "pending" ? C.gold : C.textFaint,
+                  borderBottom: `2px solid ${salesSubPage === "pending" ? C.gold : "transparent"}`,
+                }}
+              >
+                Pending Payments
+              </button>
             </div>
             {salesSubPage === "total" ? (
               <SalesTotalPage
@@ -1368,6 +1378,8 @@ export default function MeraConsignmentApp() {
               <CreditTermPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             ) : salesSubPage === "online" ? (
               <OnlineSalesPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
+            ) : salesSubPage === "pending" ? (
+              <PendingPaymentsPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             ) : (
         <>
 
@@ -3019,6 +3031,283 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
   );
 }
 
+// Pending Payments — every ABA payment notification a Telegram bot detects
+// lands here first, unmatched. A human then assigns each one to whichever
+// channel it actually belongs to (a specific consignment store's partial
+// payment, a Corporate Account, a Credit Term invoice, or an Online Sale),
+// since the bank notification itself never says what was bought or by whom
+// in your system — only that money arrived.
+function PendingPaymentsPage({ authUser, C, sbFetch, logActivity }) {
+  const [loading, setLoading] = useState(true);
+  const [pending, setPending] = useState([]);
+  const [assignedRecent, setAssignedRecent] = useState([]);
+  const [stores, setStores] = useState([]);
+  const [bigcoStores, setBigcoStores] = useState([]);
+  const [creditStores, setCreditStores] = useState([]);
+  const [missing, setMissing] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState(null); // the row currently being assigned, plus its form
+
+  async function reload() {
+    try {
+      const [p, a, s, b, c] = await Promise.all([
+        sbFetch("pending_payments?select=*&status=eq.pending&order=paid_at.desc"),
+        sbFetch("pending_payments?select=*&status=eq.assigned&order=assigned_at.desc&limit=15"),
+        sbFetch("stores?select=id,name"),
+        sbFetch("bigco_stores?select=id,name"),
+        sbFetch("credit_stores?select=id,name"),
+      ]);
+      setPending(p || []); setAssignedRecent(a || []);
+      setStores(s || []); setBigcoStores(b || []); setCreditStores(c || []);
+      setMissing(false);
+    } catch (e) {
+      setMissing(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => { reload(); }, []);
+
+  function openAssign(row) {
+    setError("");
+    setDraft({
+      pendingId: row.id,
+      type: "consignment",
+      date: String(row.paid_at).slice(0, 10),
+      storeId: "",
+      product: SKUS[0].visitKey,
+      qty: "",
+      paid: String(row.amount),
+      owed: "0",
+      customerName: row.payer_name || "",
+      notes: `ABA ${row.transaction_id || ""}`.trim(),
+    });
+  }
+
+  async function submitAssign() {
+    if (!draft) return;
+    const row = pending.find((p) => p.id === draft.pendingId);
+    if (!row) return;
+    setBusy(true);
+    setError("");
+    try {
+      let summary = "";
+      if (draft.type === "consignment") {
+        if (!draft.storeId) { setError("Pick a store."); setBusy(false); return; }
+        const storeName = stores.find((s) => s.id === draft.storeId)?.name || "";
+        await sbFetch("visits", {
+          method: "POST",
+          body: JSON.stringify([{
+            date: draft.date, store_name: storeName, product: draft.product,
+            sold: parseFloat(draft.qty) || 0, returned: 0,
+            paid: parseFloat(draft.paid) || 0, owed: parseFloat(draft.owed) || 0,
+            notes: draft.notes, invoice_number: null, created_by: authUser?.email || "unknown",
+          }]),
+        });
+        summary = `Consignment · ${storeName} · ${draft.qty || 0} ${draft.product}`;
+        logActivity?.("Assigned payment", storeName, `$${row.amount} → consignment visit`);
+      } else if (draft.type === "corporate") {
+        if (!draft.storeId) { setError("Pick a store."); setBusy(false); return; }
+        const storeName = bigcoStores.find((s) => s.id === draft.storeId)?.name || "";
+        await sbFetch("bigco_reports", {
+          method: "POST",
+          body: JSON.stringify({
+            store_id: draft.storeId, report_date: draft.date, invoice_number: null,
+            pl_sold: 0, night_sold: 0, day_sold: 0,
+            amount: parseFloat(draft.paid) || 0, paid: parseFloat(draft.paid) || 0,
+            notes: draft.notes, created_by: authUser?.email || "unknown",
+          }),
+        });
+        summary = `Corporate Accounts · ${storeName}`;
+        logActivity?.("Assigned payment", storeName, `$${row.amount} → Corporate Accounts`);
+      } else if (draft.type === "credit") {
+        if (!draft.storeId) { setError("Pick a store."); setBusy(false); return; }
+        const storeName = creditStores.find((s) => s.id === draft.storeId)?.name || "";
+        await sbFetch("credit_payments", {
+          method: "POST",
+          body: JSON.stringify({
+            store_id: draft.storeId, payment_date: draft.date,
+            amount: parseFloat(draft.paid) || 0, notes: draft.notes, created_by: authUser?.email || "unknown",
+          }),
+        });
+        summary = `Credit Term · ${storeName}`;
+        logActivity?.("Assigned payment", storeName, `$${row.amount} → Credit Term`);
+      } else {
+        if (!draft.customerName.trim()) { setError("Add a customer name or order reference."); setBusy(false); return; }
+        await sbFetch("online_sales", {
+          method: "POST",
+          body: JSON.stringify({
+            date: draft.date, customer_name: draft.customerName.trim(),
+            description: draft.notes, amount: parseFloat(draft.paid) || 0, created_by: authUser?.email || "unknown",
+          }),
+        });
+        summary = `Online Sales · ${draft.customerName.trim()}`;
+        logActivity?.("Assigned payment", draft.customerName.trim(), `$${row.amount} → Online Sales`);
+      }
+
+      await sbFetch(`pending_payments?id=eq.${row.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          status: "assigned", assigned_type: draft.type, assigned_note: summary,
+          assigned_by: authUser?.email || "unknown", assigned_at: new Date().toISOString(),
+        }),
+      });
+      setDraft(null);
+      await reload();
+    } catch (e) {
+      setError("Couldn't assign: " + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function ignorePending(row) {
+    if (!window.confirm("Mark this as not needing assignment (e.g. a duplicate or test)? It will be hidden from the queue.")) return;
+    try {
+      await sbFetch(`pending_payments?id=eq.${row.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: "ignored", assigned_by: authUser?.email || "unknown", assigned_at: new Date().toISOString() }),
+      });
+      await reload();
+    } catch (e) {
+      setError("Couldn't update: " + e.message);
+    }
+  }
+
+  if (loading) return <div style={{ padding: 40, color: C.textFaint }}>Loading…</div>;
+
+  return (
+    <div>
+      <div style={{ marginBottom: 18 }}>
+        <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: 0 }}>Pending Payments</h2>
+        <div style={{ fontSize: 12, color: C.textFaint, marginTop: 4 }}>Every payment the bot detects lands here first — assign each to where it actually belongs.</div>
+      </div>
+
+      {missing && (
+        <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, color: C.amber, borderRadius: 9, padding: "11px 14px", fontSize: 12.5, marginBottom: 16 }}>
+          The <b>pending_payments</b> table isn't reachable — check Supabase setup.
+        </div>
+      )}
+
+      {pending.length === 0 ? (
+        <div style={{ background: C.surface, border: `1px dashed ${C.border}`, borderRadius: 12, padding: 40, textAlign: "center", color: C.textFaint, fontSize: 14 }}>
+          Nothing pending — every detected payment has been assigned.
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 10, marginBottom: 24 }}>
+          {pending.map((row) => (
+            <div key={row.id} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", color: C.goldBright }}>${Number(row.amount).toLocaleString("en-US", MONEY2)}</div>
+                  <div style={{ fontSize: 12, color: C.textDim, marginTop: 2 }}>{row.payer_name || "Unknown payer"} · {new Date(row.paid_at).toLocaleString()}</div>
+                  <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 2 }}>{row.channel}{row.transaction_id ? ` · Trx ${row.transaction_id}` : ""}</div>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button type="button" onClick={() => openAssign(row)} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>Assign</button>
+                  <button type="button" onClick={() => ignorePending(row)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textFaint, borderRadius: 8, padding: "8px 12px", fontSize: 12, cursor: "pointer" }}>Ignore</button>
+                </div>
+              </div>
+
+              {draft && draft.pendingId === row.id && (
+                <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginTop: 12 }}>
+                  <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+                    {[["consignment", "Consignment"], ["corporate", "Corporate"], ["credit", "Credit Term"], ["online", "Online Sale"]].map(([k, l]) => (
+                      <button key={k} type="button" onClick={() => setDraft({ ...draft, type: k })}
+                        style={{ padding: "7px 12px", fontSize: 11.5, fontWeight: 700, borderRadius: 8, cursor: "pointer",
+                          background: draft.type === k ? C.gold : "none", color: draft.type === k ? "#1A1508" : C.textDim,
+                          border: `1px solid ${draft.type === k ? C.gold : C.border}` }}>
+                        {l}
+                      </button>
+                    ))}
+                  </div>
+
+                  {(draft.type === "consignment" || draft.type === "corporate" || draft.type === "credit") && (
+                    <div style={{ marginBottom: 10 }}>
+                      <label style={{ fontSize: 9, color: C.textFaint }}>Store</label>
+                      <select value={draft.storeId} onChange={(e) => setDraft({ ...draft, storeId: e.target.value })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }}>
+                        <option value="">Select a store…</option>
+                        {(draft.type === "consignment" ? stores : draft.type === "corporate" ? bigcoStores : creditStores).map((s) => (
+                          <option key={s.id} value={s.id}>{s.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {draft.type === "consignment" && (
+                    <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                      <div>
+                        <label style={{ fontSize: 9, color: C.textFaint }}>Product</label>
+                        <select value={draft.product} onChange={(e) => setDraft({ ...draft, product: e.target.value })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13 }}>
+                          {SKUS.map((x) => <option key={x.code} value={x.visitKey}>{x.label}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 9, color: C.textFaint }}>Pieces sold</label>
+                        <input type="number" value={draft.qty} onChange={(e) => setDraft({ ...draft, qty: e.target.value })} placeholder="0" style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: 90 }} />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 9, color: C.textFaint }}>Still owed</label>
+                        <input type="number" value={draft.owed} onChange={(e) => setDraft({ ...draft, owed: e.target.value })} placeholder="0" style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: 90 }} />
+                      </div>
+                    </div>
+                  )}
+
+                  {draft.type === "online" && (
+                    <div style={{ marginBottom: 10 }}>
+                      <label style={{ fontSize: 9, color: C.textFaint }}>Customer / order ref</label>
+                      <input type="text" value={draft.customerName} onChange={(e) => setDraft({ ...draft, customerName: e.target.value })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }} />
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                    <div>
+                      <label style={{ fontSize: 9, color: C.textFaint }}>Date</label>
+                      <input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 9, color: C.textFaint }}>Amount to record</label>
+                      <input type="number" value={draft.paid} onChange={(e) => setDraft({ ...draft, paid: e.target.value })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: 100 }} />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 150 }}>
+                      <label style={{ fontSize: 9, color: C.textFaint }}>Notes</label>
+                      <input type="text" value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }} />
+                    </div>
+                  </div>
+
+                  {error && <div style={{ fontSize: 11.5, color: C.rose, marginBottom: 10 }}>{error}</div>}
+
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button type="button" onClick={submitAssign} disabled={busy} style={{ background: C.emerald, border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, color: "#0A1F14", cursor: "pointer" }}>
+                      {busy ? "Saving…" : "Confirm assignment"}
+                    </button>
+                    <button type="button" onClick={() => { setDraft(null); setError(""); }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "8px 14px", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {assignedRecent.length > 0 && (
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Recently assigned</div>
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "4px 18px" }}>
+            {assignedRecent.map((row) => (
+              <div key={row.id} style={{ display: "flex", justifyContent: "space-between", padding: "9px 0", borderBottom: `1px solid ${C.border}`, fontSize: 12.5 }}>
+                <span style={{ color: C.textDim }}>{row.assigned_note}</span>
+                <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: C.emerald }}>${Number(row.amount).toLocaleString("en-US", MONEY2)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CreditTermPage({ authUser, C, sbFetch, logActivity }) {
   const [stores, setStores] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -4288,6 +4577,7 @@ const NAV = [
     { label: "Corporate Accounts", page: "sales", sub: "consignment", view: "bigco" },
     { label: "Credit Term",        page: "sales", sub: "credit" },
     { label: "Online Sales",       page: "sales", sub: "online" },
+    { label: "Pending Payments",   page: "sales", sub: "pending" },
     { label: "Stores",             page: "stores" },
   ]},
   { name: "Warehouse", items: [
