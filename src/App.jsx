@@ -109,6 +109,14 @@ const MONEY2 = { minimumFractionDigits: 2, maximumFractionDigits: 2 };
 //   name/barcode/unit  defaults for printed documents when the products
 //              table has not been created yet
 // ============================================================================
+const CAMBODIA_PROVINCES = [
+  "Phnom Penh", "Banteay Meanchey", "Battambang", "Kampong Cham", "Kampong Chhnang",
+  "Kampong Speu", "Kampong Thom", "Kampot", "Kandal", "Kep", "Koh Kong", "Kratie",
+  "Mondulkiri", "Oddar Meanchey", "Pailin", "Preah Sihanouk", "Preah Vihear",
+  "Prey Veng", "Pursat", "Ratanakiri", "Siem Reap", "Stung Treng", "Svay Rieng",
+  "Takeo", "Tboung Khmum",
+];
+
 const SKUS = [
   {
     code: "pl", visitKey: "Panty Liner", label: "Panty Liner",
@@ -1232,7 +1240,7 @@ export default function MeraConsignmentApp() {
               </span>
             </div>
             <h1 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 34, margin: "6px 0 0", letterSpacing: "-0.01em" }}>
-              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? "Delivery & Invoices" : page === "stores" ? "Stores" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "sales" ? (salesSubPage === "total" ? "Sales Total" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online Sales" : salesSubPage === "pending" ? "Pending Payments" : "Consignment Operations") : "Consignment Operations"}
+              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? "Delivery & Invoices" : page === "stores" ? "Stores" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "sales" ? (salesSubPage === "total" ? "Sales Total" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online Sales" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : "Consignment Operations") : "Consignment Operations"}
             </h1>
             <div style={{ height: 2, width: 46, background: `linear-gradient(90deg, ${C.gold}, transparent)`, marginTop: 10 }} />
           </div>
@@ -1382,6 +1390,16 @@ export default function MeraConsignmentApp() {
               >
                 Pending Payments
               </button>
+              <button
+                onClick={() => setSalesSubPage("coverage")}
+                style={{
+                  background: "none", border: "none", padding: "6px 2px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginLeft: 14,
+                  color: salesSubPage === "coverage" ? C.gold : C.textFaint,
+                  borderBottom: `2px solid ${salesSubPage === "coverage" ? C.gold : "transparent"}`,
+                }}
+              >
+                Province Coverage
+              </button>
             </div>
             {salesSubPage === "total" ? (
               <SalesTotalPage
@@ -1399,6 +1417,8 @@ export default function MeraConsignmentApp() {
               <OnlineSalesPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             ) : salesSubPage === "pending" ? (
               <PendingPaymentsPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} onCountChange={setPendingPaymentCount} />
+            ) : salesSubPage === "coverage" ? (
+              <ProvinceCoveragePage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             ) : (
         <>
 
@@ -1952,6 +1972,7 @@ function KolPage({ authUser, C, sbFetch, logActivity }) {
   const [showPayHistory, setShowPayHistory] = useState(null);
   const [showPaidBreakdown, setShowPaidBreakdown] = useState(false);
   const [showSpendBreakdown, setShowSpendBreakdown] = useState(false);
+  const [showVideoBreakdown, setShowVideoBreakdown] = useState(false);
   const [editingKol, setEditingKol] = useState(null);
   const [editKolForm, setEditKolForm] = useState(null);
   const [editingVideoId, setEditingVideoId] = useState(null);
@@ -2326,14 +2347,25 @@ function KolPage({ authUser, C, sbFetch, logActivity }) {
     // monthPaid uses enrichedKols (not visibleKols) so a payment made this month to a KOL that's
     // "complete" and hidden under a different finishing month still counts toward cash paid this month.
     const monthPaid = enrichedKols.reduce((a, k) => a + k.monthPaid, 0);
+    // Same reasoning for videos posted: a video posted this month by a KOL who
+    // finished their package and dropped out of the visible list still counts
+    // toward this month's actual content output.
+    const videosThisMonth = enrichedKols.reduce((a, k) => a + k.monthVideos.length, 0);
     // Paid/owed/videos-left are genuinely all-time figures — they must NOT be affected by which
     // month is selected or by completed KOLs being hidden from the visible list for other months.
     const videosLeft = enrichedKols.reduce((a, k) => a + k.videosLeft, 0);
     const totalPaid = enrichedKols.reduce((a, k) => a + k.totalPaid, 0);
     const totalOwed = enrichedKols.reduce((a, k) => a + k.owed, 0);
     const activeKols = visibleKols.length;
-    return { monthSpend, monthPaid, videosLeft, totalPaid, totalOwed, activeKols };
+    return { monthSpend, monthPaid, videosThisMonth, videosLeft, totalPaid, totalOwed, activeKols };
   }, [visibleKols, enrichedKols]);
+
+  const videoBreakdown = useMemo(() => {
+    return enrichedKols
+      .filter((k) => k.monthVideos.length > 0)
+      .map((k) => ({ id: k.id, name: k.name, count: k.monthVideos.length }))
+      .sort((a, b) => b.count - a.count);
+  }, [enrichedKols]);
 
   const spendBreakdown = useMemo(() => {
     return enrichedKols
@@ -2404,6 +2436,15 @@ function KolPage({ authUser, C, sbFetch, logActivity }) {
           <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Paid this month</div>
           <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 22, fontWeight: 600, marginTop: 6, color: C.emerald }}>${totals.monthPaid.toLocaleString("en-US", MONEY2)}</div>
           <div style={{ fontSize: 10, color: C.textFaint, marginTop: 4 }}>cash actually paid out · tap to see by KOL</div>
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowVideoBreakdown(!showVideoBreakdown)}
+          style={{ textAlign: "left", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 18px", cursor: "pointer" }}
+        >
+          <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Videos posted — {monthLabel(selectedMonth)}</div>
+          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 22, fontWeight: 600, marginTop: 6, color: C.text }}>{totals.videosThisMonth}</div>
+          <div style={{ fontSize: 10, color: C.textFaint, marginTop: 4 }}>content output this month · tap to see by KOL</div>
         </button>
         <button
           type="button"
@@ -2535,6 +2576,23 @@ function KolPage({ authUser, C, sbFetch, logActivity }) {
               </div>
             ))}
             {paidBreakdown.length === 0 && <div style={{ fontSize: 12, color: C.textFaint, padding: "9px 4px" }}>No payments logged yet.</div>}
+          </div>
+        </div>
+      )}
+
+      {showVideoBreakdown && (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px", marginBottom: 24 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
+            Videos posted — {monthLabel(selectedMonth)} — by KOL
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            {videoBreakdown.map((k) => (
+              <div key={k.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: `1px solid ${C.border}`, padding: "9px 4px" }}>
+                <span style={{ fontSize: 13, color: C.text }}>{k.name}</span>
+                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 600, color: C.text }}>{k.count} video{k.count === 1 ? "" : "s"}</span>
+              </div>
+            ))}
+            {videoBreakdown.length === 0 && <div style={{ fontSize: 12, color: C.textFaint, padding: "9px 4px" }}>No videos logged for this month.</div>}
           </div>
         </div>
       )}
@@ -2914,6 +2972,145 @@ function KolPage({ authUser, C, sbFetch, logActivity }) {
 // Corporate Accounts. Tracked here only: it never posts to Accounting (no
 // tax declaration for this channel), but it does count as real revenue on
 // Profit & Margin, same principle as the private-expenses log.
+// Province Coverage — a simple, independent lookup: which province has which
+// store carrying Méra, so staff can answer "do you sell in [province]?"
+// immediately. Deliberately not tied to the Stores/Corporate/Credit records,
+// since a contact here doesn't have to already be a formal store account.
+function ProvinceCoveragePage({ authUser, C, sbFetch, logActivity }) {
+  const [loading, setLoading] = useState(true);
+  const [missing, setMissing] = useState(false);
+  const [rows, setRows] = useState([]);
+  const [form, setForm] = useState({ province: CAMBODIA_PROVINCES[0], store_name: "", notes: "" });
+  const [search, setSearch] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function reload() {
+    try {
+      setRows((await sbFetch("province_coverage?select=*&order=province.asc,store_name.asc")) || []);
+      setMissing(false);
+    } catch (e) {
+      setMissing(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => { reload(); }, []);
+
+  async function addRow() {
+    if (!form.store_name.trim()) { setError("Add a store name."); return; }
+    setError("");
+    setBusy(true);
+    try {
+      await sbFetch("province_coverage", {
+        method: "POST",
+        body: JSON.stringify({
+          province: form.province, store_name: form.store_name.trim(), notes: form.notes.trim(),
+          created_by: authUser?.email || "unknown",
+        }),
+      });
+      logActivity?.("Added province coverage", form.store_name.trim(), form.province);
+      setForm({ province: form.province, store_name: "", notes: "" });
+      await reload();
+    } catch (e) {
+      setError("Couldn't save. Run the province_coverage.sql setup if this is the first time.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteRow(id) {
+    if (!window.confirm("Remove this entry?")) return;
+    try {
+      await sbFetch(`province_coverage?id=eq.${id}`, { method: "DELETE" });
+      setRows((prev) => prev.filter((x) => x.id !== id));
+    } catch (e) {
+      setError("Couldn't delete: " + e.message);
+    }
+  }
+
+  const q = search.trim().toLowerCase();
+  const filtered = q
+    ? rows.filter((r) => r.province.toLowerCase().includes(q) || r.store_name.toLowerCase().includes(q) || (r.notes || "").toLowerCase().includes(q))
+    : rows;
+
+  const grouped = useMemo(() => {
+    const by = {};
+    filtered.forEach((r) => { (by[r.province] = by[r.province] || []).push(r); });
+    return Object.entries(by).sort(([a], [b]) => a.localeCompare(b));
+  }, [filtered]);
+
+  if (loading) return <div style={{ padding: 40, color: C.textFaint }}>Loading…</div>;
+
+  return (
+    <div>
+      <div style={{ marginBottom: 18 }}>
+        <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: 0 }}>Province Coverage</h2>
+        <div style={{ fontSize: 12, color: C.textFaint, marginTop: 4 }}>Which province has which store carrying Méra — a quick lookup, not tied to your formal store records.</div>
+      </div>
+
+      {missing && (
+        <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, color: C.amber, borderRadius: 9, padding: "11px 14px", fontSize: 12.5, marginBottom: 16 }}>
+          This needs a one-time setup: create a <b>province_coverage</b> table in Supabase.
+        </div>
+      )}
+
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 18px", marginBottom: 18 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Add a store</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div>
+            <label style={{ fontSize: 9, color: C.textFaint }}>Province</label>
+            <select value={form.province} onChange={(e) => setForm({ ...form, province: e.target.value })} style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13 }}>
+              {CAMBODIA_PROVINCES.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </div>
+          <div style={{ minWidth: 170 }}>
+            <label style={{ fontSize: 9, color: C.textFaint }}>Store name</label>
+            <input type="text" value={form.store_name} onChange={(e) => setForm({ ...form, store_name: e.target.value })} placeholder="e.g. Angkor Mart" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", display: "block" }} />
+          </div>
+          <div style={{ flex: 1, minWidth: 170 }}>
+            <label style={{ fontSize: 9, color: C.textFaint }}>Notes (optional)</label>
+            <input type="text" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="contact, phone, how you found them" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", display: "block" }} />
+          </div>
+          <button type="button" onClick={addRow} disabled={busy} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>
+            {busy ? "Saving…" : "Add"}
+          </button>
+        </div>
+        {error && <div style={{ fontSize: 11.5, color: C.rose, marginTop: 10 }}>{error}</div>}
+      </div>
+
+      <input
+        type="text" value={search} onChange={(e) => setSearch(e.target.value)}
+        placeholder="Search by province, store, or notes…"
+        style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 9, padding: "10px 14px", fontSize: 13, width: "100%", marginBottom: 16, boxSizing: "border-box" }}
+      />
+
+      {grouped.length === 0 ? (
+        <div style={{ background: C.surface, border: `1px dashed ${C.border}`, borderRadius: 12, padding: 30, textAlign: "center", fontSize: 12, color: C.textFaint }}>
+          {rows.length === 0 ? "No coverage logged yet." : "No matches."}
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 14 }}>
+          {grouped.map(([province, entries]) => (
+            <div key={province} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px" }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.goldBright, marginBottom: 8 }}>{province} <span style={{ color: C.textFaint, fontWeight: 400 }}>({entries.length})</span></div>
+              {entries.map((r) => (
+                <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderTop: `1px solid ${C.border}`, gap: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{r.store_name}</div>
+                    {r.notes && <div style={{ fontSize: 11, color: C.textFaint, marginTop: 2 }}>{r.notes}</div>}
+                  </div>
+                  <button type="button" onClick={() => deleteRow(r.id)} style={{ background: "none", border: "none", color: C.textFaint, cursor: "pointer" }}><Trash2 size={14} /></button>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
   const [loading, setLoading] = useState(true);
   const [missing, setMissing] = useState(false);
@@ -4702,6 +4899,7 @@ const NAV = [
     { label: "Credit Term",        page: "sales", sub: "credit" },
     { label: "Online Sales",       page: "sales", sub: "online" },
     { label: "Pending Payments",   page: "sales", sub: "pending" },
+    { label: "Province Coverage",  page: "sales", sub: "coverage" },
     { label: "Stores",             page: "stores" },
   ]},
   { name: "Warehouse", items: [
