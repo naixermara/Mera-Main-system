@@ -1973,6 +1973,7 @@ function KolPage({ authUser, C, sbFetch, logActivity }) {
   const [showPaidBreakdown, setShowPaidBreakdown] = useState(false);
   const [showSpendBreakdown, setShowSpendBreakdown] = useState(false);
   const [showVideoBreakdown, setShowVideoBreakdown] = useState(false);
+  const [videoView, setVideoView] = useState("calendar"); // "calendar" | "list"
   const [editingKol, setEditingKol] = useState(null);
   const [editKolForm, setEditKolForm] = useState(null);
   const [editingVideoId, setEditingVideoId] = useState(null);
@@ -2367,6 +2368,29 @@ function KolPage({ authUser, C, sbFetch, logActivity }) {
       .sort((a, b) => b.count - a.count);
   }, [enrichedKols]);
 
+  // Builds a standard month grid (Sun–Sat), each day carrying the list of
+  // {kolName} entries for every video posted that day, across all KOLs — so
+  // the calendar answers "who posted on which day" at a glance.
+  const videoCalendar = useMemo(() => {
+    const [y, m] = selectedMonth.split("-").map(Number);
+    const firstOfMonth = new Date(y, m - 1, 1);
+    const daysInMonth = new Date(y, m, 0).getDate();
+    const startWeekday = firstOfMonth.getDay(); // 0 = Sunday
+
+    const postsByDay = {};
+    enrichedKols.forEach((k) => {
+      k.monthVideos.forEach((v) => {
+        const day = Number(v.postedDate.slice(8, 10));
+        (postsByDay[day] = postsByDay[day] || []).push(k.name);
+      });
+    });
+
+    const cells = [];
+    for (let i = 0; i < startWeekday; i++) cells.push(null);
+    for (let day = 1; day <= daysInMonth; day++) cells.push({ day, posts: postsByDay[day] || [] });
+    return cells;
+  }, [enrichedKols, selectedMonth]);
+
   const spendBreakdown = useMemo(() => {
     return enrichedKols
       .filter((k) => k.monthSpend > 0 || k.monthPaid > 0)
@@ -2582,18 +2606,59 @@ function KolPage({ authUser, C, sbFetch, logActivity }) {
 
       {showVideoBreakdown && (
         <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px", marginBottom: 24 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
-            Videos posted — {monthLabel(selectedMonth)} — by KOL
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+              Videos posted — {monthLabel(selectedMonth)}
+            </div>
+            <div style={{ display: "flex", gap: 4, background: C.bg2, borderRadius: 8, padding: 3 }}>
+              <button type="button" onClick={() => setVideoView("calendar")} style={{ border: "none", borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", background: videoView === "calendar" ? C.gold : "transparent", color: videoView === "calendar" ? "#1A1508" : C.textFaint }}>Calendar</button>
+              <button type="button" onClick={() => setVideoView("list")} style={{ border: "none", borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", background: videoView === "list" ? C.gold : "transparent", color: videoView === "list" ? "#1A1508" : C.textFaint }}>By KOL</button>
+            </div>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            {videoBreakdown.map((k) => (
-              <div key={k.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: `1px solid ${C.border}`, padding: "9px 4px" }}>
-                <span style={{ fontSize: 13, color: C.text }}>{k.name}</span>
-                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 600, color: C.text }}>{k.count} video{k.count === 1 ? "" : "s"}</span>
+
+          {videoView === "list" ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              {videoBreakdown.map((k) => (
+                <div key={k.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: `1px solid ${C.border}`, padding: "9px 4px" }}>
+                  <span style={{ fontSize: 13, color: C.text }}>{k.name}</span>
+                  <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 600, color: C.text }}>{k.count} video{k.count === 1 ? "" : "s"}</span>
+                </div>
+              ))}
+              {videoBreakdown.length === 0 && <div style={{ fontSize: 12, color: C.textFaint, padding: "9px 4px" }}>No videos logged for this month.</div>}
+            </div>
+          ) : (
+            <div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 4 }}>
+                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
+                  <div key={d} style={{ fontSize: 10, color: C.textFaint, textAlign: "center", fontWeight: 700, padding: "2px 0" }}>{d}</div>
+                ))}
               </div>
-            ))}
-            {videoBreakdown.length === 0 && <div style={{ fontSize: 12, color: C.textFaint, padding: "9px 4px" }}>No videos logged for this month.</div>}
-          </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4 }}>
+                {videoCalendar.map((cell, i) =>
+                  cell === null ? (
+                    <div key={i} />
+                  ) : (
+                    <div
+                      key={i}
+                      style={{
+                        minHeight: 58, borderRadius: 8, padding: "5px 6px",
+                        background: cell.posts.length > 0 ? `${C.gold}14` : C.bg2,
+                        border: `1px solid ${cell.posts.length > 0 ? C.gold + "40" : C.border}`,
+                      }}
+                    >
+                      <div style={{ fontSize: 10.5, color: C.textFaint, marginBottom: 3 }}>{cell.day}</div>
+                      {cell.posts.slice(0, 3).map((name, j) => (
+                        <div key={j} style={{ fontSize: 9.5, color: C.goldBright, lineHeight: 1.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{name}</div>
+                      ))}
+                      {cell.posts.length > 3 && (
+                        <div style={{ fontSize: 9, color: C.textFaint }}>+{cell.posts.length - 3} more</div>
+                      )}
+                    </div>
+                  )
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
