@@ -3044,6 +3044,10 @@ function ProvinceCoveragePage({ authUser, C, sbFetch, logActivity }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [detailRow, setDetailRow] = useState(null);
+  const [editForm, setEditForm] = useState(null);
+  const [editPhotoFile, setEditPhotoFile] = useState(null);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState("");
 
   async function reload() {
     try {
@@ -3108,6 +3112,38 @@ function ProvinceCoveragePage({ authUser, C, sbFetch, logActivity }) {
       setRows((prev) => prev.filter((x) => x.id !== id));
     } catch (e) {
       setError("Couldn't delete: " + e.message);
+    }
+  }
+
+  function startEdit(r) {
+    setEditForm({ ...r });
+    setEditPhotoFile(null);
+    setEditError("");
+  }
+
+  async function saveEdit() {
+    if (!editForm.store_name.trim()) { setEditError("Store name can't be empty."); return; }
+    setEditError("");
+    setEditBusy(true);
+    try {
+      let photo_url = editForm.photo_url;
+      if (editPhotoFile) photo_url = await uploadPhoto(editPhotoFile);
+      await sbFetch(`province_coverage?id=eq.${editForm.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          province: editForm.province, store_name: editForm.store_name.trim(),
+          address: (editForm.address || "").trim(), phone: (editForm.phone || "").trim(),
+          notes: (editForm.notes || "").trim(), photo_url,
+        }),
+      });
+      logActivity?.("Edited province coverage", editForm.store_name.trim(), editForm.province);
+      setEditForm(null);
+      setDetailRow(null);
+      await reload();
+    } catch (e) {
+      setEditError("Couldn't save: " + e.message);
+    } finally {
+      setEditBusy(false);
     }
   }
 
@@ -3234,37 +3270,79 @@ function ProvinceCoveragePage({ authUser, C, sbFetch, logActivity }) {
 
       {detailRow && (
         <div
-          onClick={() => setDetailRow(null)}
+          onClick={() => { setDetailRow(null); setEditForm(null); }}
           style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 20 }}
         >
           <div
             onClick={(e) => e.stopPropagation()}
             style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 24, maxWidth: 420, width: "100%" }}
           >
-            {detailRow.photo_url && (
-              <img
-                src={detailRow.photo_url} alt={detailRow.store_name}
-                style={{ width: "100%", maxHeight: 260, objectFit: "cover", borderRadius: 10, marginBottom: 16, border: `1px solid ${C.border}` }}
-              />
+            {editForm ? (
+              <>
+                <div style={{ fontSize: 11, color: C.textDim, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 14 }}>Edit store</div>
+                <div style={{ marginBottom: 10 }}>
+                  <label style={{ fontSize: 9, color: C.textFaint }}>Province</label>
+                  <select value={editForm.province} onChange={(e) => setEditForm({ ...editForm, province: e.target.value })} style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }}>
+                    {CAMBODIA_PROVINCES.map((p) => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <label style={{ fontSize: 9, color: C.textFaint }}>Store name</label>
+                  <input type="text" value={editForm.store_name} onChange={(e) => setEditForm({ ...editForm, store_name: e.target.value })} style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }} />
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <label style={{ fontSize: 9, color: C.textFaint }}>Address</label>
+                  <input type="text" value={editForm.address || ""} onChange={(e) => setEditForm({ ...editForm, address: e.target.value })} style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }} />
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <label style={{ fontSize: 9, color: C.textFaint }}>Phone</label>
+                  <input type="text" value={editForm.phone || ""} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }} />
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <label style={{ fontSize: 9, color: C.textFaint }}>Notes</label>
+                  <input type="text" value={editForm.notes || ""} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }} />
+                </div>
+                <div style={{ marginBottom: 14 }}>
+                  <label style={{ fontSize: 9, color: C.textFaint }}>Replace photo (optional)</label>
+                  <input type="file" accept="image/*" onChange={(e) => setEditPhotoFile(e.target.files?.[0] || null)} style={{ fontSize: 11.5, color: C.textDim, display: "block" }} />
+                </div>
+                {editError && <div style={{ fontSize: 11.5, color: C.rose, marginBottom: 10 }}>{editError}</div>}
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button type="button" onClick={saveEdit} disabled={editBusy} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "9px 16px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>
+                    {editBusy ? "Saving…" : "Save"}
+                  </button>
+                  <button type="button" onClick={() => setEditForm(null)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "9px 16px", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
+                </div>
+              </>
+            ) : (
+              <>
+                {detailRow.photo_url && (
+                  <img
+                    src={detailRow.photo_url} alt={detailRow.store_name}
+                    style={{ width: "100%", maxHeight: 260, objectFit: "cover", borderRadius: 10, marginBottom: 16, border: `1px solid ${C.border}` }}
+                  />
+                )}
+                <div style={{ fontSize: 11, color: C.goldBright, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{detailRow.province}</div>
+                <div style={{ fontSize: 19, fontWeight: 700, marginBottom: 10 }}>{detailRow.store_name}</div>
+                {detailRow.address && (
+                  <div style={{ fontSize: 13, color: C.textDim, marginBottom: 6 }}>📍 {detailRow.address}</div>
+                )}
+                {detailRow.phone && (
+                  <div style={{ fontSize: 13, color: C.textDim, marginBottom: 6 }}>☎ {detailRow.phone}</div>
+                )}
+                {detailRow.notes && (
+                  <div style={{ fontSize: 12.5, color: C.textFaint, fontStyle: "italic", marginTop: 8, marginBottom: 14 }}>{detailRow.notes}</div>
+                )}
+                <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+                  <button type="button" onClick={() => copyDetails(detailRow)} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "9px 16px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>Copy details</button>
+                  {detailRow.photo_url && (
+                    <a href={detailRow.photo_url} download target="_blank" rel="noreferrer" style={{ background: "none", border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "9px 16px", fontSize: 12.5, textDecoration: "none" }}>Download photo</a>
+                  )}
+                  <button type="button" onClick={() => startEdit(detailRow)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "9px 16px", fontSize: 12.5, cursor: "pointer" }}>Edit</button>
+                  <button type="button" onClick={() => setDetailRow(null)} style={{ background: "none", border: "none", color: C.textFaint, fontSize: 12.5, cursor: "pointer", marginLeft: "auto" }}>Close</button>
+                </div>
+              </>
             )}
-            <div style={{ fontSize: 11, color: C.goldBright, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{detailRow.province}</div>
-            <div style={{ fontSize: 19, fontWeight: 700, marginBottom: 10 }}>{detailRow.store_name}</div>
-            {detailRow.address && (
-              <div style={{ fontSize: 13, color: C.textDim, marginBottom: 6 }}>📍 {detailRow.address}</div>
-            )}
-            {detailRow.phone && (
-              <div style={{ fontSize: 13, color: C.textDim, marginBottom: 6 }}>☎ {detailRow.phone}</div>
-            )}
-            {detailRow.notes && (
-              <div style={{ fontSize: 12.5, color: C.textFaint, fontStyle: "italic", marginTop: 8, marginBottom: 14 }}>{detailRow.notes}</div>
-            )}
-            <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-              <button type="button" onClick={() => copyDetails(detailRow)} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "9px 16px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>Copy details</button>
-              {detailRow.photo_url && (
-                <a href={detailRow.photo_url} download target="_blank" rel="noreferrer" style={{ background: "none", border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "9px 16px", fontSize: 12.5, textDecoration: "none" }}>Download photo</a>
-              )}
-              <button type="button" onClick={() => setDetailRow(null)} style={{ background: "none", border: "none", color: C.textFaint, fontSize: 12.5, cursor: "pointer", marginLeft: "auto" }}>Close</button>
-            </div>
           </div>
         </div>
       )}
