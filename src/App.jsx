@@ -3043,6 +3043,7 @@ function ProvinceCoveragePage({ authUser, C, sbFetch, logActivity }) {
   const [search, setSearch] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [detailRow, setDetailRow] = useState(null);
 
   async function reload() {
     try {
@@ -3199,22 +3200,25 @@ function ProvinceCoveragePage({ authUser, C, sbFetch, logActivity }) {
             <div key={province} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px" }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: C.goldBright, marginBottom: 8 }}>{province} <span style={{ color: C.textFaint, fontWeight: 400 }}>({entries.length})</span></div>
               {entries.map((r) => (
-                <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "10px 0", borderTop: `1px solid ${C.border}`, gap: 12 }}>
-                  <div style={{ display: "flex", gap: 10, flex: 1 }}>
+                <div
+                  key={r.id}
+                  onClick={() => setDetailRow(r)}
+                  style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "10px 0", borderTop: `1px solid ${C.border}`, gap: 12, cursor: "pointer" }}
+                >
+                  <div style={{ display: "flex", gap: 10, flex: 1, minWidth: 0 }}>
                     {r.photo_url && (
                       <img
                         src={r.photo_url} alt={r.store_name}
                         style={{ width: 52, height: 52, borderRadius: 8, objectFit: "cover", border: `1px solid ${C.border}`, flexShrink: 0 }}
                       />
                     )}
-                    <div>
+                    <div style={{ minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 600 }}>{r.store_name}</div>
-                      {r.address && <div style={{ fontSize: 11, color: C.textFaint, marginTop: 2 }}>{r.address}</div>}
+                      {r.address && <div style={{ fontSize: 11, color: C.textFaint, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.address}</div>}
                       {r.phone && <div style={{ fontSize: 11, color: C.textFaint, marginTop: 1 }}>☎ {r.phone}</div>}
-                      {r.notes && <div style={{ fontSize: 11, color: C.textFaint, marginTop: 1, fontStyle: "italic" }}>{r.notes}</div>}
                     </div>
                   </div>
-                  <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
                     <button type="button" onClick={() => copyDetails(r)} title="Copy details to send a customer" style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 7, padding: "5px 9px", fontSize: 10.5, cursor: "pointer" }}>Copy details</button>
                     {r.photo_url && (
                       <a href={r.photo_url} download target="_blank" rel="noreferrer" style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 7, padding: "5px 9px", fontSize: 10.5, textDecoration: "none" }}>Download photo</a>
@@ -3225,6 +3229,43 @@ function ProvinceCoveragePage({ authUser, C, sbFetch, logActivity }) {
               ))}
             </div>
           ))}
+        </div>
+      )}
+
+      {detailRow && (
+        <div
+          onClick={() => setDetailRow(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 20 }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 24, maxWidth: 420, width: "100%" }}
+          >
+            {detailRow.photo_url && (
+              <img
+                src={detailRow.photo_url} alt={detailRow.store_name}
+                style={{ width: "100%", maxHeight: 260, objectFit: "cover", borderRadius: 10, marginBottom: 16, border: `1px solid ${C.border}` }}
+              />
+            )}
+            <div style={{ fontSize: 11, color: C.goldBright, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{detailRow.province}</div>
+            <div style={{ fontSize: 19, fontWeight: 700, marginBottom: 10 }}>{detailRow.store_name}</div>
+            {detailRow.address && (
+              <div style={{ fontSize: 13, color: C.textDim, marginBottom: 6 }}>📍 {detailRow.address}</div>
+            )}
+            {detailRow.phone && (
+              <div style={{ fontSize: 13, color: C.textDim, marginBottom: 6 }}>☎ {detailRow.phone}</div>
+            )}
+            {detailRow.notes && (
+              <div style={{ fontSize: 12.5, color: C.textFaint, fontStyle: "italic", marginTop: 8, marginBottom: 14 }}>{detailRow.notes}</div>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+              <button type="button" onClick={() => copyDetails(detailRow)} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "9px 16px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>Copy details</button>
+              {detailRow.photo_url && (
+                <a href={detailRow.photo_url} download target="_blank" rel="noreferrer" style={{ background: "none", border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "9px 16px", fontSize: 12.5, textDecoration: "none" }}>Download photo</a>
+              )}
+              <button type="button" onClick={() => setDetailRow(null)} style={{ background: "none", border: "none", color: C.textFaint, fontSize: 12.5, cursor: "pointer", marginLeft: "auto" }}>Close</button>
+            </div>
+          </div>
         </div>
       )}
     </div>
