@@ -3038,7 +3038,8 @@ function ProvinceCoveragePage({ authUser, C, sbFetch, logActivity }) {
   const [loading, setLoading] = useState(true);
   const [missing, setMissing] = useState(false);
   const [rows, setRows] = useState([]);
-  const [form, setForm] = useState({ province: CAMBODIA_PROVINCES[0], store_name: "", notes: "" });
+  const [form, setForm] = useState({ province: CAMBODIA_PROVINCES[0], store_name: "", address: "", phone: "", notes: "" });
+  const [photoFile, setPhotoFile] = useState(null);
   const [search, setSearch] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -3055,23 +3056,45 @@ function ProvinceCoveragePage({ authUser, C, sbFetch, logActivity }) {
   }
   useEffect(() => { reload(); }, []);
 
+  // Storage uploads go through Supabase's Storage API directly (not the
+  // PostgREST endpoint sbFetch is built for), so this talks to it raw.
+  async function uploadPhoto(file) {
+    const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+    const path = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const res = await fetch(`${SUPABASE_URL}/storage/v1/object/province-coverage/${path}`, {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${currentAccessToken || SUPABASE_KEY}`,
+        "Content-Type": file.type || "image/jpeg",
+      },
+      body: file,
+    });
+    if (!res.ok) throw new Error("Photo upload failed: " + (await res.text()));
+    return `${SUPABASE_URL}/storage/v1/object/public/province-coverage/${path}`;
+  }
+
   async function addRow() {
     if (!form.store_name.trim()) { setError("Add a store name."); return; }
     setError("");
     setBusy(true);
     try {
+      let photo_url = null;
+      if (photoFile) photo_url = await uploadPhoto(photoFile);
       await sbFetch("province_coverage", {
         method: "POST",
         body: JSON.stringify({
-          province: form.province, store_name: form.store_name.trim(), notes: form.notes.trim(),
-          created_by: authUser?.email || "unknown",
+          province: form.province, store_name: form.store_name.trim(),
+          address: form.address.trim(), phone: form.phone.trim(), notes: form.notes.trim(),
+          photo_url, created_by: authUser?.email || "unknown",
         }),
       });
       logActivity?.("Added province coverage", form.store_name.trim(), form.province);
-      setForm({ province: form.province, store_name: "", notes: "" });
+      setForm({ province: form.province, store_name: "", address: "", phone: "", notes: "" });
+      setPhotoFile(null);
       await reload();
     } catch (e) {
-      setError("Couldn't save. Run the province_coverage.sql setup if this is the first time.");
+      setError("Couldn't save: " + e.message);
     } finally {
       setBusy(false);
     }
@@ -3087,9 +3110,18 @@ function ProvinceCoveragePage({ authUser, C, sbFetch, logActivity }) {
     }
   }
 
+  function copyDetails(r) {
+    const lines = [r.store_name, r.province, r.address, r.phone ? `Tel: ${r.phone}` : ""].filter(Boolean);
+    navigator.clipboard?.writeText(lines.join("\n"));
+  }
+
   const q = search.trim().toLowerCase();
   const filtered = q
-    ? rows.filter((r) => r.province.toLowerCase().includes(q) || r.store_name.toLowerCase().includes(q) || (r.notes || "").toLowerCase().includes(q))
+    ? rows.filter((r) =>
+        r.province.toLowerCase().includes(q) ||
+        r.store_name.toLowerCase().includes(q) ||
+        (r.address || "").toLowerCase().includes(q) ||
+        (r.notes || "").toLowerCase().includes(q))
     : rows;
 
   const grouped = useMemo(() => {
@@ -3115,7 +3147,7 @@ function ProvinceCoveragePage({ authUser, C, sbFetch, logActivity }) {
 
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 18px", marginBottom: 18 }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Add a store</div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 10 }}>
           <div>
             <label style={{ fontSize: 9, color: C.textFaint }}>Province</label>
             <select value={form.province} onChange={(e) => setForm({ ...form, province: e.target.value })} style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13 }}>
@@ -3126,9 +3158,23 @@ function ProvinceCoveragePage({ authUser, C, sbFetch, logActivity }) {
             <label style={{ fontSize: 9, color: C.textFaint }}>Store name</label>
             <input type="text" value={form.store_name} onChange={(e) => setForm({ ...form, store_name: e.target.value })} placeholder="e.g. Angkor Mart" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", display: "block" }} />
           </div>
+          <div>
+            <label style={{ fontSize: 9, color: C.textFaint }}>Phone</label>
+            <input type="text" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="012 345 678" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: 130, display: "block" }} />
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <label style={{ fontSize: 9, color: C.textFaint }}>Address</label>
+            <input type="text" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="street, village/commune" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", display: "block" }} />
+          </div>
           <div style={{ flex: 1, minWidth: 170 }}>
             <label style={{ fontSize: 9, color: C.textFaint }}>Notes (optional)</label>
-            <input type="text" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="contact, phone, how you found them" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", display: "block" }} />
+            <input type="text" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="contact person, how you found them" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", display: "block" }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 9, color: C.textFaint }}>Store photo</label>
+            <input type="file" accept="image/*" onChange={(e) => setPhotoFile(e.target.files?.[0] || null)} style={{ fontSize: 11.5, color: C.textDim, display: "block", maxWidth: 160 }} />
           </div>
           <button type="button" onClick={addRow} disabled={busy} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>
             {busy ? "Saving…" : "Add"}
@@ -3139,7 +3185,7 @@ function ProvinceCoveragePage({ authUser, C, sbFetch, logActivity }) {
 
       <input
         type="text" value={search} onChange={(e) => setSearch(e.target.value)}
-        placeholder="Search by province, store, or notes…"
+        placeholder="Search by province, store, address, or notes…"
         style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 9, padding: "10px 14px", fontSize: 13, width: "100%", marginBottom: 16, boxSizing: "border-box" }}
       />
 
@@ -3153,12 +3199,28 @@ function ProvinceCoveragePage({ authUser, C, sbFetch, logActivity }) {
             <div key={province} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px" }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: C.goldBright, marginBottom: 8 }}>{province} <span style={{ color: C.textFaint, fontWeight: 400 }}>({entries.length})</span></div>
               {entries.map((r) => (
-                <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderTop: `1px solid ${C.border}`, gap: 10 }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 600 }}>{r.store_name}</div>
-                    {r.notes && <div style={{ fontSize: 11, color: C.textFaint, marginTop: 2 }}>{r.notes}</div>}
+                <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "10px 0", borderTop: `1px solid ${C.border}`, gap: 12 }}>
+                  <div style={{ display: "flex", gap: 10, flex: 1 }}>
+                    {r.photo_url && (
+                      <img
+                        src={r.photo_url} alt={r.store_name}
+                        style={{ width: 52, height: 52, borderRadius: 8, objectFit: "cover", border: `1px solid ${C.border}`, flexShrink: 0 }}
+                      />
+                    )}
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>{r.store_name}</div>
+                      {r.address && <div style={{ fontSize: 11, color: C.textFaint, marginTop: 2 }}>{r.address}</div>}
+                      {r.phone && <div style={{ fontSize: 11, color: C.textFaint, marginTop: 1 }}>☎ {r.phone}</div>}
+                      {r.notes && <div style={{ fontSize: 11, color: C.textFaint, marginTop: 1, fontStyle: "italic" }}>{r.notes}</div>}
+                    </div>
                   </div>
-                  <button type="button" onClick={() => deleteRow(r.id)} style={{ background: "none", border: "none", color: C.textFaint, cursor: "pointer" }}><Trash2 size={14} /></button>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+                    <button type="button" onClick={() => copyDetails(r)} title="Copy details to send a customer" style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 7, padding: "5px 9px", fontSize: 10.5, cursor: "pointer" }}>Copy details</button>
+                    {r.photo_url && (
+                      <a href={r.photo_url} download target="_blank" rel="noreferrer" style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 7, padding: "5px 9px", fontSize: 10.5, textDecoration: "none" }}>Download photo</a>
+                    )}
+                    <button type="button" onClick={() => deleteRow(r.id)} style={{ background: "none", border: "none", color: C.textFaint, cursor: "pointer" }}><Trash2 size={14} /></button>
+                  </div>
                 </div>
               ))}
             </div>
