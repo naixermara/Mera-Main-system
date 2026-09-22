@@ -89,6 +89,22 @@ async function verifyToken(token) {
   return res.json();
 }
 
+// There's no background auto-refresh timer for the access token, so a
+// session sitting open for a while can end up sending a stale, expired
+// token — most visible on the Storage API, which checks the JWT's "exp"
+// claim strictly. This forces a fresh token right before anything that
+// can't afford to fail on a stale one (currently: photo uploads).
+async function ensureFreshAccessToken() {
+  const savedRefresh = localStorage.getItem("mera_refresh");
+  if (!savedRefresh) return currentAccessToken;
+  const refreshed = await refreshSession(savedRefresh);
+  if (refreshed && refreshed.access_token) {
+    setAccessToken(refreshed.access_token, refreshed.refresh_token);
+    return refreshed.access_token;
+  }
+  return currentAccessToken;
+}
+
 // Money is shown with thousands separators everywhere: 11765.83 -> 11,765.83
 const MONEY2 = { minimumFractionDigits: 2, maximumFractionDigits: 2 };
 
@@ -3063,14 +3079,17 @@ function ProvinceCoveragePage({ authUser, C, sbFetch, logActivity }) {
 
   // Storage uploads go through Supabase's Storage API directly (not the
   // PostgREST endpoint sbFetch is built for), so this talks to it raw.
+  // Refreshes the token first — Storage checks the JWT's expiry strictly,
+  // so a session that's been open a while can otherwise fail here first.
   async function uploadPhoto(file) {
+    const freshToken = await ensureFreshAccessToken();
     const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
     const path = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
     const res = await fetch(`${SUPABASE_URL}/storage/v1/object/province-coverage/${path}`, {
       method: "POST",
       headers: {
         apikey: SUPABASE_KEY,
-        Authorization: `Bearer ${currentAccessToken || SUPABASE_KEY}`,
+        Authorization: `Bearer ${freshToken || SUPABASE_KEY}`,
         "Content-Type": file.type || "image/jpeg",
       },
       body: file,
