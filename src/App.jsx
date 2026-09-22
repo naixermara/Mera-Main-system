@@ -504,6 +504,46 @@ export default function MeraConsignmentApp() {
     const interval = setInterval(checkPending, 60000);
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
+
+  const [corpPaymentDueCount, setCorpPaymentDueCount] = useState(0);
+
+  // Same idea, for Corporate Accounts' "usual pay day" cash-flow reminders —
+  // counts accounts that are due soon, due today, or overdue, and still owe
+  // money, so the sidebar badge works without opening Corporate Accounts.
+  useEffect(() => {
+    let cancelled = false;
+    async function checkCorpDue() {
+      try {
+        const [storeRows, reportRows] = await Promise.all([
+          sbFetch("bigco_stores?select=id,payment_day,parent_id"),
+          sbFetch("bigco_reports?select=store_id,amount,paid"),
+        ]);
+        const today = new Date();
+        const todayDate = today.getDate();
+        const daysInThisMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+        const outstandingFor = (storeId) => {
+          const rows = (reportRows || []).filter((r) => r.store_id === storeId);
+          return rows.reduce((a, r) => a + (Number(r.amount) || 0) - (Number(r.paid) || 0), 0);
+        };
+        let count = 0;
+        (storeRows || []).forEach((s) => {
+          if (!s.payment_day || s.parent_id) return; // only top-level accounts carry a pay day
+          const branches = (storeRows || []).filter((b) => b.parent_id === s.id);
+          const groupOutstanding = outstandingFor(s.id) + branches.reduce((a, b) => a + outstandingFor(b.id), 0);
+          if (groupOutstanding <= 0) return;
+          const clampedDay = Math.min(s.payment_day, daysInThisMonth);
+          const diff = clampedDay - todayDate;
+          if (diff <= 3) count++; // due soon, due today, or overdue
+        });
+        if (!cancelled) setCorpPaymentDueCount(count);
+      } catch (e) {
+        // columns/table may not exist yet — badge just stays at 0
+      }
+    }
+    checkCorpDue();
+    const interval = setInterval(checkCorpDue, 60000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
   const [toast, setToast] = useState(null); // { message, kind: "success" | "error" }
   const toastTimerRef = useRef(null);
   const notify = useCallback((message, kind = "success") => {
@@ -1234,6 +1274,7 @@ export default function MeraConsignmentApp() {
         mobileOpen={navMobile}
         onCloseMobile={() => setNavMobile(false)}
         pendingCount={pendingPaymentCount}
+        badges={{ "Pending Payments": pendingPaymentCount, "Corporate Accounts": corpPaymentDueCount }}
       />
 
       <div className="mera-shell" style={{ maxWidth: 920, margin: "0 auto", padding: "40px 20px 0" }}>
@@ -6776,7 +6817,7 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
   );
 }
 
-function SideNav({ C, nav, active, openGroup, onOpenGroup, onPick, mobileOpen, onCloseMobile, pendingCount = 0 }) {
+function SideNav({ C, nav, active, openGroup, onOpenGroup, onPick, mobileOpen, onCloseMobile, badges = {} }) {
   const panel = (
     <div style={{ width: 214, flexShrink: 0, background: C.surface, borderRight: `1px solid ${C.border}`, height: "100%", overflowY: "auto", padding: "16px 0 30px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 16px 16px", fontSize: 15, letterSpacing: "0.18em", textTransform: "uppercase", color: C.gold, fontWeight: 700 }}>
@@ -6784,7 +6825,7 @@ function SideNav({ C, nav, active, openGroup, onOpenGroup, onPick, mobileOpen, o
       </div>
       {nav.map((g, gi) => {
         const open = openGroup === gi;
-        const groupHasPending = g.items.some((it) => it.label === "Pending Payments") && pendingCount > 0;
+        const groupBadgeTotal = g.items.reduce((a, it) => a + (badges[it.label] || 0), 0);
         return (
           <div key={g.name} style={{ padding: "0 8px" }}>
             <div
@@ -6793,9 +6834,9 @@ function SideNav({ C, nav, active, openGroup, onOpenGroup, onPick, mobileOpen, o
             >
               <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
                 {g.name}
-                {groupHasPending && !open && (
+                {groupBadgeTotal > 0 && !open && (
                   <span style={{ background: C.rose, color: "#fff", borderRadius: 999, fontSize: 10, fontWeight: 700, padding: "1px 6px", lineHeight: 1.4, fontFamily: "'IBM Plex Mono', monospace" }}>
-                    {pendingCount}
+                    {groupBadgeTotal}
                   </span>
                 )}
               </span>
@@ -6805,7 +6846,7 @@ function SideNav({ C, nav, active, openGroup, onOpenGroup, onPick, mobileOpen, o
               <div style={{ padding: "2px 0 6px" }}>
                 {g.items.map((it) => {
                   const on = active === it.label;
-                  const showBadge = it.label === "Pending Payments" && pendingCount > 0;
+                  const badgeCount = badges[it.label] || 0;
                   return (
                     <div
                       key={it.label}
@@ -6813,9 +6854,9 @@ function SideNav({ C, nav, active, openGroup, onOpenGroup, onPick, mobileOpen, o
                       style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 10px 7px 24px", borderRadius: 7, cursor: "pointer", fontSize: 12.5, fontWeight: on ? 700 : 400, color: on ? "#1A1508" : C.textFaint, background: on ? C.gold : "transparent" }}
                     >
                       <span>{it.label}</span>
-                      {showBadge && (
+                      {badgeCount > 0 && (
                         <span style={{ background: on ? "#1A1508" : C.rose, color: "#fff", borderRadius: 999, fontSize: 10, fontWeight: 700, padding: "1px 6px", marginRight: 4, fontFamily: "'IBM Plex Mono', monospace" }}>
-                          {pendingCount}
+                          {badgeCount}
                         </span>
                       )}
                     </div>
@@ -7794,6 +7835,8 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
           name: s.name,
           notes: s.notes || "",
           parentId: s.parent_id || null,
+          paymentDay: s.payment_day || null,
+          paymentNote: s.payment_note || "",
           reports: reportRows
             .filter((r) => r.store_id === s.id)
             .map((r) => ({
@@ -7872,9 +7915,9 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
     try {
       await sbFetch(`bigco_stores?id=eq.${storeId}`, {
         method: "PATCH",
-        body: JSON.stringify({ name: changes.name, notes: changes.notes, parent_id: changes.parentId ?? null }),
+        body: JSON.stringify({ name: changes.name, notes: changes.notes, parent_id: changes.parentId ?? null, payment_day: changes.paymentDay ?? null, payment_note: changes.paymentNote ?? "" }),
       });
-      setStores((prev) => prev.map((s) => (s.id === storeId ? { ...s, name: changes.name, notes: changes.notes, parentId: changes.parentId ?? null } : s)));
+      setStores((prev) => prev.map((s) => (s.id === storeId ? { ...s, name: changes.name, notes: changes.notes, parentId: changes.parentId ?? null, paymentDay: changes.paymentDay ?? null, paymentNote: changes.paymentNote ?? "" } : s)));
       setSaveError(false);
       return true;
     } catch (e) {
@@ -8006,7 +8049,12 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
 
   const enrichedStores = useMemo(() => {
     if (!stores) return [];
-    return stores.map((sRaw) => {
+    const today = new Date();
+    const todayDate = today.getDate();
+    const daysInThisMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+
+    // First pass: everything that doesn't depend on group totals.
+    const base = stores.map((sRaw) => {
       const s = { ...sRaw, reports: sRaw.reports || [] };
       const monthReports = s.reports.filter((r) => monthKey(r.reportDate) === selectedMonth);
       const monthBilled = monthReports.reduce((a, r) => a + r.amount, 0);
@@ -8024,6 +8072,27 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
       const notedReports = [...s.reports].filter((r) => r.notes && r.notes.trim()).sort((a, b) => a.reportDate.localeCompare(b.reportDate));
       const latestNote = notedReports.length ? notedReports[notedReports.length - 1].notes : "";
       return { ...s, monthBilled, monthCollected, monthOwed, allTimeBilled, allTimeCollected, outstanding, isComplete, completionMonth, reportedThisMonth, latestNote };
+    });
+
+    // Second pass: cash-flow reminder, using the COMBINED outstanding across
+    // an entire group (the account plus all its branches), since most
+    // corporate accounts pay everything in one lump sum rather than branch
+    // by branch. Only a top-level account's own payment day is ever used —
+    // a branch never carries its own separate reminder.
+    return base.map((s) => {
+      if (s.parentId) return { ...s, paymentAlert: null, paymentDaysDiff: null, groupOutstanding: s.outstanding };
+      const branches = base.filter((b) => b.parentId === s.id);
+      const groupOutstanding = s.outstanding + branches.reduce((a, b) => a + b.outstanding, 0);
+      let paymentAlert = null;
+      let paymentDaysDiff = null;
+      if (s.paymentDay && groupOutstanding > 0) {
+        const clampedDay = Math.min(s.paymentDay, daysInThisMonth);
+        paymentDaysDiff = clampedDay - todayDate;
+        if (paymentDaysDiff === 0) paymentAlert = "today";
+        else if (paymentDaysDiff > 0 && paymentDaysDiff <= 3) paymentAlert = "soon";
+        else if (paymentDaysDiff < 0) paymentAlert = "overdue";
+      }
+      return { ...s, paymentAlert, paymentDaysDiff, groupOutstanding };
     });
   }, [stores, selectedMonth]);
 
@@ -8090,6 +8159,12 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
           outstanding: members.reduce((a, m) => a + m.outstanding, 0),
         };
       });
+  }, [enrichedStores]);
+
+  const paymentReminders = useMemo(() => {
+    return enrichedStores
+      .filter((s) => s.paymentAlert)
+      .sort((a, b) => a.paymentDaysDiff - b.paymentDaysDiff);
   }, [enrichedStores]);
 
   const monthOwedBreakdown = useMemo(() => {
@@ -8274,6 +8349,29 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
         </div>
       )}
 
+      {paymentReminders.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+          {paymentReminders.map((s) => {
+            const style =
+              s.paymentAlert === "overdue"
+                ? { bg: C.roseBg, border: C.rose, text: C.rose, label: `${Math.abs(s.paymentDaysDiff)} day${Math.abs(s.paymentDaysDiff) === 1 ? "" : "s"} overdue` }
+                : s.paymentAlert === "today"
+                ? { bg: `${C.amber}20`, border: C.amber, text: C.amber, label: "due today" }
+                : { bg: `${C.gold}10`, border: `${C.gold}60`, text: C.goldBright, label: `due in ${s.paymentDaysDiff} day${s.paymentDaysDiff === 1 ? "" : "s"}` };
+            return (
+              <div key={s.id} style={{ background: style.bg, border: `1px solid ${style.border}`, borderRadius: 12, padding: "11px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                <div>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: style.text }}>{s.name}</span>
+                  <span style={{ fontSize: 12, color: style.text, marginLeft: 8 }}>{style.label} · usually pays on day {s.paymentDay}</span>
+                  {s.paymentNote && <div style={{ fontSize: 11, color: C.textFaint, marginTop: 2 }}>{s.paymentNote}</div>}
+                </div>
+                <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, fontWeight: 700, color: style.text }}>${s.groupOutstanding.toLocaleString("en-US", MONEY2)} owed{enrichedStores.some((c) => c.parentId === s.id) ? " (all branches)" : ""}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {groupRollups.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
           {groupRollups.map((g) => (
@@ -8408,7 +8506,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
                       onClick={(e) => {
                         e.stopPropagation();
                         if (editingStore !== s.id) {
-                          setEditStoreForm({ name: s.name, notes: s.notes, parentId: s.parentId || "" });
+                          setEditStoreForm({ name: s.name, notes: s.notes, parentId: s.parentId || "", paymentDay: s.paymentDay || "", paymentNote: s.paymentNote || "" });
                         }
                         setEditingStore(editingStore === s.id ? null : s.id);
                       }}
@@ -8472,10 +8570,31 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
                           ))}
                         </select>
                       </div>
+                      {!s.parentId && (
+                        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                          <div style={{ width: 130 }}>
+                            <label style={{ fontSize: 9, color: C.textFaint }}>Usual pay day (1–31)</label>
+                            <input type="number" min="1" max="31" value={editStoreForm.paymentDay} onChange={(e) => setEditStoreForm({ ...editStoreForm, paymentDay: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} placeholder="e.g. 25" />
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <label style={{ fontSize: 9, color: C.textFaint }}>Payment note (optional)</label>
+                            <input type="text" value={editStoreForm.paymentNote} onChange={(e) => setEditStoreForm({ ...editStoreForm, paymentNote: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} placeholder="e.g. pays via bank transfer, contact: ..." />
+                          </div>
+                        </div>
+                      )}
+                      {s.parentId && (
+                        <div style={{ fontSize: 10.5, color: C.textFaint, marginBottom: 8, fontStyle: "italic" }}>
+                          Payment day is set on the main account ({enrichedStores.find((p) => p.id === s.parentId)?.name}), since branches usually get paid together in one lump sum.
+                        </div>
+                      )}
                       <button
                         type="button"
                         onClick={async () => {
-                          const ok = await updateBigCoStore(s.id, { name: editStoreForm.name, notes: editStoreForm.notes, parentId: editStoreForm.parentId || null });
+                          const ok = await updateBigCoStore(s.id, {
+                            name: editStoreForm.name, notes: editStoreForm.notes, parentId: editStoreForm.parentId || null,
+                            paymentDay: editStoreForm.paymentDay ? parseInt(editStoreForm.paymentDay, 10) : null,
+                            paymentNote: editStoreForm.paymentNote,
+                          });
                           if (ok) setEditingStore(null);
                         }}
                         style={{ width: "100%", background: C.gold, border: "none", borderRadius: 6, padding: "7px 0", fontSize: 12, fontWeight: 700, color: "#1A1508", cursor: "pointer", marginBottom: 8 }}
