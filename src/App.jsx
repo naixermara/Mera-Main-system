@@ -8561,15 +8561,18 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
                         <label style={{ fontSize: 9, color: C.textFaint }}>Notes</label>
                         <input type="text" value={editStoreForm.notes} onChange={(e) => setEditStoreForm({ ...editStoreForm, notes: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
                       </div>
-                      <div style={{ marginBottom: 8 }}>
-                        <label style={{ fontSize: 9, color: C.textFaint }}>Part of a corporate group</label>
-                        <select value={editStoreForm.parentId} onChange={(e) => setEditStoreForm({ ...editStoreForm, parentId: e.target.value })} style={{ ...miniInputStyle, width: "100%" }}>
-                          <option value="">— Standalone —</option>
-                          {enrichedStores.filter((es) => !es.parentId && es.id !== s.id).map((es) => (
-                            <option key={es.id} value={es.id}>{es.name}</option>
-                          ))}
-                        </select>
-                      </div>
+                      {s.parentId && (
+                        <div style={{ marginBottom: 8 }}>
+                          <label style={{ fontSize: 9, color: C.textFaint }}>Part of a corporate group</label>
+                          <select value={editStoreForm.parentId} onChange={(e) => setEditStoreForm({ ...editStoreForm, parentId: e.target.value })} style={{ ...miniInputStyle, width: "100%" }}>
+                            <option value="">— Standalone —</option>
+                            {enrichedStores.filter((es) => !es.parentId && es.id !== s.id).map((es) => (
+                              <option key={es.id} value={es.id}>{es.name}</option>
+                            ))}
+                          </select>
+                          <div style={{ fontSize: 10, color: C.textFaint, marginTop: 4 }}>Only shown here because this is already a branch — use it to reassign or detach it.</div>
+                        </div>
+                      )}
                       {!s.parentId && (
                         <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                           <div style={{ width: 130 }}>
