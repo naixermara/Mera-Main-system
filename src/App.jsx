@@ -7760,7 +7760,9 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
   const [saveError, setSaveError] = useState(false);
   const [expanded, setExpanded] = useState(null);
   const [showNewStore, setShowNewStore] = useState(false);
-  const [newStoreForm, setNewStoreForm] = useState({ name: "", notes: "" });
+  const [newStoreForm, setNewStoreForm] = useState({ name: "", notes: "", parentId: "" });
+  const [addingBranchTo, setAddingBranchTo] = useState(null);
+  const [branchForm, setBranchForm] = useState({ name: "", notes: "" });
   const [showLogReport, setShowLogReport] = useState(null);
   const [reportForm, setReportForm] = useState({ reportDate: new Date().toISOString().slice(0, 10), invoiceNumber: "", plSold: "", nightSold: "", daySold: "", amount: "", paid: "", notes: "" });
   const [showHistory, setShowHistory] = useState(null);
@@ -7791,6 +7793,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
           id: s.id,
           name: s.name,
           notes: s.notes || "",
+          parentId: s.parent_id || null,
           reports: reportRows
             .filter((r) => r.store_id === s.id)
             .map((r) => ({
@@ -7822,16 +7825,44 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
         body: JSON.stringify({
           name: newStoreForm.name.trim(),
           notes: newStoreForm.notes,
+          parent_id: newStoreForm.parentId || null,
         }),
       });
       setStores((prev) => [
         ...(prev || []),
-        { id: inserted.id, name: inserted.name, notes: inserted.notes || "", reports: [] },
+        { id: inserted.id, name: inserted.name, notes: inserted.notes || "", parentId: inserted.parent_id || null, reports: [] },
       ]);
       setShowNewStore(false);
-      setNewStoreForm({ name: "", notes: "" });
+      setNewStoreForm({ name: "", notes: "", parentId: "" });
       setSaveError(false);
-      logActivity?.("Added Corporate Account store", inserted.name, "");
+      logActivity?.("Added Corporate Account store", inserted.name, newStoreForm.parentId ? `Branch of ${stores.find((s) => s.id === newStoreForm.parentId)?.name || ""}` : "");
+    } catch (e) {
+      setSaveError(true);
+    }
+  }
+
+  // Adding a branch directly from its parent's own card, rather than
+  // picking the parent from a dropdown elsewhere — removes any chance of
+  // selecting the wrong account or a near-duplicate misspelled one.
+  async function addBranch(parentId, parentName) {
+    if (!branchForm.name.trim()) return;
+    try {
+      const [inserted] = await sbFetch("bigco_stores", {
+        method: "POST",
+        body: JSON.stringify({
+          name: branchForm.name.trim(),
+          notes: branchForm.notes,
+          parent_id: parentId,
+        }),
+      });
+      setStores((prev) => [
+        ...(prev || []),
+        { id: inserted.id, name: inserted.name, notes: inserted.notes || "", parentId: inserted.parent_id || null, reports: [] },
+      ]);
+      setAddingBranchTo(null);
+      setBranchForm({ name: "", notes: "" });
+      setSaveError(false);
+      logActivity?.("Added branch", inserted.name, `Branch of ${parentName}`);
     } catch (e) {
       setSaveError(true);
     }
@@ -7841,9 +7872,9 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
     try {
       await sbFetch(`bigco_stores?id=eq.${storeId}`, {
         method: "PATCH",
-        body: JSON.stringify({ name: changes.name, notes: changes.notes }),
+        body: JSON.stringify({ name: changes.name, notes: changes.notes, parent_id: changes.parentId ?? null }),
       });
-      setStores((prev) => prev.map((s) => (s.id === storeId ? { ...s, ...changes } : s)));
+      setStores((prev) => prev.map((s) => (s.id === storeId ? { ...s, name: changes.name, notes: changes.notes, parentId: changes.parentId ?? null } : s)));
       setSaveError(false);
       return true;
     } catch (e) {
@@ -8015,6 +8046,50 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
 
   const owedBreakdown = useMemo(() => {
     return enrichedStores.filter((s) => s.outstanding > 0).sort((a, b) => b.outstanding - a.outstanding);
+  }, [enrichedStores]);
+
+  // Keeps branches directly under their parent in the list, even though
+  // each still renders as its own fully independent card — this is purely
+  // a display order, not a nested structure, so every existing per-store
+  // action (invoice, edit, delete, history) keeps working untouched.
+  const orderedVisibleStores = useMemo(() => {
+    const seen = new Set();
+    const ordered = [];
+    visibleStores.forEach((s) => {
+      if (s.parentId) return; // branches get placed after their parent below
+      ordered.push(s);
+      seen.add(s.id);
+    });
+    visibleStores.forEach((s) => {
+      if (!s.parentId || seen.has(s.id)) return;
+      const parentIdx = ordered.findIndex((x) => x.id === s.parentId);
+      if (parentIdx === -1) { ordered.push(s); seen.add(s.id); return; }
+      let insertAt = parentIdx + 1;
+      while (insertAt < ordered.length && ordered[insertAt].parentId === s.parentId) insertAt++;
+      ordered.splice(insertAt, 0, s);
+      seen.add(s.id);
+    });
+    return ordered;
+  }, [visibleStores]);
+
+  // Combined totals per corporate group (a top-level store plus any
+  // branches tagged to it) — gives the rolled-up view across all of Chip
+  // Mong's branches, say, without merging their separate invoice records.
+  const groupRollups = useMemo(() => {
+    return enrichedStores
+      .filter((s) => !s.parentId && enrichedStores.some((c) => c.parentId === s.id))
+      .map((parent) => {
+        const branches = enrichedStores.filter((c) => c.parentId === parent.id);
+        const members = [parent, ...branches];
+        return {
+          id: parent.id,
+          name: parent.name,
+          branchCount: branches.length,
+          monthBilled: members.reduce((a, m) => a + m.monthBilled, 0),
+          monthOwed: members.reduce((a, m) => a + m.monthOwed, 0),
+          outstanding: members.reduce((a, m) => a + m.outstanding, 0),
+        };
+      });
   }, [enrichedStores]);
 
   const monthOwedBreakdown = useMemo(() => {
@@ -8199,6 +8274,29 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
         </div>
       )}
 
+      {groupRollups.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+          {groupRollups.map((g) => (
+            <div key={g.id} style={{ background: `${C.gold}10`, border: `1px solid ${C.gold}40`, borderRadius: 12, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.goldBright }}>{g.name} — group total <span style={{ color: C.textFaint, fontWeight: 400 }}>({g.branchCount} branch{g.branchCount === 1 ? "" : "es"})</span></div>
+                <div style={{ fontSize: 11, color: C.textFaint, marginTop: 2 }}>Combined across this account and all its branches — each still invoiced separately</div>
+              </div>
+              <div style={{ display: "flex", gap: 18 }}>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 9, color: C.textFaint, textTransform: "uppercase" }}>Billed this month</div>
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, fontWeight: 700 }}>${g.monthBilled.toLocaleString("en-US", MONEY2)}</div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 9, color: C.textFaint, textTransform: "uppercase" }}>Outstanding</div>
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, fontWeight: 700, color: g.outstanding > 0 ? C.rose : C.emerald }}>${g.outstanding.toLocaleString("en-US", MONEY2)}</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {loading ? (
         <div style={{ textAlign: "center", color: C.textFaint, padding: "40px 0" }}>Loading…</div>
       ) : visibleStores.length === 0 ? (
@@ -8208,8 +8306,8 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-          {visibleStores.map((s) => (
-            <div key={s.id} style={{ background: C.surface, border: `1px solid ${selectedIds.has(s.id) ? C.rose : C.border}`, borderRadius: 13, overflow: "hidden" }}>
+          {orderedVisibleStores.map((s) => (
+            <div key={s.id} style={{ background: C.surface, border: `1px solid ${selectedIds.has(s.id) ? C.rose : C.border}`, borderRadius: 13, overflow: "hidden", marginLeft: s.parentId ? 20 : 0 }}>
               <div
                 onClick={() => {
                   if (bulkMode) {
@@ -8235,7 +8333,15 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
                     />
                   )}
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 15 }}>{s.name}</div>
+                    <div style={{ fontWeight: 600, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}>
+                      {s.parentId && <span style={{ color: C.textFaint, fontWeight: 400 }}>↳</span>}
+                      {s.name}
+                      {s.parentId && (
+                        <span style={{ fontSize: 9.5, color: C.goldBright, background: `${C.gold}20`, borderRadius: 999, padding: "2px 8px", fontWeight: 600 }}>
+                          Branch of {enrichedStores.find((p) => p.id === s.parentId)?.name || "?"}
+                        </span>
+                      )}
+                    </div>
                     <div style={{ fontSize: 11, color: C.textFaint }}>
                       {s.reports.length} report{s.reports.length === 1 ? "" : "s"} logged
                       {s.isComplete && <span style={{ color: C.emerald }}> · Completed</span>}
@@ -8296,19 +8402,56 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
                     </button>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (editingStore !== s.id) {
-                        setEditStoreForm({ name: s.name, notes: s.notes });
-                      }
-                      setEditingStore(editingStore === s.id ? null : s.id);
-                    }}
-                    style={{ background: "none", border: "none", padding: 0, color: C.textFaint, fontSize: 11, cursor: "pointer", textDecoration: "underline", textDecorationColor: C.textFaint + "60", textUnderlineOffset: 3, marginBottom: editingStore === s.id ? 8 : 12, display: "block" }}
-                  >
-                    {editingStore === s.id ? "Cancel" : "Edit store details"}
-                  </button>
+                  <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: editingStore === s.id ? 8 : 12 }}>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (editingStore !== s.id) {
+                          setEditStoreForm({ name: s.name, notes: s.notes, parentId: s.parentId || "" });
+                        }
+                        setEditingStore(editingStore === s.id ? null : s.id);
+                      }}
+                      style={{ background: "none", border: "none", padding: 0, color: C.textFaint, fontSize: 11, cursor: "pointer", textDecoration: "underline", textDecorationColor: C.textFaint + "60", textUnderlineOffset: 3 }}
+                    >
+                      {editingStore === s.id ? "Cancel" : "Edit store details"}
+                    </button>
+                    {!s.parentId && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setBranchForm({ name: "", notes: "" });
+                          setAddingBranchTo(addingBranchTo === s.id ? null : s.id);
+                        }}
+                        style={{ background: "none", border: "none", padding: 0, color: C.goldBright, fontSize: 11, cursor: "pointer", textDecoration: "underline", textDecorationColor: C.goldBright + "60", textUnderlineOffset: 3 }}
+                      >
+                        {addingBranchTo === s.id ? "Cancel" : "+ Add branch"}
+                      </button>
+                    )}
+                  </div>
+
+                  {addingBranchTo === s.id && (
+                    <div style={{ background: C.bg2, border: `1px solid ${C.gold}50`, borderRadius: 9, padding: 10, marginBottom: 12 }} onClick={(e) => e.stopPropagation()}>
+                      <div style={{ fontSize: 10.5, color: C.goldBright, marginBottom: 8 }}>New branch of {s.name}</div>
+                      <div style={{ marginBottom: 8 }}>
+                        <label style={{ fontSize: 9, color: C.textFaint }}>Branch name</label>
+                        <input type="text" autoFocus value={branchForm.name} onChange={(e) => setBranchForm({ ...branchForm, name: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} placeholder={`e.g. ${s.name} Riverside`} />
+                      </div>
+                      <div style={{ marginBottom: 8 }}>
+                        <label style={{ fontSize: 9, color: C.textFaint }}>Notes (optional)</label>
+                        <input type="text" value={branchForm.notes} onChange={(e) => setBranchForm({ ...branchForm, notes: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => addBranch(s.id, s.name)}
+                        disabled={!branchForm.name.trim()}
+                        style={{ width: "100%", background: branchForm.name.trim() ? C.gold : C.border, border: "none", borderRadius: 6, padding: "7px 0", fontSize: 12, fontWeight: 700, color: branchForm.name.trim() ? "#1A1508" : C.textFaint, cursor: "pointer" }}
+                      >
+                        Add branch
+                      </button>
+                    </div>
+                  )}
 
                   {editingStore === s.id && (
                     <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 9, padding: 10, marginBottom: 12 }} onClick={(e) => e.stopPropagation()}>
@@ -8320,10 +8463,19 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
                         <label style={{ fontSize: 9, color: C.textFaint }}>Notes</label>
                         <input type="text" value={editStoreForm.notes} onChange={(e) => setEditStoreForm({ ...editStoreForm, notes: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
                       </div>
+                      <div style={{ marginBottom: 8 }}>
+                        <label style={{ fontSize: 9, color: C.textFaint }}>Part of a corporate group</label>
+                        <select value={editStoreForm.parentId} onChange={(e) => setEditStoreForm({ ...editStoreForm, parentId: e.target.value })} style={{ ...miniInputStyle, width: "100%" }}>
+                          <option value="">— Standalone —</option>
+                          {enrichedStores.filter((es) => !es.parentId && es.id !== s.id).map((es) => (
+                            <option key={es.id} value={es.id}>{es.name}</option>
+                          ))}
+                        </select>
+                      </div>
                       <button
                         type="button"
                         onClick={async () => {
-                          const ok = await updateBigCoStore(s.id, { name: editStoreForm.name, notes: editStoreForm.notes });
+                          const ok = await updateBigCoStore(s.id, { name: editStoreForm.name, notes: editStoreForm.notes, parentId: editStoreForm.parentId || null });
                           if (ok) setEditingStore(null);
                         }}
                         style={{ width: "100%", background: C.gold, border: "none", borderRadius: 6, padding: "7px 0", fontSize: 12, fontWeight: 700, color: "#1A1508", cursor: "pointer", marginBottom: 8 }}
@@ -8547,7 +8699,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
               <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase" }}>Store name</label>
               <input type="text" autoFocus value={newStoreForm.name} onChange={(e) => setNewStoreForm({ ...newStoreForm, name: e.target.value })} style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 14, background: C.bg2, color: C.text }} placeholder="e.g. Big Mart Co." />
             </div>
-            <div style={{ marginBottom: 18 }}>
+            <div style={{ marginBottom: 14 }}>
               <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase" }}>Notes (optional)</label>
               <input type="text" value={newStoreForm.notes} onChange={(e) => setNewStoreForm({ ...newStoreForm, notes: e.target.value })} style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 14, background: C.bg2, color: C.text }} placeholder="e.g. contact info" />
             </div>
@@ -8716,6 +8868,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
     storeMode: "existing", // "existing" or "new"
     businessType: "consignment",
     storeId: "",
+    corpGroupId: "", // for Corporate: which group (e.g. Chip Mong) before picking the specific branch
     newStoreName: "",
     newStoreDay: "1", newStoreFirstSent: new Date().toISOString().slice(0, 10),
     newStoreCreditDays: "30",
@@ -8739,7 +8892,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
           sbFetch("sales_invoices?select=*&order=created_at.desc"),
           sbFetch("stores?select=id,name,phone,email,address"),
           sbFetch("credit_stores?select=id,name,phone,email,address"),
-          sbFetch("bigco_stores?select=id,name,phone,email,address"),
+          sbFetch("bigco_stores?select=id,name,phone,email,address,parent_id"),
           sbFetch("salespeople?select=*&order=name.asc"),
         ]);
         setNotes(dnRows || []);
@@ -9487,6 +9640,54 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                 </button>
               </div>
               {dnForm.storeMode === "existing" ? (
+                dnForm.businessType === "corporate" ? (
+                  <>
+                    <select
+                      value={dnForm.corpGroupId}
+                      onChange={(e) => {
+                        const groupId = e.target.value;
+                        const hasBranches = bigcoStores.some((b) => b.parent_id === groupId);
+                        // A group with no branches selects itself directly — no pointless second step.
+                        const selected = hasBranches ? null : bigcoStores.find((s) => s.id === groupId);
+                        setDnForm({
+                          ...dnForm,
+                          corpGroupId: groupId,
+                          storeId: hasBranches ? "" : groupId,
+                          customerPhone: selected?.phone || "",
+                          customerEmail: selected?.email || "",
+                          customerAddress: selected?.address || "",
+                        });
+                      }}
+                      style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 14, background: C.bg2, color: C.text, marginBottom: bigcoStores.some((b) => b.parent_id === dnForm.corpGroupId) ? 8 : 0 }}
+                    >
+                      <option value="">Select a corporate account…</option>
+                      {bigcoStores.filter((s) => !s.parent_id).map((s) => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                    {dnForm.corpGroupId && bigcoStores.some((b) => b.parent_id === dnForm.corpGroupId) && (
+                      <select
+                        value={dnForm.storeId}
+                        onChange={(e) => {
+                          const selected = bigcoStores.find((s) => s.id === e.target.value);
+                          setDnForm({
+                            ...dnForm,
+                            storeId: e.target.value,
+                            customerPhone: selected?.phone || "",
+                            customerEmail: selected?.email || "",
+                            customerAddress: selected?.address || "",
+                          });
+                        }}
+                        style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 14, background: C.bg2, color: C.text }}
+                      >
+                        <option value="">Select which branch…</option>
+                        {bigcoStores.filter((s) => s.parent_id === dnForm.corpGroupId).map((s) => (
+                          <option key={s.id} value={s.id}>{s.name}</option>
+                        ))}
+                      </select>
+                    )}
+                  </>
+                ) : (
                 <select
                   value={dnForm.storeId}
                   onChange={(e) => {
@@ -9506,6 +9707,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                     <option key={s.id} value={s.id}>{s.name}</option>
                   ))}
                 </select>
+                )
               ) : (
                 <div>
                   <input
