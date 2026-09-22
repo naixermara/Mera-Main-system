@@ -133,6 +133,12 @@ const CAMBODIA_PROVINCES = [
   "Takeo", "Tboung Khmum",
 ];
 
+const PHNOM_PENH_DISTRICTS = [
+  "Chamkar Mon", "Doun Penh", "Prampir Meakkakra", "Tuol Kouk", "Dangkao",
+  "Mean Chey", "Russey Keo", "Sen Sok", "Pou Senchey", "Chbar Ampov",
+  "Chroy Changva", "Prek Pnov", "Boeng Keng Kang", "Kamboul",
+];
+
 const SKUS = [
   {
     code: "pl", visitKey: "Panty Liner", label: "Panty Liner",
@@ -554,7 +560,7 @@ export default function MeraConsignmentApp() {
   const [activityEntries, setActivityEntries] = useState(null);
   const [activityLoading, setActivityLoading] = useState(false);
   const [newStoreForm, setNewStoreForm] = useState({
-    name: "", day: "", firstSent: todayStr(),
+    name: "", day: "", firstSent: todayStr(), zoneDistrict: "",
     ...Object.fromEntries(SKUS.flatMap((x) => [[x.initKey, ""], [x.priceKey, ""]])),
   });
   const [logForm, setLogForm] = useState(emptyLogForm);
@@ -635,6 +641,8 @@ export default function MeraConsignmentApp() {
           day: r.day,
           name: r.name,
           firstSent: r.first_sent,
+          zoneProvince: r.zone_province || null,
+          zoneDistrict: r.zone_district || null,
           ...Object.fromEntries(SKUS.flatMap((x) => [
             [x.initKey, r[x.initCol]],
             [x.priceKey, Number(r[x.priceCol] || 0)],
@@ -806,6 +814,8 @@ export default function MeraConsignmentApp() {
           day: newStore.day,
           name: newStore.name,
           first_sent: newStore.firstSent,
+          zone_province: newStore.zoneProvince || null,
+          zone_district: newStore.zoneDistrict || null,
           ...Object.fromEntries(SKUS.flatMap((x) => [
             [x.initCol, newStore[x.initKey]],
             [x.priceCol, newStore[x.priceKey]],
@@ -819,6 +829,8 @@ export default function MeraConsignmentApp() {
           day: inserted.day,
           name: inserted.name,
           firstSent: inserted.first_sent,
+          zoneProvince: inserted.zone_province || null,
+          zoneDistrict: inserted.zone_district || null,
           ...Object.fromEntries(SKUS.flatMap((x) => [
             [x.initKey, inserted[x.initCol]],
             [x.priceKey, Number(inserted[x.priceCol] || 0)],
@@ -878,6 +890,8 @@ export default function MeraConsignmentApp() {
         body: JSON.stringify({
           day: details.day,
           first_sent: details.firstSent,
+          zone_province: details.zoneProvince ?? null,
+          zone_district: details.zoneDistrict ?? null,
           pl_initial: details.pl,
           night_initial: details.night,
           day_initial: details.dayp,
@@ -1033,6 +1047,8 @@ export default function MeraConsignmentApp() {
       name: newStoreForm.name.trim(),
       day: parseInt(newStoreForm.day, 10),
       firstSent: newStoreForm.firstSent,
+      zoneProvince: newStoreForm.zoneDistrict ? "Phnom Penh" : null,
+      zoneDistrict: newStoreForm.zoneDistrict || null,
       ...Object.fromEntries(SKUS.flatMap((x) => [
         [x.initKey, parseFloat(newStoreForm[x.initKey]) || 0],
         [x.priceKey, parseFloat(newStoreForm[x.priceKey]) || 0],
@@ -1897,6 +1913,17 @@ export default function MeraConsignmentApp() {
                 <input type="date" value={newStoreForm.firstSent} onChange={(e) => setNewStoreForm({ ...newStoreForm, firstSent: e.target.value })} style={inputStyle} />
               </Field>
             </div>
+
+            <Field label="District (Phnom Penh)">
+              <select
+                value={newStoreForm.zoneDistrict}
+                onChange={(e) => setNewStoreForm({ ...newStoreForm, zoneDistrict: e.target.value })}
+                style={inputStyle}
+              >
+                <option value="">— Not set —</option>
+                {PHNOM_PENH_DISTRICTS.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </Field>
 
             <div style={{ marginBottom: 14 }}>
               <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.03em" }}>
@@ -11094,6 +11121,7 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
             <div style={{ fontSize: 11, color: C.textFaint }}>
               Day {store.day} · first sent {fmtDate(store.firstSent)}
               {store.salesperson && <> · <span style={{ color: C.gold }}>{store.salesperson}</span></>}
+              {store.zoneDistrict && <> · <span style={{ color: C.goldBright }}>{store.zoneDistrict}</span></>}
             </div>
           </div>
         </div>
@@ -11211,6 +11239,7 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
                 setDetailsForm({
                   day: store.day,
                   firstSent: store.firstSent,
+                  zoneDistrict: store.zoneDistrict || "",
                   ...Object.fromEntries(SKUS.map((x) => [x.initKey, (store.products.find((pp) => pp.initKey === x.initKey) || {}).init])),
                   salesperson: store.salesperson || "",
                 });
@@ -11282,6 +11311,17 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
                 <label style={{ fontSize: 9, color: C.textFaint }}>First sent date</label>
                 <input type="date" value={detailsForm.firstSent} onChange={(e) => setDetailsForm({ ...detailsForm, firstSent: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
               </div>
+              <div style={{ marginBottom: 8 }}>
+                <label style={{ fontSize: 9, color: C.textFaint }}>District (Phnom Penh)</label>
+                <select
+                  value={detailsForm.zoneDistrict}
+                  onChange={(e) => setDetailsForm({ ...detailsForm, zoneDistrict: e.target.value })}
+                  style={{ ...miniInputStyle, width: "100%" }}
+                >
+                  <option value="">— Not set —</option>
+                  {PHNOM_PENH_DISTRICTS.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </div>
               <div style={{ fontSize: 9, color: C.textFaint, marginBottom: 4 }}>Opening stock (ដើមគ្រា)</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(88px, 1fr))", gap: 6, marginBottom: 8 }}>
                 {SKUS.map((x) => (
@@ -11298,6 +11338,8 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
                   const ok = await onUpdateStoreDetails(store.id, {
                     day: parseInt(detailsForm.day, 10) || store.day,
                     firstSent: detailsForm.firstSent,
+                    zoneProvince: detailsForm.zoneDistrict ? "Phnom Penh" : null,
+                    zoneDistrict: detailsForm.zoneDistrict || null,
                     ...Object.fromEntries(SKUS.map((x) => [x.initKey, parseFloat(detailsForm[x.initKey]) || 0])),
                     salesperson: detailsForm.salesperson || "",
                   });
