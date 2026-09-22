@@ -3660,7 +3660,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
       paid: String(row.amount),
       owed: "0",
       customerName: row.payer_name || "",
-      notes: `ABA ${row.transaction_id || ""}`.trim(),
+      notes: [row.remark, `ABA ${row.transaction_id || ""}`].filter(Boolean).join(" — ").trim(),
     });
   }
 
@@ -3781,6 +3781,9 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
                 <div>
                   <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", color: C.goldBright }}>${Number(row.amount).toLocaleString("en-US", MONEY2)}</div>
                   <div style={{ fontSize: 12, color: C.textDim, marginTop: 2 }}>{row.payer_name || "Unknown payer"} · {new Date(row.paid_at).toLocaleString()}</div>
+                  {row.remark && (
+                    <div style={{ fontSize: 11.5, color: C.emerald, marginTop: 2, fontStyle: "italic" }}>Remark: {row.remark}</div>
+                  )}
                   <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 2 }}>{row.channel}{row.transaction_id ? ` · Trx ${row.transaction_id}` : ""}</div>
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
