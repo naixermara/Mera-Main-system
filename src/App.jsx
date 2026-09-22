@@ -71,6 +71,19 @@ async function signIn(email, password) {
   return data;
 }
 
+// Claims the next number in a document series (invoices, delivery notes)
+// atomically at the database level — see the `claim_next_number` Postgres
+// function. This must only ever be called at the moment a document is
+// actually being saved, never when a form merely opens, or numbers get
+// silently burned every time someone opens-then-cancels a form.
+async function claimNextNumber(seriesKey) {
+  const result = await sbFetch("rpc/claim_next_number", {
+    method: "POST",
+    body: JSON.stringify({ p_series_key: seriesKey }),
+  });
+  return typeof result === "number" ? result : Array.isArray(result) ? result[0] : Number(result);
+}
+
 async function refreshSession(refreshToken) {
   const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
     method: "POST",
@@ -9028,6 +9041,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
     issuedDate: new Date().toISOString().slice(0, 10),
     saleDate: new Date().toISOString().slice(0, 10),
     issuedBy: "", saleRep: "", paymentMethod: "",
+    autoInvoice: false, // "Also generate the invoice right after" shortcut
     ...Object.fromEntries(SKUS.flatMap((x) => [[x.formQty, ""], [x.formPrice, ""]])),
     notes: "",
   };
@@ -9187,6 +9201,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
   }
 
   async function createDeliveryNote() {
+    const shouldAutoInvoice = dnForm.autoInvoice;
     try {
       let storeId = dnForm.storeId;
       let storeName = "";
@@ -9215,7 +9230,15 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
         }
       }
 
-      const dnNumber = dnForm.dnNumber.trim() || nextDNNumber();
+      // Only claims a real number from the database right here, at the
+      // moment of actually saving — never earlier, so cancelling this form
+      // never burns a number that was only ever previewed.
+      let dnNumber = dnForm.dnNumber.trim();
+      if (!dnNumber) {
+        const year = new Date().getFullYear();
+        const n = await claimNextNumber(`delivery-note-${year}`);
+        dnNumber = `CH${year}-${String(n).padStart(8, "0")}`;
+      }
       const [inserted] = await sbFetch("delivery_notes", {
         method: "POST",
         body: JSON.stringify({
@@ -9256,9 +9279,18 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
         ));
       }
       logActivity?.("Created delivery note", storeName, inserted.dn_number);
+      // The "also generate the invoice right after" shortcut — jumps
+      // straight into step 2 instead of leaving her to remember to come
+      // back for it.
+      if (shouldAutoInvoice) setGenInvoiceFor(inserted);
       return true;
     } catch (e) {
-      setSaveError(true);
+      const msg = String(e.message || "");
+      setSaveError(
+        msg.includes("delivery_notes_dn_number_key")
+          ? `That DN number is already used by another delivery note — pick a different one, or leave it blank to auto-assign.`
+          : true
+      );
       return false;
     }
   }
@@ -9366,10 +9398,9 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 22, marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 22, marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
         <div>
           <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: 0 }}>Delivery &amp; Invoices</h2>
-          <div style={{ fontSize: 12, color: C.textFaint, marginTop: 4 }}>Create a delivery note first, then generate the matching invoice from it</div>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           {selectMode && selectedKeys.size > 0 && (
@@ -9400,13 +9431,26 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
             {selectMode ? "Cancel" : "Select"}
           </button>
           <button
-            onClick={() => { setDnForm({ ...emptyDNForm, dnNumber: nextDNNumber(), orderNo: nextOrderNo() }); setShowNewDN(true); }}
+            onClick={() => { setDnForm({ ...emptyDNForm, dnNumber: "", orderNo: nextOrderNo() }); setShowNewDN(true); }}
             className="primarybtn"
             style={{ background: `linear-gradient(135deg, ${C.goldBright}, ${C.gold})`, color: "#1A1508", border: "none", borderRadius: 10, padding: "12px 20px", fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", gap: 7 }}
           >
             <Plus size={16} /> New delivery note
           </button>
         </div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 18, background: `${C.gold}0c`, border: `1px solid ${C.gold}35`, borderRadius: 10, padding: "10px 16px", marginBottom: 16, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ background: C.gold, color: "#1A1508", borderRadius: 999, width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>1</span>
+          <span style={{ fontSize: 12.5, color: C.text }}>Create the <b>Delivery Note</b> — goods leave the warehouse</span>
+        </div>
+        <span style={{ color: C.textFaint, fontSize: 14 }}>→</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ background: C.gold, color: "#1A1508", borderRadius: 999, width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>2</span>
+          <span style={{ fontSize: 12.5, color: C.text }}>Then <b>Generate invoice</b> from it — the actual bill</span>
+        </div>
+        <span style={{ fontSize: 11, color: C.textFaint, marginLeft: "auto" }}>Tip: check "Also generate the invoice right after" below to do both in one go.</span>
       </div>
 
       {/* Warehouse stock — lives here because this is where stock goes out. */}
@@ -9630,7 +9674,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
 
       {saveError && (
         <div style={{ background: C.roseBg, color: C.rose, padding: "10px 14px", borderRadius: 8, fontSize: 13, marginBottom: 16 }}>
-          Couldn't save — try again.
+          {typeof saveError === "string" ? saveError : "Couldn't save — try again."}
         </div>
       )}
 
@@ -9741,8 +9785,12 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                 type="text"
                 value={dnForm.dnNumber}
                 onChange={(e) => setDnForm({ ...dnForm, dnNumber: e.target.value })}
+                placeholder="Leave blank to auto-assign the next number when you save"
                 style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 15, fontWeight: 700, background: C.surface, color: C.text, fontFamily: "'IBM Plex Mono', monospace" }}
               />
+              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 5 }}>
+                Leaving this blank is the safe default — the real number is claimed only when you actually save, so nothing gets skipped if you cancel this form.
+              </div>
             </div>
 
             <div style={{ marginBottom: 14 }}>
@@ -10019,6 +10067,10 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                 )}
               </div>
             )}
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.textDim, marginBottom: 12, cursor: "pointer" }}>
+              <input type="checkbox" checked={dnForm.autoInvoice} onChange={(e) => setDnForm({ ...dnForm, autoInvoice: e.target.checked })} />
+              Also generate the invoice right after — does both steps in one go
+            </label>
             <button
               onClick={createDeliveryNote}
               disabled={dnForm.storeMode === "existing" ? !dnForm.storeId : !dnForm.newStoreName.trim()}
@@ -10091,11 +10143,16 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
   async function handleCreate() {
     setSaving(true);
     try {
-      const invoiceNumber = invoiceType === "consignment"
-        ? nextNumber("CH", invoices.filter((i) => i.invoice_type === "consignment"), "invoice_number")
-        : invoiceType === "tax"
-        ? nextNumber("INV", invoices.filter((i) => i.invoice_type === "tax"), "invoice_number")
-        : nextNumber("B", invoices.filter((i) => i.invoice_type === "commercial"), "invoice_number");
+      // Claimed atomically from the database, right at the moment of
+      // saving — never computed from how many invoices happen to be loaded
+      // in this browser, which is what allowed duplicates before.
+      const year = new Date().getFullYear();
+      const seriesKey = invoiceType === "consignment" ? `invoice-consignment-${year}`
+        : invoiceType === "tax" ? `invoice-tax-${year}`
+        : `invoice-commercial-${year}`;
+      const prefix = invoiceType === "consignment" ? "CH" : invoiceType === "tax" ? "INV" : "B";
+      const n = await claimNextNumber(seriesKey);
+      const invoiceNumber = `${prefix}${year}-${String(n).padStart(4, "0")}`;
 
       const [inserted] = await sbFetch("sales_invoices", {
         method: "POST",
