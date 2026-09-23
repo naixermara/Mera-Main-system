@@ -5623,7 +5623,11 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
         entryId = head.id || null;
       }
       const isBill = kindKey === "purchase" || kindKey === "preturn";
-      const subtotal = isBill ? lineRows.reduce((a, r) => a + pnum(r.amount), 0) : pnum(form.amount);
+      // Purchase Order now also takes product lines (so you can record
+      // exactly what you ordered), but it's still not a bill — no VAT, and
+      // the subtotal is just the sum of what you typed, not "the books."
+      const hasLines = isBill || kindKey === "po";
+      const subtotal = hasLines ? lineRows.reduce((a, r) => a + pnum(r.amount), 0) : pnum(form.amount);
       const vat = isBill ? pnum(form.vatAmount) : 0;
       const [doc] = await sbFetch("purchase_docs", {
         method: "POST",
@@ -6836,6 +6840,9 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
   const [showDocs, setShowDocs] = useState(true);
 
   const isBill = selected === "purchase" || selected === "preturn";
+  // Purchase Order gets the same product-line table as a real bill (so you
+  // can specify what you ordered), just without VAT or a ledger entry.
+  const hasLines = isBill || selected === "po";
   const needsCash = selected === "vdeposit" || selected === "vpayment" || selected === "vrefund";
   const cashAccounts = accounts.filter((a) => a.is_cash && a.active);
   const costAccounts = accounts.filter((a) => (a.type === "expense" || a.type === "asset") && a.active);
@@ -6844,7 +6851,7 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
   const subtotal = rows.reduce((a, r) => a + (parseFloat(r.amount) || 0), 0);
   const vatAuto = isBill ? subtotal * ((parseFloat(form.vatRate) || 0) / 100) : 0;
   const vatUsed = form.vatAmount === "" ? vatAuto : parseFloat(form.vatAmount) || 0;
-  const grand = isBill ? subtotal + vatUsed : parseFloat(form.amount) || 0;
+  const grand = hasLines ? subtotal + vatUsed : parseFloat(form.amount) || 0;
 
   function setRow(i, patch) {
     setRows((prev) => prev.map((r, j) => {
@@ -6998,8 +7005,8 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
             </div>
           )}
 
-          {/* purchase and purchase return: line items */}
-          {isBill && (
+          {/* purchase, purchase return, and now purchase order too: line items */}
+          {hasLines && (
             <>
               <div style={{ fontSize: 10, color: C.textFaint, marginBottom: 6 }}>
                 Lines. Pick a product to have the boxes counted into your warehouse; leave it blank for services, freight or anything not stocked.
@@ -7030,7 +7037,7 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
                     <input inputMode="decimal" value={r.amount} onChange={(e) => setRow(i, { amount: e.target.value })} placeholder="0.00" style={{ ...inp, textAlign: "right" }} />
                   </div>
                   <div>
-                    {i === 0 && <label style={lbl}>Goes to account</label>}
+                    {i === 0 && <label style={lbl}>Goes to account{selected === "po" ? " (optional)" : ""}</label>}
                     <select value={r.account_id} onChange={(e) => setRow(i, { account_id: e.target.value })} style={inp}>
                       <option value="">Choose…</option>
                       {costAccounts.map((a) => <option key={a.id} value={a.id}>{a.code} · {a.name}</option>)}
@@ -7047,18 +7054,22 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
 
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 12, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
                 <div><label style={lbl}>Sub-total</label><div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, padding: "8px 0" }}>{money(subtotal)}</div></div>
-                <div><label style={lbl}>VAT %</label><input inputMode="decimal" value={form.vatRate} onChange={(e) => setForm({ ...form, vatRate: e.target.value, vatAmount: "" })} style={{ ...inp, textAlign: "right" }} /></div>
-                <div>
-                  <label style={lbl}>VAT $ (reclaimable)</label>
-                  <input inputMode="decimal" value={form.vatAmount === "" ? vatAuto.toFixed(2) : form.vatAmount} onChange={(e) => setForm({ ...form, vatAmount: e.target.value })} style={{ ...inp, textAlign: "right" }} />
-                </div>
+                {isBill && (
+                  <>
+                    <div><label style={lbl}>VAT %</label><input inputMode="decimal" value={form.vatRate} onChange={(e) => setForm({ ...form, vatRate: e.target.value, vatAmount: "" })} style={{ ...inp, textAlign: "right" }} /></div>
+                    <div>
+                      <label style={lbl}>VAT $ (reclaimable)</label>
+                      <input inputMode="decimal" value={form.vatAmount === "" ? vatAuto.toFixed(2) : form.vatAmount} onChange={(e) => setForm({ ...form, vatAmount: e.target.value })} style={{ ...inp, textAlign: "right" }} />
+                    </div>
+                  </>
+                )}
                 <div><label style={lbl}>Total</label><div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 16, fontWeight: 700, color: C.gold, padding: "8px 0" }}>{money(grand)}</div></div>
               </div>
             </>
           )}
 
           {/* deposit, payment, refund: a single amount */}
-          {!isBill && (
+          {!hasLines && (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 12 }}>
               <div><label style={lbl}>Amount $</label><input inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0.00" style={{ ...inp, textAlign: "right" }} /></div>
               {needsCash && (
