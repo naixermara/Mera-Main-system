@@ -10886,14 +10886,14 @@ function SingleDocument({ d, isDN, pageBreak, catalog }) {
 
         {!isDN && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", borderTop: "1px solid #ccc", paddingTop: 10 }}>
-            <div style={{ textAlign: "center", flexShrink: 0 }}>
-              <img src={ABA_QR_CODE} alt="Scan to pay via ABA PAY" style={{ width: 80, height: 80, objectFit: "contain" }} />
-              <div style={{ fontSize: 8.5, color: "#333", marginTop: 2 }}>Scan to pay</div>
-            </div>
             <div>
               <div style={{ fontWeight: 700, fontSize: 13 }}>ABA PAY</div>
               <div style={{ fontSize: 10.5 }}>CHOUMHEAN TRADING CO., LTD.</div>
               <div style={{ fontSize: 10.5 }}>Account number: 555 666 798</div>
+              <div style={{ display: "inline-block", textAlign: "center", marginTop: 6 }}>
+                <img src={ABA_QR_CODE} alt="Scan to pay via ABA PAY" style={{ width: 80, height: 80, objectFit: "contain", display: "block" }} />
+                <div style={{ fontSize: 8.5, color: "#333", marginTop: 2 }}>Scan to pay</div>
+              </div>
             </div>
             <div style={{ textAlign: "right", fontSize: 10.5 }}>
               <div>081 882 982</div>
