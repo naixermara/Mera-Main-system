@@ -100,6 +100,20 @@ async function serverLogout(token) {
   }
 }
 
+function loadSavedNav() {
+  try {
+    const raw = localStorage.getItem("mera_nav_state");
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function groupIndexForLabel(label) {
+  const idx = NAV.findIndex((g) => g.items.some((it) => it.label === label));
+  return idx === -1 ? 1 : idx;
+}
+
 async function refreshSession(refreshToken) {
   const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
     method: "POST",
@@ -486,19 +500,32 @@ export default function MeraConsignmentApp() {
   const canSeePayroll = PAYROLL_EMAILS.includes(String(authUser?.email || "").toLowerCase());
   const canSeeAccounting = ACCOUNTING_EMAILS.includes(String(authUser?.email || "").toLowerCase());
 
-  const [page, setPage] = useState("sales");
+  const [page, setPage] = useState(() => loadSavedNav()?.page || "sales");
   // Set when "+ New delivery note" is pressed on a consignment store. Delivery &
   // Invoices reads it once on open to pre-fill a delivery note for that
   // store, then clears it so it doesn't fire again on the next visit.
   const [stockForStore, setStockForStore] = useState(null);
-  const [salesSubPage, setSalesSubPage] = useState("consignment");
+  const [salesSubPage, setSalesSubPage] = useState(() => loadSavedNav()?.salesSubPage || "consignment");
   // Sidebar. navPick is the label of the item showing, so the sidebar can
   // highlight it; childTab is handed to a page that has its own inner tabs.
-  const [navGroup, setNavGroup] = useState(1);
-  const [navPick, setNavPick] = useState("Consignment");
-  const [childTab, setChildTab] = useState(null);
+  const [navPick, setNavPick] = useState(() => loadSavedNav()?.navPick || "Consignment");
+  const [navGroup, setNavGroup] = useState(() => groupIndexForLabel(loadSavedNav()?.navPick || "Consignment"));
+  const [childTab, setChildTab] = useState(() => loadSavedNav()?.childTab || null);
   const [navMobile, setNavMobile] = useState(false);
-  const [consignmentSubView, setConsignmentSubView] = useState("regular");
+  const [consignmentSubView, setConsignmentSubView] = useState(() => loadSavedNav()?.consignmentSubView || "regular");
+
+  // Remembers which page/tab was open, purely so a browser refresh lands
+  // back where you were instead of resetting to the default view. This is
+  // just a UI convenience — it never affects what data loads or who's
+  // logged in, and covers every way this state can change (sidebar clicks,
+  // in-page tab buttons, everything), not just one navigation function.
+  useEffect(() => {
+    try {
+      localStorage.setItem("mera_nav_state", JSON.stringify({ page, salesSubPage, navPick, childTab, consignmentSubView }));
+    } catch (e) {
+      // best-effort — a refresh just lands on the default view instead
+    }
+  }, [page, salesSubPage, navPick, childTab, consignmentSubView]);
   const [stores, setStores] = useState([]);
   const [salespeople, setSalespeople] = useState([]);
   const [visits, setVisits] = useState(null);
