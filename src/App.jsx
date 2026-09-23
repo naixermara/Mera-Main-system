@@ -5361,6 +5361,13 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
   const [acctForm, setAcctForm] = useState({ code: "", name: "", type: "expense", is_cash: false });
   const [editingAcct, setEditingAcct] = useState(null);
 
+  // For the Stock Summary report — warehouse stock plus whatever's still
+  // sitting unsold at consignment stores, since both are real inventory
+  // she owns, just in two different physical locations.
+  const [stockMoves, setStockMoves] = useState([]);
+  const [stockStores, setStockStores] = useState([]);
+  const [stockVisits, setStockVisits] = useState([]);
+
   async function reload() {
     try {
       const [a, e, l] = await Promise.all([
@@ -5370,6 +5377,14 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
       ]);
       setAccounts(a || []); setEntries(e || []); setLines(l || []);
       try { setVendors((await sbFetch("vendors?select=*&order=name.asc")) || []); } catch (err) { /* optional table */ }
+      try {
+        const [sm, ss, sv] = await Promise.all([
+          sbFetch("stock_moves?select=product,qty"),
+          sbFetch("stores?select=name," + SKUS.map((x) => x.initCol).join(",")),
+          sbFetch("visits?select=store,product,sold,returned"),
+        ]);
+        setStockMoves(sm || []); setStockStores(ss || []); setStockVisits(sv || []);
+      } catch (err) { /* stock summary just shows zeroes if this fails */ }
       try {
         const [pd, pl] = await Promise.all([
           sbFetch("purchase_docs?select=*&order=doc_date.desc"),
@@ -6236,8 +6251,25 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
           { key: "journal", label: "Journal" },
           { key: "gl", label: "General Ledger Detail" },
           { key: "coa", label: "Chart of Account List" },
+          { key: "stock", label: "Stock Summary" },
         ];
         const title = REPORTS.find((r) => r.key === reportKind)?.label;
+
+        // Warehouse stock (from stock_moves) plus whatever's still sitting
+        // unsold at consignment stores (init − sold − returned, same formula
+        // the Stores page itself uses) — both are real inventory, just in
+        // two different physical places.
+        const stockSummary = SKUS.map((x) => {
+          const warehouse = stockMoves.filter((m) => m.product === x.code).reduce((a, m) => a + (Number(m.qty) || 0), 0);
+          const consignment = stockStores.reduce((a, s) => {
+            const init = Number(s[x.initCol]) || 0;
+            const storeVisits = stockVisits.filter((v) => v.store === s.name && v.product === x.visitKey);
+            const sold = storeVisits.reduce((sum, v) => sum + (Number(v.sold) || 0), 0);
+            const returned = storeVisits.reduce((sum, v) => sum + (Number(v.returned) || 0), 0);
+            return a + Math.max(0, init - sold - returned);
+          }, 0);
+          return { label: x.label, warehouse, consignment, total: warehouse + consignment };
+        });
 
         // One renderer, used on screen and in the print view, so what you see
         // is exactly what prints.
@@ -6349,6 +6381,34 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
             );
           }
 
+          if (reportKind === "stock") {
+            const totalWarehouse = stockSummary.reduce((a, s) => a + s.warehouse, 0);
+            const totalConsignment = stockSummary.reduce((a, s) => a + s.consignment, 0);
+            return (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: forPrint ? 11 : 13 }}>
+                <thead><tr style={forPrint ? {} : { color: C.textFaint, fontSize: 10.5, textTransform: "uppercase" }}>
+                  <th style={t.thL}>Product</th><th style={t.th}>Warehouse</th><th style={t.th}>At consignment stores</th><th style={t.th}>Total</th>
+                </tr></thead>
+                <tbody>
+                  {stockSummary.map((s) => (
+                    <tr key={s.label}>
+                      <td style={t.tdL}>{s.label}</td>
+                      <td style={t.td}>{s.warehouse.toLocaleString()}</td>
+                      <td style={t.td}>{s.consignment.toLocaleString()}</td>
+                      <td style={{ ...t.td, fontWeight: 600 }}>{s.total.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                  <tr style={t.tot}>
+                    <td style={t.tdL}>Total</td>
+                    <td style={t.td}>{totalWarehouse.toLocaleString()}</td>
+                    <td style={t.td}>{totalConsignment.toLocaleString()}</td>
+                    <td style={t.td}>{(totalWarehouse + totalConsignment).toLocaleString()}</td>
+                  </tr>
+                </tbody>
+              </table>
+            );
+          }
+
           // chart of accounts
           return (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: forPrint ? 11 : 13 }}>
@@ -6383,7 +6443,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
 
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
               <div style={{ fontSize: 15, fontWeight: 700 }}>
-                {title}{reportKind !== "coa" ? ` — ${monthLabel(month)}` : ""}
+                {title}{reportKind !== "coa" && reportKind !== "stock" ? ` — ${monthLabel(month)}` : ""}
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 {reportKind !== "coa" && (
@@ -6458,7 +6518,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
                   <div style={{ textAlign: "center", marginBottom: 16 }}>
                     <div style={{ fontSize: 14, fontWeight: 700, textDecoration: "underline" }}>{title}</div>
                     <div style={{ fontSize: 11, marginTop: 2 }}>
-                      {reportKind === "coa" ? `${accounts.length} accounts` : `For ${monthLabel(month)}`} · printed {fmtDate(todayStr())}
+                      {reportKind === "coa" ? `${accounts.length} accounts` : reportKind === "stock" ? "As of today" : `For ${monthLabel(month)}`} · printed {fmtDate(todayStr())}
                     </div>
                   </div>
                   {body(true)}
