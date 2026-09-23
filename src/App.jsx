@@ -9445,8 +9445,25 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
 
   async function deleteDeliveryNote(id) {
     try {
+      const note = notes.find((n) => n.id === id);
       await sbFetch(`delivery_notes?id=eq.${id}`, { method: "DELETE" });
       setNotes((prev) => prev.filter((n) => n.id !== id));
+      if (note) {
+        // The original delivery is what actually took stock out of the
+        // warehouse — deleting the note needs to give that stock back, or
+        // it's permanently lost from the count even though the delivery
+        // never really happened.
+        const wanted = SKUS.map((x) => ({ product: x.code, qty: parseFloat(note[x.qtyCol]) || 0 }));
+        await addStockMove(wanted, "return", `${note.dn_number} (deleted)`);
+        // A consignment delivery also raised that store's own shelf count —
+        // reverse that side too, or the store looks like it's still holding
+        // stock that was actually never delivered.
+        if (note.business_type === "consignment" && note.store_id && onStoreDelivered) {
+          await onStoreDelivered(note.store_id, Object.fromEntries(
+            SKUS.map((x) => [x.code, -(parseFloat(note[x.qtyCol]) || 0)])
+          ));
+        }
+      }
       setSaveError(false);
     } catch (e) {
       setSaveError(true);
