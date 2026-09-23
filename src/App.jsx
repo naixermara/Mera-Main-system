@@ -40,6 +40,25 @@ async function sbFetch(path, options = {}, retries = 2) {
       });
       if (!res.ok) {
         const text = await res.text();
+        // The access token naturally expires (Supabase JWTs last about an
+        // hour) and nothing was refreshing it automatically — every save or
+        // load would just fail outright until the person manually reloaded
+        // the page, which is what re-triggered a fresh token underneath.
+        // This catches that specific case, silently gets a new token using
+        // the stored refresh token, and retries the exact same request once
+        // — so a long-open session keeps working without ever needing a
+        // manual refresh.
+        const looksExpired = res.status === 401 || /JWT expired|invalid JWT|exp.*claim/i.test(text);
+        if (looksExpired && attempt < retries) {
+          const savedRefresh = localStorage.getItem("mera_refresh");
+          if (savedRefresh) {
+            const refreshed = await refreshSession(savedRefresh);
+            if (refreshed && refreshed.access_token) {
+              setAccessToken(refreshed.access_token, refreshed.refresh_token);
+              continue; // retry immediately with the fresh token
+            }
+          }
+        }
         throw new Error(`Supabase error ${res.status}: ${text}`);
       }
       const text = await res.text();
@@ -3747,6 +3766,8 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
   const [stores, setStores] = useState([]);
   const [bigcoStores, setBigcoStores] = useState([]);
   const [creditStores, setCreditStores] = useState([]);
+  const [creditInvoices, setCreditInvoices] = useState([]);
+  const [bigcoReports, setBigcoReports] = useState([]);
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -3754,15 +3775,18 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
 
   async function reload() {
     try {
-      const [p, a, s, b, c] = await Promise.all([
+      const [p, a, s, b, c, ci, br] = await Promise.all([
         sbFetch("pending_payments?select=*&status=eq.pending&order=paid_at.desc"),
         sbFetch("pending_payments?select=*&status=eq.assigned&order=assigned_at.desc&limit=15"),
         sbFetch("stores?select=id,name"),
         sbFetch("bigco_stores?select=id,name"),
         sbFetch("credit_stores?select=id,name"),
+        sbFetch("credit_invoices?select=id,store_id,invoice_number,amount,paid,invoice_date"),
+        sbFetch("bigco_reports?select=id,store_id,invoice_number,amount,paid,report_date"),
       ]);
       setPending(p || []); setAssignedRecent(a || []);
       setStores(s || []); setBigcoStores(b || []); setCreditStores(c || []);
+      setCreditInvoices(ci || []); setBigcoReports(br || []);
       setMissing(false);
       onCountChange?.((p || []).length);
     } catch (e) {
@@ -3780,6 +3804,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
       type: "consignment",
       date: String(row.paid_at).slice(0, 10),
       storeId: "",
+      invoiceId: "",
       product: SKUS[0].visitKey,
       qty: "",
       paid: String(row.amount),
@@ -3813,30 +3838,33 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
         logActivity?.("Assigned payment", storeName, `$${row.amount} → consignment visit`);
       } else if (draft.type === "corporate") {
         if (!draft.storeId) { setError("Pick a store."); setBusy(false); return; }
+        if (!draft.invoiceId) { setError("Pick which invoice this payment is settling."); setBusy(false); return; }
         const storeName = bigcoStores.find((s) => s.id === draft.storeId)?.name || "";
-        await sbFetch("bigco_reports", {
-          method: "POST",
-          body: JSON.stringify({
-            store_id: draft.storeId, report_date: draft.date, invoice_number: null,
-            pl_sold: 0, night_sold: 0, day_sold: 0,
-            amount: parseFloat(draft.paid) || 0, paid: parseFloat(draft.paid) || 0,
-            notes: draft.notes, created_by: authUser?.email || "unknown",
-          }),
+        const inv = bigcoReports.find((r) => r.id === draft.invoiceId);
+        await sbFetch(`bigco_reports?id=eq.${draft.invoiceId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ paid: Number(inv?.paid || 0) + (parseFloat(draft.paid) || 0) }),
         });
-        summary = `Corporate Accounts · ${storeName}`;
-        logActivity?.("Assigned payment", storeName, `$${row.amount} → Corporate Accounts`);
+        summary = `Corporate Accounts · ${storeName} · Invoice ${inv?.invoice_number || draft.invoiceId}`;
+        logActivity?.("Assigned payment", storeName, `$${row.amount} → Invoice ${inv?.invoice_number || ""}`);
       } else if (draft.type === "credit") {
         if (!draft.storeId) { setError("Pick a store."); setBusy(false); return; }
+        if (!draft.invoiceId) { setError("Pick which invoice this payment is settling."); setBusy(false); return; }
         const storeName = creditStores.find((s) => s.id === draft.storeId)?.name || "";
+        const inv = creditInvoices.find((i) => i.id === draft.invoiceId);
         await sbFetch("credit_payments", {
           method: "POST",
           body: JSON.stringify({
-            store_id: draft.storeId, payment_date: draft.date,
+            store_id: draft.storeId, invoice_id: draft.invoiceId, payment_date: draft.date,
             amount: parseFloat(draft.paid) || 0, notes: draft.notes, created_by: authUser?.email || "unknown",
           }),
         });
-        summary = `Credit Term · ${storeName}`;
-        logActivity?.("Assigned payment", storeName, `$${row.amount} → Credit Term`);
+        await sbFetch(`credit_invoices?id=eq.${draft.invoiceId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ paid: Number(inv?.paid || 0) + (parseFloat(draft.paid) || 0) }),
+        });
+        summary = `Credit Term · ${storeName} · Invoice ${inv?.invoice_number || draft.invoiceId}`;
+        logActivity?.("Assigned payment", storeName, `$${row.amount} → Invoice ${inv?.invoice_number || ""}`);
       } else {
         if (!draft.customerName.trim()) { setError("Add a customer name or order reference."); setBusy(false); return; }
         await sbFetch("online_sales", {
@@ -3933,7 +3961,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
                   {(draft.type === "consignment" || draft.type === "corporate" || draft.type === "credit") && (
                     <div style={{ marginBottom: 10 }}>
                       <label style={{ fontSize: 9, color: C.textFaint }}>Store</label>
-                      <select value={draft.storeId} onChange={(e) => setDraft({ ...draft, storeId: e.target.value })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }}>
+                      <select value={draft.storeId} onChange={(e) => setDraft({ ...draft, storeId: e.target.value, invoiceId: "" })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }}>
                         <option value="">Select a store…</option>
                         {(draft.type === "consignment" ? stores : draft.type === "corporate" ? bigcoStores : creditStores).map((s) => (
                           <option key={s.id} value={s.id}>{s.name}</option>
@@ -3941,6 +3969,44 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
                       </select>
                     </div>
                   )}
+
+                  {draft.type === "corporate" && draft.storeId && (() => {
+                    const outstanding = bigcoReports.filter((r) => r.store_id === draft.storeId && Number(r.amount || 0) - Number(r.paid || 0) > 0.005);
+                    return (
+                      <div style={{ marginBottom: 10 }}>
+                        <label style={{ fontSize: 9, color: C.textFaint }}>Which invoice is this settling?</label>
+                        <select value={draft.invoiceId} onChange={(e) => setDraft({ ...draft, invoiceId: e.target.value })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }}>
+                          <option value="">{outstanding.length ? "Select an invoice…" : "No outstanding invoices for this store"}</option>
+                          {outstanding.map((r) => {
+                            const owed = Number(r.amount || 0) - Number(r.paid || 0);
+                            return <option key={r.id} value={r.id}>{r.invoice_number || r.id} — {fmtDate(r.report_date)} — ${owed.toFixed(2)} owed</option>;
+                          })}
+                        </select>
+                        {outstanding.length === 0 && (
+                          <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>Log the invoice first in Corporate Accounts, then come back to assign this payment to it.</div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {draft.type === "credit" && draft.storeId && (() => {
+                    const outstanding = creditInvoices.filter((i) => i.store_id === draft.storeId && Number(i.amount || 0) - Number(i.paid || 0) > 0.005);
+                    return (
+                      <div style={{ marginBottom: 10 }}>
+                        <label style={{ fontSize: 9, color: C.textFaint }}>Which invoice is this settling?</label>
+                        <select value={draft.invoiceId} onChange={(e) => setDraft({ ...draft, invoiceId: e.target.value })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }}>
+                          <option value="">{outstanding.length ? "Select an invoice…" : "No outstanding invoices for this store"}</option>
+                          {outstanding.map((i) => {
+                            const owed = Number(i.amount || 0) - Number(i.paid || 0);
+                            return <option key={i.id} value={i.id}>{i.invoice_number || i.id} — {fmtDate(i.invoice_date)} — ${owed.toFixed(2)} owed</option>;
+                          })}
+                        </select>
+                        {outstanding.length === 0 && (
+                          <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>Log the invoice first in Credit Term, then come back to assign this payment to it.</div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {draft.type === "consignment" && (
                     <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
