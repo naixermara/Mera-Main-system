@@ -84,6 +84,22 @@ async function claimNextNumber(seriesKey) {
   return typeof result === "number" ? result : Array.isArray(result) ? result[0] : Number(result);
 }
 
+// Actually revokes the session server-side, not just forgetting it locally.
+// Without this, a token copied off the device (e.g. through an XSS attack
+// or physical access) would keep working even after the real user signs
+// out — this is what actually invalidates it.
+async function serverLogout(token) {
+  if (!token) return;
+  try {
+    await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${token}` },
+    });
+  } catch (e) {
+    // Best-effort — we still clear the local session below regardless.
+  }
+}
+
 async function refreshSession(refreshToken) {
   const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
     method: "POST",
@@ -625,7 +641,8 @@ export default function MeraConsignmentApp() {
     }
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    await serverLogout(currentAccessToken);
     setAccessToken(null);
     setAuthUser(null);
     setStores([]);
