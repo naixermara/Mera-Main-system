@@ -10837,11 +10837,7 @@ function SingleDocument({ d, isDN, pageBreak, catalog }) {
             <div><b>Total Qty :</b> {products.reduce((a, p) => a + p.qty, 0)}</div>
           </div>
         ) : (
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 6, gap: 16 }}>
-            <div style={{ textAlign: "center", flexShrink: 0 }}>
-              <img src={ABA_QR_CODE} alt="Scan to pay via ABA PAY" style={{ width: 110, height: 110, objectFit: "contain" }} />
-              <div style={{ fontSize: 9.5, color: "#333", marginTop: 2 }}>ស្កេនដើម្បីទូទាត់ / Scan to pay via ABA PAY</div>
-            </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 6 }}>
             <table style={{ borderCollapse: "collapse", fontSize: 11, width: 320 }}>
               <tbody>
                 <tr><td style={{ ...cell, padding: "4px 8px" }}>សរុប / Sub-Total :</td><td style={{ ...cell, padding: "4px 8px", textAlign: "right" }}>${subtotal.toLocaleString("en-US", MONEY2)}</td></tr>
@@ -10890,6 +10886,10 @@ function SingleDocument({ d, isDN, pageBreak, catalog }) {
 
         {!isDN && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", borderTop: "1px solid #ccc", paddingTop: 10 }}>
+            <div style={{ textAlign: "center", flexShrink: 0 }}>
+              <img src={ABA_QR_CODE} alt="Scan to pay via ABA PAY" style={{ width: 80, height: 80, objectFit: "contain" }} />
+              <div style={{ fontSize: 8.5, color: "#333", marginTop: 2 }}>Scan to pay</div>
+            </div>
             <div>
               <div style={{ fontWeight: 700, fontSize: 13 }}>ABA PAY</div>
               <div style={{ fontSize: 10.5 }}>CHOUMHEAN TRADING CO., LTD.</div>
