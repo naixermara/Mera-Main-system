@@ -5306,6 +5306,7 @@ const NAV = [
     { label: "Vendor",        page: "accounting", tab: "vendor" },
     { label: "Entries",       page: "accounting", tab: "ledger" },
     { label: "Reports",       page: "accounting", tab: "reports" },
+    { label: "Finance",       page: "accounting", tab: "finance" },
     { label: "Accounts",      page: "accounting", tab: "accounts" },
   ]},
   { name: "People", needs: "payroll", items: [
@@ -5373,6 +5374,15 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
   const [month, setMonth] = useState(currentMonthKey());
   const [expandedEntry, setExpandedEntry] = useState(null);
   const [reportKind, setReportKind] = useState("trial");
+
+  // Reports and Finance each have their own set of report keys — switching
+  // between the two tabs should land on a sensible default from whichever
+  // list is now showing, not silently keep a report key from the other one.
+  useEffect(() => {
+    const financeKeys = ["pnl", "bs", "cf"];
+    if (tab === "finance" && !financeKeys.includes(reportKind)) setReportKind("pnl");
+    if (tab === "reports" && financeKeys.includes(reportKind)) setReportKind("trial");
+  }, [tab]);
   const [printingReport, setPrintingReport] = useState(false);
 
   // quick post form
@@ -5895,7 +5905,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
   return (
     <div>
       <div style={{ display: "flex", gap: 6, marginTop: 22, marginBottom: 18, flexWrap: "wrap" }} className="mera-subtabs">
-        {[{ key: "post", label: "Post" }, { key: "sales", label: "From sales" }, { key: "journal", label: "Journal entry" }, { key: "vendor", label: "Vendor" }, { key: "ledger", label: "Entries" }, { key: "reports", label: "Reports" }, { key: "accounts", label: "Accounts" }].map((t) => (
+        {[{ key: "post", label: "Post" }, { key: "sales", label: "From sales" }, { key: "journal", label: "Journal entry" }, { key: "vendor", label: "Vendor" }, { key: "ledger", label: "Entries" }, { key: "reports", label: "Reports" }, { key: "finance", label: "Finance" }, { key: "accounts", label: "Accounts" }].map((t) => (
           <button key={t.key} onClick={() => { setTab(t.key); setError(""); }} style={{ background: "none", border: "none", padding: "6px 2px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginRight: 14, color: tab === t.key ? C.gold : C.textFaint, borderBottom: `2px solid ${tab === t.key ? C.gold : "transparent"}` }}>
             {t.label}
           </button>
@@ -6242,7 +6252,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
 
       {/* ---------------- reports ---------------- */}
       {/* ---------------- accountant's reports ---------------- */}
-      {tab === "reports" && (() => {
+      {(tab === "reports" || tab === "finance") && (() => {
         const ids = new Set(monthEntries.map((e) => e.id));
         const periodLines = lines.filter((l) => ids.has(l.entry_id));
         const entryById = (id) => entries.find((e) => e.id === id);
@@ -6273,16 +6283,19 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
           })
           .filter((a) => a.rows.length || Math.abs(a.opening) > 0.005);
 
-        const REPORTS = [
-          { key: "trial", label: "Trial Balance" },
-          { key: "journal", label: "Journal" },
-          { key: "gl", label: "General Ledger Detail" },
-          { key: "coa", label: "Chart of Account List" },
-          { key: "stock", label: "Stock Summary" },
-          { key: "pnl", label: "Profit and Loss" },
-          { key: "bs", label: "Balance Sheet" },
-          { key: "cf", label: "Cash Flow" },
-        ];
+        const REPORTS = tab === "finance"
+          ? [
+              { key: "pnl", label: "Profit and Loss" },
+              { key: "bs", label: "Balance Sheet" },
+              { key: "cf", label: "Cash Flow" },
+            ]
+          : [
+              { key: "trial", label: "Trial Balance" },
+              { key: "journal", label: "Journal" },
+              { key: "gl", label: "General Ledger Detail" },
+              { key: "coa", label: "Chart of Account List" },
+              { key: "stock", label: "Stock Summary" },
+            ];
         const title = REPORTS.find((r) => r.key === reportKind)?.label;
 
         // ---- Profit and Loss (for the selected month) ----
