@@ -6252,8 +6252,87 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
           { key: "gl", label: "General Ledger Detail" },
           { key: "coa", label: "Chart of Account List" },
           { key: "stock", label: "Stock Summary" },
+          { key: "pnl", label: "Profit and Loss" },
+          { key: "bs", label: "Balance Sheet" },
+          { key: "cf", label: "Cash Flow" },
         ];
         const title = REPORTS.find((r) => r.key === reportKind)?.label;
+
+        // ---- Profit and Loss (for the selected month) ----
+        // COGS accounts are coded 5xxxxxx in your chart, ordinary expenses
+        // 6xxxxxx — split by code prefix so the layout matches your
+        // accountant's own report exactly (Income, then COGS, then Expense).
+        const pnlAmount = (a) => {
+          const rows = periodLines.filter((l) => l.account_id === a.id);
+          const net = rows.reduce((x, l) => x + Number(l.debit || 0) - Number(l.credit || 0), 0);
+          return a.type === "income" ? -net : net; // income's natural balance is credit
+        };
+        const pnlIncome = accounts.filter((a) => a.type === "income").map((a) => ({ ...a, amount: pnlAmount(a) })).filter((a) => Math.abs(a.amount) > 0.005);
+        const pnlCogs = accounts.filter((a) => a.type === "expense" && a.code.startsWith("5")).map((a) => ({ ...a, amount: pnlAmount(a) })).filter((a) => Math.abs(a.amount) > 0.005);
+        const pnlExpense = accounts.filter((a) => a.type === "expense" && !a.code.startsWith("5")).map((a) => ({ ...a, amount: pnlAmount(a) })).filter((a) => Math.abs(a.amount) > 0.005);
+        const totalIncome = pnlIncome.reduce((a, x) => a + x.amount, 0);
+        const totalCogs = pnlCogs.reduce((a, x) => a + x.amount, 0);
+        const grossProfit = totalIncome - totalCogs;
+        const totalExpense = pnlExpense.reduce((a, x) => a + x.amount, 0);
+        const netIncome = grossProfit - totalExpense;
+
+        // ---- Balance Sheet (as of the END of the selected month) ----
+        // Cumulative from day one, not just this month — a balance sheet is
+        // a snapshot, not a period total. Since income/expense accounts are
+        // never formally "closed" in a running system like this, all-time
+        // net income is folded into Equity as this year's undistributed
+        // profit, which is what actually makes Assets = Liabilities + Equity.
+        const asOf = `${month}-31`;
+        const cumulativeBalance = (a) => {
+          const rows = lines.filter((l) => l.account_id === a.id).filter((l) => {
+            const e = entryById(l.entry_id);
+            return e && e.entry_date <= asOf;
+          });
+          const net = rows.reduce((x, l) => x + Number(l.debit || 0) - Number(l.credit || 0), 0);
+          return (a.type === "liability" || a.type === "equity") ? -net : net;
+        };
+        const bsAssets = accounts.filter((a) => a.type === "asset").map((a) => ({ ...a, amount: cumulativeBalance(a) })).filter((a) => Math.abs(a.amount) > 0.005);
+        const bsLiabilities = accounts.filter((a) => a.type === "liability").map((a) => ({ ...a, amount: cumulativeBalance(a) })).filter((a) => Math.abs(a.amount) > 0.005);
+        const bsEquityAccounts = accounts.filter((a) => a.type === "equity").map((a) => ({ ...a, amount: cumulativeBalance(a) })).filter((a) => Math.abs(a.amount) > 0.005);
+        const allTimeIncome = accounts.filter((a) => a.type === "income").reduce((sum, a) => {
+          const rows = lines.filter((l) => l.account_id === a.id).filter((l) => { const e = entryById(l.entry_id); return e && e.entry_date <= asOf; });
+          return sum - rows.reduce((x, l) => x + Number(l.debit || 0) - Number(l.credit || 0), 0);
+        }, 0);
+        const allTimeExpense = accounts.filter((a) => a.type === "expense").reduce((sum, a) => {
+          const rows = lines.filter((l) => l.account_id === a.id).filter((l) => { const e = entryById(l.entry_id); return e && e.entry_date <= asOf; });
+          return sum + rows.reduce((x, l) => x + Number(l.debit || 0) - Number(l.credit || 0), 0);
+        }, 0);
+        const currentEarnings = allTimeIncome - allTimeExpense;
+        const totalAssets = bsAssets.reduce((a, x) => a + x.amount, 0);
+        const totalLiabilities = bsLiabilities.reduce((a, x) => a + x.amount, 0);
+        const totalEquityAccounts = bsEquityAccounts.reduce((a, x) => a + x.amount, 0);
+        const totalEquity = totalEquityAccounts + currentEarnings;
+
+        // ---- Cash Flow (indirect method, for the selected month) ----
+        // Net income, adjusted for the change in every non-cash balance
+        // sheet account during the month — the standard indirect-method
+        // shape your accountant's report uses. Investing/Financing stay at
+        // $0 until there's actual data for fixed-asset purchases or
+        // borrowings to categorize there.
+        const balanceAsOf = (a, dateStr) => {
+          const rows = lines.filter((l) => l.account_id === a.id).filter((l) => { const e = entryById(l.entry_id); return e && e.entry_date <= dateStr; });
+          const net = rows.reduce((x, l) => x + Number(l.debit || 0) - Number(l.credit || 0), 0);
+          return (a.type === "liability" || a.type === "equity") ? -net : net;
+        };
+        const monthStart = `${month}-01`;
+        const priorMonthEnd = new Date(new Date(monthStart).getTime() - 86400000).toISOString().slice(0, 10);
+        const cfAdjustments = accounts
+          .filter((a) => (a.type === "asset" && !a.is_cash) || a.type === "liability")
+          .map((a) => {
+            const opening = balanceAsOf(a, priorMonthEnd);
+            const closing = balanceAsOf(a, asOf);
+            const change = closing - opening;
+            // A rising asset ties up cash (subtract); a rising liability frees cash (add).
+            const cashEffect = a.type === "asset" ? -change : change;
+            return { ...a, change, cashEffect };
+          })
+          .filter((a) => Math.abs(a.cashEffect) > 0.005);
+        const operatingCashFlow = netIncome + cfAdjustments.reduce((a, x) => a + x.cashEffect, 0);
 
         // Warehouse stock (from stock_moves) plus whatever's still sitting
         // unsold at consignment stores (init − sold − returned, same formula
@@ -6409,6 +6488,98 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
             );
           }
 
+          if (reportKind === "pnl") {
+            const line = (label, amt, bold) => (
+              <tr key={label} style={bold ? t.tot : {}}>
+                <td style={t.tdL}>{label}</td>
+                <td style={t.td}>{money(amt)}</td>
+              </tr>
+            );
+            return (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: forPrint ? 11 : 13 }}>
+                <tbody>
+                  <tr><td style={{ ...t.tdL, fontWeight: 700, paddingTop: 10 }}>Income</td><td style={t.td}></td></tr>
+                  {pnlIncome.map((a) => line(`${a.code} - ${a.name}`, a.amount))}
+                  {line("Total Income", totalIncome, true)}
+
+                  <tr><td style={{ ...t.tdL, fontWeight: 700, paddingTop: 14 }}>COGS</td><td style={t.td}></td></tr>
+                  {pnlCogs.map((a) => line(`${a.code} - ${a.name}`, a.amount))}
+                  {line("Total COGS", totalCogs, true)}
+                  {line("Gross Profit", grossProfit, true)}
+
+                  <tr><td style={{ ...t.tdL, fontWeight: 700, paddingTop: 14 }}>Expense</td><td style={t.td}></td></tr>
+                  {pnlExpense.map((a) => line(`${a.code} - ${a.name}`, a.amount))}
+                  {line("Total Expense", totalExpense, true)}
+                  {line("Net Income", netIncome, true)}
+                </tbody>
+              </table>
+            );
+          }
+
+          if (reportKind === "bs") {
+            const line = (label, amt, bold) => (
+              <tr key={label} style={bold ? t.tot : {}}>
+                <td style={t.tdL}>{label}</td>
+                <td style={t.td}>{money(amt)}</td>
+              </tr>
+            );
+            return (
+              <div>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: forPrint ? 11 : 13, marginBottom: 20 }}>
+                  <tbody>
+                    <tr><td style={{ ...t.tdL, fontWeight: 700 }}>Assets</td><td style={t.td}></td></tr>
+                    {bsAssets.map((a) => line(`${a.code} - ${a.name}`, a.amount))}
+                    {line("Total Assets", totalAssets, true)}
+                  </tbody>
+                </table>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: forPrint ? 11 : 13, marginBottom: 20 }}>
+                  <tbody>
+                    <tr><td style={{ ...t.tdL, fontWeight: 700 }}>Liabilities</td><td style={t.td}></td></tr>
+                    {bsLiabilities.map((a) => line(`${a.code} - ${a.name}`, a.amount))}
+                    {line("Total Liabilities", totalLiabilities, true)}
+                  </tbody>
+                </table>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: forPrint ? 11 : 13 }}>
+                  <tbody>
+                    <tr><td style={{ ...t.tdL, fontWeight: 700 }}>Equity</td><td style={t.td}></td></tr>
+                    {bsEquityAccounts.map((a) => line(`${a.code} - ${a.name}`, a.amount))}
+                    {line("Current earnings (year to date)", currentEarnings)}
+                    {line("Total Equity", totalEquity, true)}
+                    {line("Total Liabilities + Equity", totalLiabilities + totalEquity, true)}
+                  </tbody>
+                </table>
+              </div>
+            );
+          }
+
+          if (reportKind === "cf") {
+            const line = (label, amt, bold) => (
+              <tr key={label} style={bold ? t.tot : {}}>
+                <td style={t.tdL}>{label}</td>
+                <td style={t.td}>{money(amt)}</td>
+              </tr>
+            );
+            return (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: forPrint ? 11 : 13 }}>
+                <tbody>
+                  <tr><td style={{ ...t.tdL, fontWeight: 700 }}>Operating Activities</td><td style={t.td}></td></tr>
+                  {line("Net Income", netIncome)}
+                  <tr><td style={{ ...t.tdL, ...t.sub, paddingLeft: 18 }}>Adjustments for changes in:</td><td style={t.td}></td></tr>
+                  {cfAdjustments.map((a) => line(`${a.code} - ${a.name}`, a.cashEffect))}
+                  {line("Net cash from Operating Activities", operatingCashFlow, true)}
+
+                  <tr><td style={{ ...t.tdL, fontWeight: 700, paddingTop: 14 }}>Investing Activities</td><td style={t.td}></td></tr>
+                  {line("Total Investing Activities", 0, true)}
+
+                  <tr><td style={{ ...t.tdL, fontWeight: 700, paddingTop: 14 }}>Financing Activities</td><td style={t.td}></td></tr>
+                  {line("Total Financing Activities", 0, true)}
+
+                  {line("Net increase in cash for the period", operatingCashFlow, true)}
+                </tbody>
+              </table>
+            );
+          }
+
           // chart of accounts
           return (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: forPrint ? 11 : 13 }}>
@@ -6443,7 +6614,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
 
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
               <div style={{ fontSize: 15, fontWeight: 700 }}>
-                {title}{reportKind !== "coa" && reportKind !== "stock" ? ` — ${monthLabel(month)}` : ""}
+                {title}{reportKind === "bs" ? ` — as of end of ${monthLabel(month)}` : reportKind !== "coa" && reportKind !== "stock" ? ` — ${monthLabel(month)}` : ""}
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 {reportKind !== "coa" && (
@@ -6518,7 +6689,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
                   <div style={{ textAlign: "center", marginBottom: 16 }}>
                     <div style={{ fontSize: 14, fontWeight: 700, textDecoration: "underline" }}>{title}</div>
                     <div style={{ fontSize: 11, marginTop: 2 }}>
-                      {reportKind === "coa" ? `${accounts.length} accounts` : reportKind === "stock" ? "As of today" : `For ${monthLabel(month)}`} · printed {fmtDate(todayStr())}
+                      {reportKind === "coa" ? `${accounts.length} accounts` : reportKind === "stock" ? "As of today" : reportKind === "bs" ? `As of end of ${monthLabel(month)}` : `For ${monthLabel(month)}`} · printed {fmtDate(todayStr())}
                     </div>
                   </div>
                   {body(true)}
