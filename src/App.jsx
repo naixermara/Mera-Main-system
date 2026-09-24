@@ -3572,6 +3572,68 @@ function ProvinceCoveragePage({ authUser, C, sbFetch, logActivity }) {
   );
 }
 
+// Split one consignment payment across the products it clears. Each product
+// is worth pieces × that store's price; the payment is shared out in
+// proportion (or evenly by pieces if the store has no prices), and whatever
+// the payment doesn't cover is recorded as still owed on that product.
+function consignRows(store, qtys, payment) {
+  const lines = SKUS.map((x) => {
+    const qty = pnum((qtys || {})[x.code]);
+    const price = store ? Number(store[x.priceCol] || 0) : 0;
+    return { code: x.code, label: x.label, visitKey: x.visitKey, qty, value: qty * price };
+  }).filter((l) => l.qty > 0);
+  if (!lines.length) return [];
+  const totalValue = lines.reduce((a, l) => a + l.value, 0);
+  const totalQty = lines.reduce((a, l) => a + l.qty, 0);
+  let left = Math.round(payment * 100) / 100;
+  return lines.map((l, i) => {
+    const share = i === lines.length - 1 ? left
+      : Math.round(payment * (totalValue > 0 ? l.value / totalValue : l.qty / totalQty) * 100) / 100;
+    left = Math.round((left - share) * 100) / 100;
+    const owed = totalValue > 0 ? Math.max(0, Math.round((l.value - share) * 100) / 100) : 0;
+    return { ...l, paid: share, owed };
+  });
+}
+
+// Type-to-search store picker — there are too many stores for a plain list.
+function StoreSearchSelect({ C, stores, value, onChange }) {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const selected = (stores || []).find((s) => s.id === value);
+  const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const matches = (stores || [])
+    .filter((s) => { const hay = `${s.name} ${s.nickname || ""}`.toLowerCase(); return words.every((w) => hay.includes(w)); })
+    .slice(0, 12);
+  const box = { background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "9px 11px", fontSize: 13, width: "100%", boxSizing: "border-box" };
+  return (
+    <div style={{ position: "relative" }}>
+      {selected && !open ? (
+        <div style={{ ...box, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, cursor: "pointer" }} onClick={() => { setOpen(true); setQ(""); }}>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{storeLabel(selected)}</span>
+          <span style={{ fontSize: 11, color: C.gold, flexShrink: 0 }}>change</span>
+        </div>
+      ) : (
+        <input autoFocus={open} type="text" value={q} placeholder="Type to search a store…" onFocus={() => setOpen(true)}
+          onChange={(e) => { setQ(e.target.value); setOpen(true); }} style={box} />
+      )}
+      {open && (
+        <div style={{ position: "absolute", left: 0, right: 0, top: "100%", marginTop: 4, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, zIndex: 50, maxHeight: 280, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.35)" }}>
+          {matches.length === 0 ? (
+            <div style={{ padding: "10px 12px", fontSize: 12, color: C.textFaint }}>No store matches “{q}”</div>
+          ) : matches.map((s) => (
+            <button key={s.id} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => { onChange(s.id); setOpen(false); setQ(""); }}
+              style={{ display: "block", width: "100%", textAlign: "left", background: s.id === value ? C.bg2 : "none", border: "none", borderBottom: `1px solid ${C.border}`, padding: "9px 12px", fontSize: 13, color: C.text, cursor: "pointer" }}>
+              {storeLabel(s)}
+            </button>
+          ))}
+          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => { setOpen(false); setQ(""); }}
+            style={{ display: "block", width: "100%", textAlign: "center", background: "none", border: "none", padding: "7px", fontSize: 11, color: C.textFaint, cursor: "pointer" }}>close</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- Online sale product lines + warehouse --------------------------------
 // One product grid used by Online Sales (new + edit) and by Pending Payments
 // when a payment is assigned to Online. Lines are kept as { code: {qty, price} }.
@@ -3929,7 +3991,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
       const [p, a, s, b, c, ci, br] = await Promise.all([
         sbFetch("pending_payments?select=*&status=eq.pending&order=paid_at.desc"),
         sbFetch("pending_payments?select=*&status=eq.assigned&order=assigned_at.desc&limit=15"),
-        sbFetch("stores?select=id,name"),
+        sbFetch("stores?select=*"),
         sbFetch("bigco_stores?select=*"),
         sbFetch("credit_stores?select=*"),
         sbFetch("credit_invoices?select=id,store_id,invoice_number,amount,paid,invoice_date"),
@@ -3963,6 +4025,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
       customerName: row.payer_name || "",
       notes: [row.remark, `ABA ${row.transaction_id || ""}`].filter(Boolean).join(" — ").trim(),
       lines: emptyOnlineLines(),
+      cqty: {},
     });
   }
 
@@ -3976,18 +4039,20 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
       let summary = "";
       if (draft.type === "consignment") {
         if (!draft.storeId) { setError("Pick a store."); setBusy(false); return; }
-        const storeName = stores.find((s) => s.id === draft.storeId)?.name || "";
+        const st = stores.find((s) => s.id === draft.storeId);
+        const storeName = st?.name || "";
+        const rows = consignRows(st, draft.cqty || {}, parseFloat(draft.paid) || 0);
+        if (rows.length === 0) { setError("Enter how many pieces of each product this payment clears."); setBusy(false); return; }
         await sbFetch("visits", {
           method: "POST",
-          body: JSON.stringify([{
-            date: draft.date, store_name: storeName, product: draft.product,
-            sold: parseFloat(draft.qty) || 0, returned: 0,
-            paid: parseFloat(draft.paid) || 0, owed: parseFloat(draft.owed) || 0,
+          body: JSON.stringify(rows.map((r) => ({
+            date: draft.date, store_name: storeName, product: r.visitKey,
+            sold: r.qty, returned: 0, paid: r.paid, owed: r.owed,
             notes: draft.notes, invoice_number: null, created_by: authUser?.email || "unknown",
-          }]),
+          }))),
         });
-        summary = `Consignment · ${storeName} · ${draft.qty || 0} ${draft.product}`;
-        logActivity?.("Assigned payment", storeName, `$${row.amount} → consignment visit`);
+        summary = `Consignment · ${storeName} · ${rows.map((r) => `${r.qty} ${r.label}`).join(", ")}`;
+        logActivity?.("Assigned payment", storeName, `$${row.amount} → ${rows.map((r) => `${r.qty} ${r.label}`).join(", ")}`);
       } else if (draft.type === "corporate") {
         if (!draft.storeId) { setError("Pick a store."); setBusy(false); return; }
         if (!draft.invoiceId) { setError("Pick which invoice this payment is settling."); setBusy(false); return; }
@@ -4119,12 +4184,9 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
                   {(draft.type === "consignment" || draft.type === "corporate" || draft.type === "credit") && (
                     <div style={{ marginBottom: 10 }}>
                       <label style={{ fontSize: 9, color: C.textFaint }}>Store</label>
-                      <select value={draft.storeId} onChange={(e) => setDraft({ ...draft, storeId: e.target.value, invoiceId: "" })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }}>
-                        <option value="">Select a store…</option>
-                        {(draft.type === "consignment" ? stores : draft.type === "corporate" ? bigcoStores : creditStores).map((s) => (
-                          <option key={s.id} value={s.id}>{storeLabel(s)}</option>
-                        ))}
-                      </select>
+                      <StoreSearchSelect C={C} value={draft.storeId}
+                        stores={draft.type === "consignment" ? stores : draft.type === "corporate" ? bigcoStores : creditStores}
+                        onChange={(id) => setDraft({ ...draft, storeId: id, invoiceId: "" })} />
                     </div>
                   )}
 
@@ -4166,24 +4228,37 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
                     );
                   })()}
 
-                  {draft.type === "consignment" && (
-                    <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-                      <div>
-                        <label style={{ fontSize: 9, color: C.textFaint }}>Product</label>
-                        <select value={draft.product} onChange={(e) => setDraft({ ...draft, product: e.target.value })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13 }}>
-                          {SKUS.map((x) => <option key={x.code} value={x.visitKey}>{x.label}</option>)}
-                        </select>
+                  {draft.type === "consignment" && (() => {
+                    const st = stores.find((x) => x.id === draft.storeId);
+                    const rows = consignRows(st, draft.cqty || {}, pnum(draft.paid));
+                    const value = rows.reduce((a, r) => a + r.value, 0);
+                    const owed = rows.reduce((a, r) => a + r.owed, 0);
+                    return (
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ fontSize: 9, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", margin: "4px 0 8px" }}>Which products does this payment clear?</div>
+                        <div style={{ display: "grid", gap: 6 }}>
+                          {SKUS.map((x) => {
+                            const price = st ? Number(st[x.priceCol] || 0) : 0;
+                            return (
+                              <div key={x.code} style={{ display: "grid", gridTemplateColumns: "minmax(110px, 140px) 80px minmax(0, 1fr)", gap: 8, alignItems: "center" }}>
+                                <div style={{ fontSize: 13, color: C.textDim }}>{x.label}</div>
+                                <input type="number" min="0" placeholder="pcs" value={(draft.cqty || {})[x.code] || ""}
+                                  onChange={(e) => setDraft({ ...draft, cqty: { ...(draft.cqty || {}), [x.code]: e.target.value } })}
+                                  style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", boxSizing: "border-box" }} />
+                                <div style={{ fontSize: 11.5, color: C.textFaint }}>{price ? `× $${price.toFixed(2)} = $${(pnum((draft.cqty || {})[x.code]) * price).toFixed(2)}` : (st ? "no price set for this store" : "")}</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {value > 0 && (
+                          <div style={{ fontSize: 12, marginTop: 8, color: Math.abs(value - pnum(draft.paid)) > 0.009 ? C.amber : C.textDim }}>
+                            Products value: <b>${value.toFixed(2)}</b> · payment ${pnum(draft.paid).toFixed(2)}
+                            {owed > 0.009 ? ` · still owed $${owed.toFixed(2)}` : value < pnum(draft.paid) - 0.009 ? " · payment is more than the products — check quantities" : " ✓ fully paid"}
+                          </div>
+                        )}
                       </div>
-                      <div>
-                        <label style={{ fontSize: 9, color: C.textFaint }}>Pieces sold</label>
-                        <input type="number" value={draft.qty} onChange={(e) => setDraft({ ...draft, qty: e.target.value })} placeholder="0" style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: 90 }} />
-                      </div>
-                      <div>
-                        <label style={{ fontSize: 9, color: C.textFaint }}>Still owed</label>
-                        <input type="number" value={draft.owed} onChange={(e) => setDraft({ ...draft, owed: e.target.value })} placeholder="0" style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: 90 }} />
-                      </div>
-                    </div>
-                  )}
+                    );
+                  })()}
 
                   {draft.type === "online" && (
                     <div style={{ marginBottom: 10 }}>
