@@ -5481,14 +5481,12 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
       ]);
       setAccounts(a || []); setEntries(e || []); setLines(l || []);
       try { setVendors((await sbFetch("vendors?select=*&order=name.asc")) || []); } catch (err) { /* optional table */ }
-      try {
-        const [sm, ss, sv] = await Promise.all([
-          sbFetch("stock_moves?select=product,qty"),
-          sbFetch("stores?select=name," + SKUS.map((x) => x.initCol).join(",")),
-          sbFetch("visits?select=store,product,sold,returned"),
-        ]);
-        setStockMoves(sm || []); setStockStores(ss || []); setStockVisits(sv || []);
-      } catch (err) { /* stock summary just shows zeroes if this fails */ }
+      // Loaded one by one, so a problem with one table can't zero out the
+      // others (the warehouse used to show 0 because the visits query
+      // asked for a column called "store" — it's "store_name").
+      try { setStockMoves((await sbFetch("stock_moves?select=product,qty")) || []); } catch (err) { /* no stock table yet */ }
+      try { setStockStores((await sbFetch("stores?select=name," + SKUS.map((x) => x.initCol).join(","))) || []); } catch (err) { /* keep going */ }
+      try { setStockVisits((await sbFetch("visits?select=store_name,product,sold,returned")) || []); } catch (err) { /* keep going */ }
       try {
         const [pd, pl] = await Promise.all([
           sbFetch("purchase_docs?select=*&order=doc_date.desc"),
@@ -6487,7 +6485,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
           const warehouse = stockMoves.filter((m) => m.product === x.code).reduce((a, m) => a + (Number(m.qty) || 0), 0);
           const consignment = stockStores.reduce((a, s) => {
             const init = Number(s[x.initCol]) || 0;
-            const storeVisits = stockVisits.filter((v) => v.store === s.name && v.product === x.visitKey);
+            const storeVisits = stockVisits.filter((v) => v.store_name === s.name && v.product === x.visitKey);
             const sold = storeVisits.reduce((sum, v) => sum + (Number(v.sold) || 0), 0);
             const returned = storeVisits.reduce((sum, v) => sum + (Number(v.returned) || 0), 0);
             return a + Math.max(0, init - sold - returned);
