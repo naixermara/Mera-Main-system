@@ -3690,22 +3690,45 @@ async function saveOnlineSaleLines(sbFetch, saleId, lines, takeStock, date, who)
 }
 
 function OnlineLinesGrid({ C, lines, setLines }) {
-  const cols = "minmax(96px, 130px) 68px minmax(0, 1fr) 64px";
-  const inp = { background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 8px", fontSize: 13, width: "100%", boxSizing: "border-box" };
+  const inp = { background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 8px", fontSize: 14, width: "100%", boxSizing: "border-box", minWidth: 0 };
+  const cap = { fontSize: 9, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 3 };
   return (
     <div style={{ display: "grid", gap: 8 }}>
-      <div style={{ display: "grid", gridTemplateColumns: cols, gap: 8, fontSize: 9.5, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+      {/* Desktop: one line per product. Phone (< 600px): name on top, then
+          Sold | Price | Free underneath, each with its own caption, so a
+          typed price always has room to be seen. */}
+      <style>{`
+        .ol-row { display: grid; grid-template-columns: minmax(96px, 130px) 70px minmax(0, 1fr) 64px; gap: 8px; align-items: end; }
+        .ol-cap { display: none; }
+        .ol-head { display: grid; grid-template-columns: minmax(96px, 130px) 70px minmax(0, 1fr) 64px; gap: 8px; }
+        @media (max-width: 600px) {
+          .ol-row { grid-template-columns: 1fr 1.4fr 1fr; row-gap: 4px; padding-bottom: 8px; border-bottom: 1px solid ${C.border}; }
+          .ol-row .ol-name { grid-column: 1 / -1; font-weight: 600; }
+          .ol-cap { display: block; }
+          .ol-head { display: none; }
+        }
+      `}</style>
+      <div className="ol-head" style={{ fontSize: 9.5, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.05em" }}>
         <span>Product</span><span>Sold</span><span>Price</span><span title="Given free (promotion) — leaves the warehouse, counted as a sample expense">Free 🎁</span>
       </div>
       {SKUS.map((x) => (
-        <div key={x.code} style={{ display: "grid", gridTemplateColumns: cols, gap: 8, alignItems: "center" }}>
-          <div style={{ fontSize: 13, color: C.textDim }}>{x.label}</div>
-          <input type="number" min="0" placeholder="qty" value={lines[x.code]?.qty || ""}
-            onChange={(e) => setLines({ ...lines, [x.code]: { ...lines[x.code], qty: e.target.value } })} style={inp} />
-          <PriceDropdown skuCode={x.code} value={lines[x.code]?.price} onChange={(v) => setLines({ ...lines, [x.code]: { ...lines[x.code], price: v } })} C={C} />
-          <input type="number" min="0" placeholder="0" value={lines[x.code]?.free || ""}
-            onChange={(e) => setLines({ ...lines, [x.code]: { ...lines[x.code], free: e.target.value } })}
-            style={{ ...inp, borderColor: pnum(lines[x.code]?.free) > 0 ? C.gold : C.border }} />
+        <div key={x.code} className="ol-row">
+          <div className="ol-name" style={{ fontSize: 13, color: C.textDim, alignSelf: "center" }}>{x.label}</div>
+          <div>
+            <div className="ol-cap" style={cap}>Sold</div>
+            <input type="number" inputMode="numeric" min="0" placeholder="qty" value={lines[x.code]?.qty || ""}
+              onChange={(e) => setLines({ ...lines, [x.code]: { ...lines[x.code], qty: e.target.value } })} style={inp} />
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <div className="ol-cap" style={cap}>Price</div>
+            <PriceDropdown skuCode={x.code} value={lines[x.code]?.price} onChange={(v) => setLines({ ...lines, [x.code]: { ...lines[x.code], price: v } })} C={C} />
+          </div>
+          <div>
+            <div className="ol-cap" style={cap}>Free 🎁</div>
+            <input type="number" inputMode="numeric" min="0" placeholder="0" value={lines[x.code]?.free || ""}
+              onChange={(e) => setLines({ ...lines, [x.code]: { ...lines[x.code], free: e.target.value } })}
+              style={{ ...inp, borderColor: pnum(lines[x.code]?.free) > 0 ? C.gold : C.border }} />
+          </div>
         </div>
       ))}
       {freeOnlineLines(lines).length > 0 && (
@@ -11877,10 +11900,10 @@ function PriceDropdown({ skuCode, value, onChange, C }) {
   if (typing) {
     return (
       <div style={{ display: "flex", gap: 4 }}>
-        <input type="number" inputMode="decimal" step="0.01" min="0" autoFocus value={value} placeholder="0.00"
-          onChange={(e) => onChange(e.target.value)} style={{ ...box, flex: 1, minWidth: 0 }} />
+        <input type="number" inputMode="decimal" step="0.01" min="0" autoFocus value={value} placeholder="$ price"
+          onChange={(e) => onChange(e.target.value)} style={{ ...box, flex: 1, minWidth: 56, fontSize: 14 }} />
         <button type="button" title="Back to the price list" onClick={() => { setTyping(false); if (!inList) onChange(String(options[0] ?? "")); }}
-          style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "0 9px", fontSize: 12, cursor: "pointer", flexShrink: 0 }}>list</button>
+          style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, width: 30, padding: 0, fontSize: 13, cursor: "pointer", flexShrink: 0 }}>▾</button>
       </div>
     );
   }
