@@ -772,12 +772,36 @@ export default function MeraConsignmentApp() {
     setShowActivityLog(true);
     setActivityLoading(true);
     try {
-      const rows = await sbFetch("activity_log?select=*&order=created_at.desc&limit=200");
+      const rows = await sbFetch("activity_log?select=*&order=created_at.desc&limit=300");
       setActivityEntries(rows || []);
     } catch (e) {
       setActivityEntries([]);
     } finally {
       setActivityLoading(false);
+    }
+    try {
+      const names = await sbFetch("user_names?select=*");
+      setUserNames(Object.fromEntries((names || []).map((n) => [n.email, n.name])));
+    } catch (e) { /* table optional */ }
+  }
+
+  // Who is who: a friendly name for each login email (owner edits these).
+  const [userNames, setUserNames] = useState({});
+  const [editingNames, setEditingNames] = useState(null); // { email: name } while editing
+  const [logPerson, setLogPerson] = useState("");
+  const KNOWN_LOGINS = ["rosamaramfi@gmail.com", "choumheantrading@gmail.com", "kimlychea116@gmail.com", "jeryyka6@gmail.com", "acc@rolyamfi.com.kh"];
+  const personLabel = (email) => userNames[email] || email;
+  async function saveUserNames() {
+    try {
+      const rows = Object.entries(editingNames || {}).filter(([, n]) => n && n.trim()).map(([email, n]) => ({ email, name: n.trim() }));
+      const cleared = Object.entries(editingNames || {}).filter(([, n]) => !n || !n.trim()).map(([email]) => email);
+      if (rows.length) await sbFetch("user_names", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify(rows) });
+      for (const e of cleared) { if (userNames[e]) await sbFetch(`user_names?email=eq.${encodeURIComponent(e)}`, { method: "DELETE" }); }
+      setUserNames(Object.fromEntries(rows.map((r) => [r.email, r.name])));
+      setEditingNames(null);
+      notify("Names saved", "success");
+    } catch (e) {
+      notify("Couldn't save names", "error");
     }
   }
 
@@ -2052,8 +2076,39 @@ export default function MeraConsignmentApp() {
           <div onClick={(e) => e.stopPropagation()} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 26, width: "100%", maxWidth: 560, maxHeight: "85vh", display: "flex", flexDirection: "column", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexShrink: 0 }}>
               <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontSize: 22, margin: 0, fontWeight: 600 }}>Activity log</h2>
-              <button type="button" onClick={() => setShowActivityLog(false)} style={{ background: "none", border: "none", color: C.textDim }}><X size={20} /></button>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <button type="button" onClick={() => {
+                  const all = Array.from(new Set([...KNOWN_LOGINS, ...Object.keys(userNames), ...(activityEntries || []).map((e) => e.user_email).filter(Boolean)]));
+                  setEditingNames(editingNames ? null : Object.fromEntries(all.map((e) => [e, userNames[e] || ""])));
+                }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.gold, borderRadius: 8, padding: "6px 11px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                  {editingNames ? "Close names" : "Names"}
+                </button>
+                <button type="button" onClick={() => setShowActivityLog(false)} style={{ background: "none", border: "none", color: C.textDim }}><X size={20} /></button>
+              </div>
             </div>
+
+            {editingNames && (
+              <div style={{ background: C.bg2, border: `1px solid ${C.gold}55`, borderRadius: 10, padding: 12, marginBottom: 12, flexShrink: 0 }}>
+                <div style={{ fontSize: 11, color: C.textDim, marginBottom: 8 }}>Give each login a name so you know who did what.</div>
+                {Object.keys(editingNames).map((email) => (
+                  <div key={email} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                    <div style={{ fontSize: 11.5, color: C.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={email}>{email}</div>
+                    <input type="text" value={editingNames[email]} placeholder="Name" onChange={(e) => setEditingNames({ ...editingNames, [email]: e.target.value })}
+                      style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 7, padding: "7px 9px", fontSize: 12.5, width: "100%", boxSizing: "border-box" }} />
+                  </div>
+                ))}
+                <button type="button" onClick={saveUserNames} style={{ marginTop: 6, background: C.gold, border: "none", borderRadius: 7, padding: "7px 16px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>Save names</button>
+              </div>
+            )}
+
+            {!editingNames && activityEntries && activityEntries.length > 0 && (
+              <select value={logPerson} onChange={(e) => setLogPerson(e.target.value)} style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "7px 10px", fontSize: 12.5, marginBottom: 12, flexShrink: 0 }}>
+                <option value="">Everyone</option>
+                {Array.from(new Set(activityEntries.map((e) => e.user_email).filter(Boolean))).map((em) => (
+                  <option key={em} value={em}>{personLabel(em)} ({activityEntries.filter((x) => x.user_email === em).length})</option>
+                ))}
+              </select>
+            )}
 
             <div style={{ overflowY: "auto", flex: 1 }}>
               {activityLoading ? (
@@ -2062,7 +2117,7 @@ export default function MeraConsignmentApp() {
                 <div style={{ textAlign: "center", color: C.textFaint, padding: "30px 0", fontSize: 13 }}>No activity recorded yet.</div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {activityEntries.map((entry) => (
+                  {activityEntries.filter((entry) => !logPerson || entry.user_email === logPerson).map((entry) => (
                     <div key={entry.id} style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 12px" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 3 }}>
                         <span style={{ fontSize: 12, fontWeight: 700, color: C.gold }}>{entry.action}</span>
@@ -2074,7 +2129,10 @@ export default function MeraConsignmentApp() {
                       {entry.details && (
                         <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>{entry.details}</div>
                       )}
-                      <div style={{ fontSize: 10, color: C.textFaint }}>by {entry.user_email}</div>
+                      <div style={{ fontSize: 10.5, color: C.textFaint }}>
+                        by <b style={{ color: C.textDim }}>{personLabel(entry.user_email)}</b>
+                        {userNames[entry.user_email] ? <span> · {entry.user_email}</span> : null}
+                      </div>
                     </div>
                   ))}
                 </div>
