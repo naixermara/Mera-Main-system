@@ -1414,7 +1414,7 @@ export default function MeraConsignmentApp() {
               </span>
             </div>
             <h1 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 34, margin: "6px 0 0", letterSpacing: "-0.01em" }}>
-              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? "Delivery & Invoices" : page === "stores" ? "Stores" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "sales" ? (salesSubPage === "total" ? "Sales Total" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online Sales" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : "Consignment Operations") : "Consignment Operations"}
+              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? "Delivery & Invoices" : page === "stores" ? "Stores" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "sales" ? (salesSubPage === "total" ? "Sales Total" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online & COD Sales" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : "Consignment Operations") : "Consignment Operations"}
             </h1>
             <div style={{ height: 2, width: 46, background: `linear-gradient(90deg, ${C.gold}, transparent)`, marginTop: 10 }} />
           </div>
@@ -1552,7 +1552,7 @@ export default function MeraConsignmentApp() {
                   borderBottom: `2px solid ${salesSubPage === "online" ? C.gold : "transparent"}`,
                 }}
               >
-                Online Sales
+                Online &amp; COD
               </button>
               <button
                 onClick={() => setSalesSubPage("pending")}
@@ -3699,7 +3699,9 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
   const [sales, setSales] = useState([]);
   const [items, setItems] = useState([]); // online_sale_items, all of them, keyed by sale_id client-side
   const [selectedMonth, setSelectedMonth] = useState(currentMonthKey());
-  const [form, setForm] = useState({ date: todayStr(), customer_name: "", description: "" });
+  const [form, setForm] = useState({ date: todayStr(), customer_name: "", description: "", channel: "online" });
+  const [channelFilter, setChannelFilter] = useState("all");
+  const [storeNames, setStoreNames] = useState([]);
   const [lineForm, setLineForm] = useState(() => Object.fromEntries(SKUS.map((x) => [x.code, { qty: "", price: String(x.priceOptions[0]) }])));
   const [expandedId, setExpandedId] = useState(null);
   const [printSale, setPrintSale] = useState(null);
@@ -3715,6 +3717,10 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
         sbFetch("online_sale_items?select=*"),
       ]);
       setSales(s || []); setItems(i || []);
+      try {
+        const [a1, b1, c1] = await Promise.all([sbFetch("stores?select=name"), sbFetch("bigco_stores?select=name"), sbFetch("credit_stores?select=name")]);
+        setStoreNames([...(a1 || []), ...(b1 || []), ...(c1 || [])].map((x) => x.name));
+      } catch (e) { /* optional */ }
       try {
         const mv = await sbFetch(`stock_moves?select=reference&reason=eq.${encodeURIComponent("online sale")}`);
         setStockRefs(new Set((mv || []).map((m) => m.reference)));
@@ -3744,6 +3750,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
         body: JSON.stringify({
           date: form.date,
           customer_name: form.customer_name.trim(),
+          channel: form.channel || "online",
           description: form.description.trim(),
           amount: draftTotal,
           created_by: authUser?.email || "unknown",
@@ -3752,7 +3759,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
       const stockOk = await saveOnlineSaleLines(sbFetch, inserted.id, lineForm, true, form.date, authUser?.email);
       if (!stockOk) setError("Sale saved, but the warehouse wasn't updated — is the stock table set up?");
       logActivity?.("Logged online sale", form.customer_name.trim(), `${activeLines.map((l) => `${l.qty} ${l.label}`).join(", ")} — ${money(draftTotal)}`);
-      setForm({ date: form.date, customer_name: "", description: "" });
+      setForm({ date: form.date, customer_name: "", description: "", channel: form.channel });
       setLineForm(emptyOnlineLines());
       await reload();
     } catch (e) {
@@ -3797,7 +3804,8 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
     }
   }
 
-  const monthSales = sales.filter((s) => monthKey(s.date) === selectedMonth);
+  const monthAll = sales.filter((s) => monthKey(s.date) === selectedMonth);
+  const monthSales = monthAll.filter((s) => channelFilter === "all" || (s.channel || "online") === channelFilter);
   const monthTotal = monthSales.reduce((a, s) => a + Number(s.amount || 0), 0);
   const availableMonths = useMemo(() => monthsThrough(sales.map((s) => monthKey(s.date))), [sales]);
   const itemsBySale = (saleId) => items.filter((i) => i.sale_id === saleId);
@@ -3834,7 +3842,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexWrap: "wrap", gap: 12 }}>
         <div>
-          <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: 0 }}>Online Sales</h2>
+          <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: 0 }}>Online &amp; COD Sales</h2>
           <div style={{ fontSize: 12, color: C.textFaint, marginTop: 4 }}>Tracked here only — never posted to Accounting. Counts toward Profit &amp; Margin, with real COGS now that products are itemized.</div>
         </div>
         <select value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 9, padding: "11px 12px", fontSize: 13, fontWeight: 600 }}>
@@ -3851,11 +3859,18 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "18px 20px", marginBottom: 18, maxWidth: 260 }}>
         <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Total — {monthLabel(selectedMonth)}</div>
         <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: C.emerald }}>${monthTotal.toLocaleString("en-US", MONEY2)}</div>
-        <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>{monthSales.length} order{monthSales.length === 1 ? "" : "s"}</div>
+        <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>{monthSales.length} order{monthSales.length === 1 ? "" : "s"}{channelFilter === "all" ? ` · Online $${monthAll.filter((x) => (x.channel || "online") === "online").reduce((a, x) => a + Number(x.amount || 0), 0).toLocaleString("en-US", MONEY2)} · COD $${monthAll.filter((x) => x.channel === "cod").reduce((a, x) => a + Number(x.amount || 0), 0).toLocaleString("en-US", MONEY2)}` : ""}</div>
       </div>
 
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 18px", marginBottom: 18 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Log an online sale</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>Log {form.channel === "cod" ? "a COD order" : "an online sale"}</div>
+          <div style={{ display: "flex", gap: 6 }}>
+            {[["online", "Online"], ["cod", "COD / Paid first"]].map(([k, l]) => (
+              <button key={k} type="button" onClick={() => setForm({ ...form, channel: k })} style={{ background: form.channel === k ? C.gold : "none", border: `1px solid ${form.channel === k ? C.gold : C.border}`, color: form.channel === k ? "#1A1508" : C.textDim, borderRadius: 7, padding: "5px 11px", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>{l}</button>
+            ))}
+          </div>
+        </div>
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
           <div>
@@ -3863,8 +3878,9 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
             <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, display: "block" }} />
           </div>
           <div style={{ minWidth: 170 }}>
-            <label style={{ fontSize: 9, color: C.textFaint }}>Customer / order ref</label>
-            <input type="text" value={form.customer_name} onChange={(e) => setForm({ ...form, customer_name: e.target.value })} placeholder="e.g. FB order #123" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", display: "block" }} />
+            <label style={{ fontSize: 9, color: C.textFaint }}>{form.channel === "cod" ? "Store name (pick or type new)" : "Customer / order ref"}</label>
+            <datalist id="online-cod-names">{form.channel === "cod" && Array.from(new Set(storeNames.concat(sales.filter((x) => x.channel === "cod").map((x) => x.customer_name)))).sort().map((n) => <option key={n} value={n} />)}</datalist>
+            <input type="text" list="online-cod-names" value={form.customer_name} onChange={(e) => setForm({ ...form, customer_name: e.target.value })} placeholder="e.g. FB order #123" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", display: "block" }} />
           </div>
           <div style={{ flex: 1, minWidth: 170 }}>
             <label style={{ fontSize: 9, color: C.textFaint }}>Notes (optional)</label>
@@ -3886,6 +3902,13 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
         {error && <div style={{ fontSize: 11.5, color: C.rose, marginTop: 10 }}>{error}</div>}
       </div>
 
+      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+        {[["all", "All"], ["online", "Online"], ["cod", "COD"]].map(([k, l]) => (
+          <button key={k} type="button" onClick={() => setChannelFilter(k)} style={{ background: channelFilter === k ? C.bg2 : "none", border: `1px solid ${channelFilter === k ? C.gold : C.border}`, color: channelFilter === k ? C.text : C.textDim, borderRadius: 7, padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+            {l} ({monthAll.filter((x) => k === "all" || (x.channel || "online") === k).length})
+          </button>
+        ))}
+      </div>
       <div style={{ display: "grid", gap: 8 }}>
         {monthSales.length === 0 ? (
           <div style={{ background: C.surface, border: `1px dashed ${C.border}`, borderRadius: 12, padding: 30, textAlign: "center", fontSize: 12, color: C.textFaint }}>
@@ -3902,7 +3925,10 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
                   style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", gap: 10 }}
                 >
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 700 }}>{s.customer_name}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>
+                      {s.customer_name}
+                      {s.channel === "cod" && <span style={{ marginLeft: 8, fontSize: 9.5, fontWeight: 700, color: C.goldBright, background: `${C.gold}22`, borderRadius: 999, padding: "2px 8px" }}>COD</span>}
+                    </div>
                     <div style={{ fontSize: 11, color: C.textFaint }}>
                       {fmtDate(s.date)} · {lines.map((l) => `${l.qty} ${labelFor(l.product)}`).join(", ") || "no items"}
                       {s.description ? ` · ${s.description}` : ""}
@@ -3979,6 +4005,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
   const [stores, setStores] = useState([]);
   const [bigcoStores, setBigcoStores] = useState([]);
   const [creditStores, setCreditStores] = useState([]);
+  const [codNames, setCodNames] = useState([]); // stores that have ordered COD before
   const [creditInvoices, setCreditInvoices] = useState([]);
   const [bigcoReports, setBigcoReports] = useState([]);
   const [missing, setMissing] = useState(false);
@@ -4000,6 +4027,10 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
       setPending(p || []); setAssignedRecent(a || []);
       setStores(s || []); setBigcoStores(b || []); setCreditStores(c || []);
       setCreditInvoices(ci || []); setBigcoReports(br || []);
+      try {
+        const cod = await sbFetch("online_sales?select=customer_name&channel=eq.cod");
+        setCodNames(Array.from(new Set((cod || []).map((x) => x.customer_name).filter(Boolean))));
+      } catch (e) { /* column optional */ }
       setMissing(false);
       onCountChange?.((p || []).length);
     } catch (e) {
@@ -4083,12 +4114,14 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
         summary = `Credit Term · ${storeName} · Invoice ${inv?.invoice_number || draft.invoiceId}`;
         logActivity?.("Assigned payment", storeName, `$${row.amount} → Invoice ${inv?.invoice_number || ""}`);
       } else {
-        if (!draft.customerName.trim()) { setError("Add a customer name or order reference."); setBusy(false); return; }
+        const isCod = draft.type === "cod";
+        const custName = isCod ? (draft.codStore || "").trim() : draft.customerName.trim();
+        if (!custName) { setError(isCod ? "Type or pick the store's name." : "Add a customer name or order reference."); setBusy(false); return; }
         if (activeOnlineLines(draft.lines || {}).length === 0) { setError("Add the products in this order (at least one quantity), so the warehouse and profit stay right."); setBusy(false); return; }
         const [insertedSale] = await sbFetch("online_sales", {
           method: "POST",
           body: JSON.stringify({
-            date: draft.date, customer_name: draft.customerName.trim(),
+            date: draft.date, customer_name: custName, channel: isCod ? "cod" : "online",
             description: draft.notes, amount: parseFloat(draft.paid) || 0, created_by: authUser?.email || "unknown",
           }),
         });
@@ -4097,8 +4130,8 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
           if (!ok) setError("Assigned, but the warehouse wasn't updated — is the stock table set up?");
         }
         const act = activeOnlineLines(draft.lines);
-        summary = `Online Sales · ${draft.customerName.trim()} · ${act.map((l) => `${l.qty} ${l.label}`).join(", ")}`;
-        logActivity?.("Assigned payment", draft.customerName.trim(), `$${row.amount} → Online Sales`);
+        summary = `${isCod ? "COD" : "Online Sales"} · ${custName} · ${act.map((l) => `${l.qty} ${l.label}`).join(", ")}`;
+        logActivity?.("Assigned payment", custName, `$${row.amount} → ${isCod ? "COD" : "Online Sales"}`);
       }
 
       await sbFetch(`pending_payments?id=eq.${row.id}`, {
@@ -4171,7 +4204,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
               {draft && draft.pendingId === row.id && (
                 <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginTop: 12 }}>
                   <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-                    {[["consignment", "Consignment"], ["corporate", "Corporate"], ["credit", "Credit Term"], ["online", "Online Sale"]].map(([k, l]) => (
+                    {[["consignment", "Consignment"], ["corporate", "Corporate"], ["credit", "Credit Term"], ["online", "Online Sale"], ["cod", "COD / Paid first"]].map(([k, l]) => (
                       <button key={k} type="button" onClick={() => setDraft({ ...draft, type: k })}
                         style={{ padding: "7px 12px", fontSize: 11.5, fontWeight: 700, borderRadius: 8, cursor: "pointer",
                           background: draft.type === k ? C.gold : "none", color: draft.type === k ? "#1A1508" : C.textDim,
@@ -4260,10 +4293,27 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
                     );
                   })()}
 
-                  {draft.type === "online" && (
+                  {(draft.type === "online" || draft.type === "cod") && (
                     <div style={{ marginBottom: 10 }}>
-                      <label style={{ fontSize: 9, color: C.textFaint }}>Customer / order ref</label>
-                      <input type="text" value={draft.customerName} onChange={(e) => setDraft({ ...draft, customerName: e.target.value })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }} />
+                      {draft.type === "cod" ? (
+                        <>
+                          <label style={{ fontSize: 9, color: C.textFaint }}>Store name — pick one or type a new store</label>
+                          <input type="text" list="cod-store-names" value={draft.codStore || ""} placeholder="Type to search, or type a new store's name"
+                            onChange={(e) => setDraft({ ...draft, codStore: e.target.value })}
+                            style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "9px 11px", fontSize: 13, width: "100%", boxSizing: "border-box" }} />
+                          <datalist id="cod-store-names">
+                            {Array.from(new Set([...stores, ...bigcoStores, ...creditStores].map((x) => x.name).concat(codNames))).sort().map((n) => <option key={n} value={n} />)}
+                          </datalist>
+                          <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>
+                            {draft.codStore && ![...stores, ...bigcoStores, ...creditStores].some((x) => x.name === draft.codStore.trim()) && !codNames.includes(draft.codStore.trim())
+                              ? "New store — it will be saved with this name."
+                              : "The store paid first (cash on delivery). The boxes leave the warehouse now."}
+                          </div>
+                        </>
+                      ) : (
+                        <label style={{ fontSize: 9, color: C.textFaint }}>Customer / order ref</label>
+                      )}
+                      {draft.type === "online" && <input type="text" value={draft.customerName} onChange={(e) => setDraft({ ...draft, customerName: e.target.value })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }} />}
                       <div style={{ fontSize: 9, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", margin: "12px 0 8px" }}>What did they buy?</div>
                       <OnlineLinesGrid C={C} lines={draft.lines || emptyOnlineLines()} setLines={(ls) => setDraft({ ...draft, lines: ls })} />
                       {(() => {
@@ -5601,7 +5651,7 @@ const NAV = [
     { label: "Consignment",        page: "sales", sub: "consignment", view: "regular" },
     { label: "Corporate Accounts", page: "sales", sub: "consignment", view: "bigco" },
     { label: "Credit Term",        page: "sales", sub: "credit" },
-    { label: "Online Sales",       page: "sales", sub: "online" },
+    { label: "Online & COD",       page: "sales", sub: "online" },
     { label: "Pending Payments",   page: "sales", sub: "pending" },
     { label: "Province Coverage",  page: "sales", sub: "coverage" },
     { label: "Stores",             page: "stores" },
