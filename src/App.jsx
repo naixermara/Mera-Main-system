@@ -3780,8 +3780,8 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
         sbFetch("pending_payments?select=*&status=eq.pending&order=paid_at.desc"),
         sbFetch("pending_payments?select=*&status=eq.assigned&order=assigned_at.desc&limit=15"),
         sbFetch("stores?select=id,name"),
-        sbFetch("bigco_stores?select=id,name"),
-        sbFetch("credit_stores?select=id,name"),
+        sbFetch("bigco_stores?select=*"),
+        sbFetch("credit_stores?select=*"),
         sbFetch("credit_invoices?select=id,store_id,invoice_number,amount,paid,invoice_date"),
         sbFetch("bigco_reports?select=id,store_id,invoice_number,amount,paid,report_date"),
       ]);
@@ -3965,7 +3965,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
                       <select value={draft.storeId} onChange={(e) => setDraft({ ...draft, storeId: e.target.value, invoiceId: "" })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }}>
                         <option value="">Select a store…</option>
                         {(draft.type === "consignment" ? stores : draft.type === "corporate" ? bigcoStores : creditStores).map((s) => (
-                          <option key={s.id} value={s.id}>{s.name}</option>
+                          <option key={s.id} value={s.id}>{storeLabel(s)}</option>
                         ))}
                       </select>
                     </div>
@@ -4126,6 +4126,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity }) {
         const merged = storeRows.map((s) => ({
           id: s.id,
           name: s.name,
+          nickname: s.nickname || "",
           creditDays: Number(s.credit_days || 30),
           notes: s.notes || "",
           invoices: invoiceRows
@@ -4355,6 +4356,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity }) {
         method: "PATCH",
         body: JSON.stringify({
           name: changes.name,
+          nickname: changes.nickname || null,
           credit_days: changes.creditDays,
           notes: changes.notes,
         }),
@@ -4495,7 +4497,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity }) {
         if (s.monthBilled > 0 || s.monthCollected > 0) return true;
         return false;
       })
-      .filter((s) => !mainSearchQuery.trim() || s.name.toLowerCase().includes(mainSearchQuery.toLowerCase()));
+      .filter((s) => !mainSearchQuery.trim() || `${s.name} ${s.nickname || ""}`.toLowerCase().includes(mainSearchQuery.toLowerCase()));
   }, [enrichedStores, selectedMonth, mainSearchQuery]);
 
   const totals = useMemo(() => {
@@ -4777,7 +4779,8 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity }) {
                     />
                   )}
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 15 }}>{s.name}</div>
+                    <div style={{ fontWeight: 600, fontSize: 15 }}>{s.nickname || s.name}</div>
+                    {s.nickname && <div style={{ fontSize: 11, color: C.textDim }}>{s.name}</div>}
                     <div style={{ fontSize: 11, color: C.textFaint }}>
                       Net {s.creditDays} days{s.overdueCount > 0 ? ` · ${s.overdueCount} overdue` : ""}
                       {s.isComplete && <span style={{ color: C.emerald }}> · Completed</span>}
@@ -4843,7 +4846,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity }) {
                     onClick={(e) => {
                       e.stopPropagation();
                       if (editingStore !== s.id) {
-                        setEditStoreForm({ name: s.name, creditDays: s.creditDays, notes: s.notes });
+                        setEditStoreForm({ name: s.name, nickname: s.nickname || "", creditDays: s.creditDays, notes: s.notes });
                       }
                       setEditingStore(editingStore === s.id ? null : s.id);
                     }}
@@ -4855,8 +4858,12 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity }) {
                   {editingStore === s.id && (
                     <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 9, padding: 10, marginBottom: 12 }} onClick={(e) => e.stopPropagation()}>
                       <div style={{ marginBottom: 8 }}>
-                        <label style={{ fontSize: 9, color: C.textFaint }}>Store name</label>
+                        <label style={{ fontSize: 9, color: C.textFaint }}>Store name (as on invoices)</label>
                         <input type="text" value={editStoreForm.name} onChange={(e) => setEditStoreForm({ ...editStoreForm, name: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
+                      </div>
+                      <div style={{ marginBottom: 8 }}>
+                        <label style={{ fontSize: 9, color: C.textFaint }}>Nickname (what you call them, e.g. Emart)</label>
+                        <input type="text" value={editStoreForm.nickname || ""} onChange={(e) => setEditStoreForm({ ...editStoreForm, nickname: e.target.value })} placeholder="optional" style={{ ...miniInputStyle, width: "100%" }} />
                       </div>
                       <div style={{ marginBottom: 8 }}>
                         <label style={{ fontSize: 9, color: C.textFaint }}>Credit term (days)</label>
@@ -4871,6 +4878,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity }) {
                         onClick={async () => {
                           const ok = await updateCreditStore(s.id, {
                             name: editStoreForm.name,
+                            nickname: (editStoreForm.nickname || "").trim(),
                             creditDays: parseInt(editStoreForm.creditDays, 10) || 30,
                             notes: editStoreForm.notes,
                           });
@@ -5222,7 +5230,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity }) {
                   {storeSearchQuery.trim() && (
                     <div style={{ marginTop: 6, maxHeight: 160, overflowY: "auto", border: `1px solid ${C.border}`, borderRadius: 8 }}>
                       {enrichedStores
-                        .filter((s) => s.name.toLowerCase().includes(storeSearchQuery.toLowerCase()))
+                        .filter((s) => `${s.name} ${s.nickname || ""}`.toLowerCase().includes(storeSearchQuery.toLowerCase()))
                         .slice(0, 8)
                         .map((s) => (
                           <button
@@ -5231,10 +5239,10 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity }) {
                             onClick={() => { setQuickLogStoreId(s.id); setStoreSearchQuery(""); }}
                             style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: `1px solid ${C.border}`, padding: "9px 12px", fontSize: 13, color: C.text, cursor: "pointer" }}
                           >
-                            {s.name}
+                            {storeLabel(s)}
                           </button>
                         ))}
-                      {enrichedStores.filter((s) => s.name.toLowerCase().includes(storeSearchQuery.toLowerCase())).length === 0 && (
+                      {enrichedStores.filter((s) => `${s.name} ${s.nickname || ""}`.toLowerCase().includes(storeSearchQuery.toLowerCase())).length === 0 && (
                         <div style={{ padding: "9px 12px", fontSize: 13, color: C.textFaint }}>No matching store — add it via "New store" first.</div>
                       )}
                     </div>
@@ -8481,6 +8489,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
         const merged = storeRows.map((s) => ({
           id: s.id,
           name: s.name,
+          nickname: s.nickname || "",
           notes: s.notes || "",
           parentId: s.parent_id || null,
           paymentDay: s.payment_day || null,
@@ -8563,9 +8572,9 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
     try {
       await sbFetch(`bigco_stores?id=eq.${storeId}`, {
         method: "PATCH",
-        body: JSON.stringify({ name: changes.name, notes: changes.notes, parent_id: changes.parentId ?? null, payment_day: changes.paymentDay ?? null, payment_note: changes.paymentNote ?? "" }),
+        body: JSON.stringify({ name: changes.name, nickname: changes.nickname || null, notes: changes.notes, parent_id: changes.parentId ?? null, payment_day: changes.paymentDay ?? null, payment_note: changes.paymentNote ?? "" }),
       });
-      setStores((prev) => prev.map((s) => (s.id === storeId ? { ...s, name: changes.name, notes: changes.notes, parentId: changes.parentId ?? null, paymentDay: changes.paymentDay ?? null, paymentNote: changes.paymentNote ?? "" } : s)));
+      setStores((prev) => prev.map((s) => (s.id === storeId ? { ...s, name: changes.name, nickname: changes.nickname || "", notes: changes.notes, parentId: changes.parentId ?? null, paymentDay: changes.paymentDay ?? null, paymentNote: changes.paymentNote ?? "" } : s)));
       setSaveError(false);
       return true;
     } catch (e) {
@@ -9081,7 +9090,8 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}>
                       {s.parentId && <span style={{ color: C.textFaint, fontWeight: 400 }}>↳</span>}
-                      {s.name}
+                      {s.nickname || s.name}
+                      {s.nickname && <span style={{ fontSize: 11, color: C.textDim, fontWeight: 400 }}>{s.name}</span>}
                       {s.parentId && (
                         <span style={{ fontSize: 9.5, color: C.goldBright, background: `${C.gold}20`, borderRadius: 999, padding: "2px 8px", fontWeight: 600 }}>
                           Branch of {enrichedStores.find((p) => p.id === s.parentId)?.name || "?"}
@@ -9154,7 +9164,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
                       onClick={(e) => {
                         e.stopPropagation();
                         if (editingStore !== s.id) {
-                          setEditStoreForm({ name: s.name, notes: s.notes, parentId: s.parentId || "", paymentDay: s.paymentDay || "", paymentNote: s.paymentNote || "" });
+                          setEditStoreForm({ name: s.name, nickname: s.nickname || "", notes: s.notes, parentId: s.parentId || "", paymentDay: s.paymentDay || "", paymentNote: s.paymentNote || "" });
                         }
                         setEditingStore(editingStore === s.id ? null : s.id);
                       }}
@@ -9202,8 +9212,12 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
                   {editingStore === s.id && (
                     <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 9, padding: 10, marginBottom: 12 }} onClick={(e) => e.stopPropagation()}>
                       <div style={{ marginBottom: 8 }}>
-                        <label style={{ fontSize: 9, color: C.textFaint }}>Store name</label>
+                        <label style={{ fontSize: 9, color: C.textFaint }}>Store name (as on invoices)</label>
                         <input type="text" value={editStoreForm.name} onChange={(e) => setEditStoreForm({ ...editStoreForm, name: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
+                      </div>
+                      <div style={{ marginBottom: 8 }}>
+                        <label style={{ fontSize: 9, color: C.textFaint }}>Nickname (what you call them, e.g. Emart)</label>
+                        <input type="text" value={editStoreForm.nickname || ""} onChange={(e) => setEditStoreForm({ ...editStoreForm, nickname: e.target.value })} placeholder="optional" style={{ ...miniInputStyle, width: "100%" }} />
                       </div>
                       <div style={{ marginBottom: 8 }}>
                         <label style={{ fontSize: 9, color: C.textFaint }}>Notes</label>
@@ -9242,7 +9256,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
                         type="button"
                         onClick={async () => {
                           const ok = await updateBigCoStore(s.id, {
-                            name: editStoreForm.name, notes: editStoreForm.notes, parentId: editStoreForm.parentId || null,
+                            name: editStoreForm.name, nickname: (editStoreForm.nickname || "").trim(), notes: editStoreForm.notes, parentId: editStoreForm.parentId || null,
                             paymentDay: editStoreForm.paymentDay ? parseInt(editStoreForm.paymentDay, 10) : null,
                             paymentNote: editStoreForm.paymentNote,
                           });
@@ -9508,7 +9522,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
                   {storeSearchQuery.trim() && (
                     <div style={{ marginTop: 6, maxHeight: 160, overflowY: "auto", border: `1px solid ${C.border}`, borderRadius: 8 }}>
                       {enrichedStores
-                        .filter((s) => s.name.toLowerCase().includes(storeSearchQuery.toLowerCase()))
+                        .filter((s) => `${s.name} ${s.nickname || ""}`.toLowerCase().includes(storeSearchQuery.toLowerCase()))
                         .slice(0, 8)
                         .map((s) => (
                           <button
@@ -9517,10 +9531,10 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
                             onClick={() => { setQuickLogStoreId(s.id); setStoreSearchQuery(""); }}
                             style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: `1px solid ${C.border}`, padding: "9px 12px", fontSize: 13, color: C.text, cursor: "pointer" }}
                           >
-                            {s.name}
+                            {storeLabel(s)}
                           </button>
                         ))}
-                      {enrichedStores.filter((s) => s.name.toLowerCase().includes(storeSearchQuery.toLowerCase())).length === 0 && (
+                      {enrichedStores.filter((s) => `${s.name} ${s.nickname || ""}`.toLowerCase().includes(storeSearchQuery.toLowerCase())).length === 0 && (
                         <div style={{ padding: "9px 12px", fontSize: 13, color: C.textFaint }}>No matching store — add it via "New store" first.</div>
                       )}
                     </div>
@@ -9662,8 +9676,8 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
           sbFetch("delivery_notes?select=*&order=created_at.desc"),
           sbFetch("sales_invoices?select=*&order=created_at.desc"),
           sbFetch("stores?select=id,name,phone,email,address"),
-          sbFetch("credit_stores?select=id,name,phone,email,address"),
-          sbFetch("bigco_stores?select=id,name,phone,email,address,parent_id"),
+          sbFetch("credit_stores?select=id,name,nickname,phone,email,address"),
+          sbFetch("bigco_stores?select=id,name,nickname,phone,email,address,parent_id"),
           sbFetch("salespeople?select=*&order=name.asc"),
         ]);
         setNotes(dnRows || []);
@@ -10484,7 +10498,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                     >
                       <option value="">Select a corporate account…</option>
                       {bigcoStores.filter((s) => !s.parent_id).map((s) => (
-                        <option key={s.id} value={s.id}>{s.name}</option>
+                        <option key={s.id} value={s.id}>{storeLabel(s)}</option>
                       ))}
                     </select>
                     {dnForm.corpGroupId && bigcoStores.some((b) => b.parent_id === dnForm.corpGroupId) && (
@@ -10504,7 +10518,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                       >
                         <option value="">Select which branch…</option>
                         {bigcoStores.filter((s) => s.parent_id === dnForm.corpGroupId).map((s) => (
-                          <option key={s.id} value={s.id}>{s.name}</option>
+                          <option key={s.id} value={s.id}>{storeLabel(s)}</option>
                         ))}
                       </select>
                     )}
@@ -10526,7 +10540,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                 >
                   <option value="">Select a store…</option>
                   {storeListFor(dnForm.businessType).map((s) => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
+                    <option key={s.id} value={s.id}>{storeLabel(s)}</option>
                   ))}
                 </select>
                 )
@@ -12305,6 +12319,13 @@ function money(n) {
   // Accountants read "-$438.00", never "$-438.00".
   return (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString("en-US", MONEY2);
 }
+// A store's everyday name. Stores can carry a nickname (e.g. "Emart" for
+// សៃហាន ផាតនើរ ឯ.ក); the legal name stays on printed invoices.
+function storeLabel(st) {
+  if (!st) return "";
+  return st.nickname ? `${st.nickname} (${st.name})` : st.name;
+}
+
 function pnum(v) {
   // Accept numbers pasted from Excel or typed with symbols:
   // "$5,344.24", "9,600.00", " 0.5567 " all read correctly.
