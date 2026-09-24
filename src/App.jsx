@@ -5750,6 +5750,39 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
     }
   }
 
+  // Delete a vendor document and everything it created: its lines (they
+  // cascade), its ledger entry (gl_lines cascade), and the warehouse
+  // movement a purchase or purchase return made.
+  async function deleteVendorDoc(d) {
+    const def = VENDOR_DOCS.find((x) => x.key === d.kind);
+    const label = def ? def.label : "document";
+    const extra = [
+      d.entry_id ? "its entry in the books" : null,
+      d.kind === "purchase" || d.kind === "preturn" ? "the warehouse stock it moved" : null,
+    ].filter(Boolean);
+    const msg = `Delete ${label} ${d.doc_no} (${d.vendor_name}, ${money(d.total)})?` +
+      (extra.length ? `\n\nThis also removes ${extra.join(" and ")}.` : "") +
+      "\n\nThis cannot be undone.";
+    if (!window.confirm(msg)) return;
+    setBusy(true); setError("");
+    try {
+      if (d.kind === "purchase" || d.kind === "preturn") {
+        const reason = d.kind === "purchase" ? "purchase" : "purchase return";
+        try {
+          await sbFetch(`stock_moves?reference=eq.${encodeURIComponent(d.doc_no)}&reason=eq.${encodeURIComponent(reason)}`, { method: "DELETE" });
+        } catch (err) { /* stock table optional */ }
+      }
+      await sbFetch(`purchase_docs?id=eq.${d.id}`, { method: "DELETE" });
+      if (d.entry_id) await sbFetch(`gl_entries?id=eq.${d.entry_id}`, { method: "DELETE" });
+      await reload();
+      logActivity?.(`Deleted ${label}`, d.vendor_name, d.doc_no);
+    } catch (err) {
+      setError("Couldn't delete that document.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveVendor(v) {
     try {
       if (v.id) {
@@ -6272,6 +6305,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
           nextDocNo={nextDocNo}
           onSave={saveVendorDoc}
           onSaveVendor={saveVendor}
+          onDelete={deleteVendorDoc}
         />
       )}
 
@@ -6893,7 +6927,7 @@ const PRICE_COL = COST_PRODUCTS.reduce((m, p) => ({ ...m, [p.visitKey]: p.priceC
 // All of them except the purchase order write into the same ledger the
 // reports and the export already read.
 // ============================================================================
-function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, busy, error, selected, onSelect, nextDocNo, onSave, onSaveVendor }) {
+function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, busy, error, selected, onSelect, nextDocNo, onSave, onSaveVendor, onDelete }) {
   const def = VENDOR_DOCS.find((d) => d.key === selected) || VENDOR_DOCS[0];
   const today = new Date().toISOString().slice(0, 10);
   const blankLine = () => ({ productCode: "", description: "", qty: "", unitPrice: "", amount: "", account_id: "" });
@@ -6915,10 +6949,10 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
   const costAccounts = accounts.filter((a) => (a.type === "expense" || a.type === "asset") && a.active);
 
   // Lines total, VAT and grand total, recomputed as you type.
-  const subtotal = rows.reduce((a, r) => a + (parseFloat(r.amount) || 0), 0);
-  const vatAuto = isBill ? subtotal * ((parseFloat(form.vatRate) || 0) / 100) : 0;
-  const vatUsed = form.vatAmount === "" ? vatAuto : parseFloat(form.vatAmount) || 0;
-  const grand = hasLines ? subtotal + vatUsed : parseFloat(form.amount) || 0;
+  const subtotal = rows.reduce((a, r) => a + (pnum(r.amount) || 0), 0);
+  const vatAuto = isBill ? subtotal * ((pnum(form.vatRate) || 0) / 100) : 0;
+  const vatUsed = form.vatAmount === "" ? vatAuto : pnum(form.vatAmount) || 0;
+  const grand = hasLines ? subtotal + vatUsed : pnum(form.amount) || 0;
 
   function setRow(i, patch) {
     setRows((prev) => prev.map((r, j) => {
@@ -6927,7 +6961,7 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
       // Typing a quantity and a unit price fills the amount; typing the
       // amount directly still wins, so a lump-sum line needs no quantity.
       if (("qty" in patch || "unitPrice" in patch) && next.qty !== "" && next.unitPrice !== "") {
-        next.amount = String(((parseFloat(next.qty) || 0) * (parseFloat(next.unitPrice) || 0)).toFixed(2));
+        next.amount = String(((pnum(next.qty) || 0) * (pnum(next.unitPrice) || 0)).toFixed(2));
       }
       return next;
     }));
@@ -7199,6 +7233,7 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
                     {isBill && <th style={{ padding: "7px 8px", textAlign: "right" }}>VAT</th>}
                     <th style={{ padding: "7px 8px", textAlign: "right" }}>Total</th>
                     <th style={{ padding: "7px 8px" }}>In books</th>
+                    <th style={{ padding: "7px 8px" }}></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -7211,6 +7246,16 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
                       {isBill && <td style={{ padding: "9px 8px", textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", color: C.textDim }}>{money(d.vat_amount)}</td>}
                       <td style={{ padding: "9px 8px", textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 }}>{money(d.total)}</td>
                       <td style={{ padding: "9px 8px", fontSize: 11, color: d.entry_id ? C.emerald : C.textFaint }}>{d.entry_id ? "posted" : def.posts ? "—" : "n/a"}</td>
+                      <td style={{ padding: "9px 8px", textAlign: "right" }}>
+                        <button
+                          onClick={() => onDelete && onDelete(d)}
+                          disabled={busy}
+                          title="Delete this document"
+                          style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 7px", cursor: busy ? "default" : "pointer", color: "#E07A7A", display: "inline-flex", alignItems: "center" }}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -12064,7 +12109,10 @@ function money(n) {
   return (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString("en-US", MONEY2);
 }
 function pnum(v) {
-  const n = parseFloat(v);
+  // Accept numbers pasted from Excel or typed with symbols:
+  // "$5,344.24", "9,600.00", " 0.5567 " all read correctly.
+  if (typeof v === "number") return isNaN(v) ? 0 : v;
+  const n = parseFloat(String(v ?? "").replace(/[$,\s]/g, ""));
   return isNaN(n) ? 0 : n;
 }
 function dailyRate(r) {
