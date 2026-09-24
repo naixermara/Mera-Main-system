@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
-import { Plus, X, Search, ChevronDown, ChevronRight, AlertCircle, Package, Wallet, Calendar, ClipboardList, Sparkles, Trash2, LogOut, Download, Menu } from "lucide-react";
+import { Plus, X, Search, ChevronDown, ChevronRight, AlertCircle, Package, Wallet, Calendar, ClipboardList, Sparkles, Trash2, LogOut, Download, Menu, Eye, Pencil } from "lucide-react";
 
 const SUPABASE_URL = "https://idkjsxrqaklyhidptaon.supabase.co";
 const SUPABASE_KEY = "sb_publishable_Y-yZsch-GC8QNXYY8ja-dA_MaBE4El0";
@@ -5748,6 +5748,99 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
     }
   }
 
+  // Edit a vendor document in place. It keeps its number (PU000002 stays
+  // PU000002) and its entry in the books keeps its entry number; only the
+  // contents are replaced: the lines, the ledger lines, and the warehouse
+  // movement it made. Everything is checked before anything is changed.
+  async function updateVendorDoc(doc, form, lineRows) {
+    setError("");
+    const kindKey = doc.kind;
+    const def = VENDOR_DOCS.find((d) => d.key === kindKey);
+    if (!form.vendorName) { setError("Choose a supplier."); return false; }
+    let rows = null;
+    if (def.posts) {
+      const built = vendorEntryRows(kindKey, form, lineRows);
+      if (built.error) { setError(built.error); return false; }
+      rows = built.rows;
+      const dr = rows.reduce((a, r) => a + pnum(r.debit), 0);
+      const cr = rows.reduce((a, r) => a + pnum(r.credit), 0);
+      if (Math.abs(dr - cr) > 0.005) { setError(`Not balanced — debits ${money(dr)} vs credits ${money(cr)}.`); return false; }
+      if (rows.some((r) => !r.account_id)) { setError("Every line needs an account."); return false; }
+    }
+    setBusy(true);
+    try {
+      // 1. the entry in the books
+      let entryId = doc.entry_id || null;
+      if (rows) {
+        if (entryId) {
+          await sbFetch(`gl_entries?id=eq.${entryId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ entry_date: form.docDate, memo: form.memo || def.label, reference: form.reference || null, vendor: form.vendorName }),
+          });
+          await sbFetch(`gl_lines?entry_id=eq.${entryId}`, { method: "DELETE" });
+          await sbFetch("gl_lines", {
+            method: "POST",
+            body: JSON.stringify(rows.map((r) => ({ entry_id: entryId, account_id: r.account_id, debit: pnum(r.debit), credit: pnum(r.credit), memo: r.memo || null }))),
+          });
+        } else {
+          const head = await saveEntry(form.docDate, kindKey, form.memo || def.label, form.reference, rows, form.vendorName);
+          if (!head) { setBusy(false); return false; }
+          entryId = head.id || null;
+          setBusy(true);
+        }
+      }
+      // 2. the document itself
+      const isBill = kindKey === "purchase" || kindKey === "preturn";
+      const hasLines = isBill || kindKey === "po";
+      const subtotal = hasLines ? lineRows.reduce((a, r) => a + pnum(r.amount), 0) : pnum(form.amount);
+      const vat = isBill ? pnum(form.vatAmount) : 0;
+      await sbFetch(`purchase_docs?id=eq.${doc.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          doc_date: form.docDate, vendor_id: form.vendorId || null, vendor_name: form.vendorName,
+          reference: form.reference || null, memo: form.memo || null,
+          subtotal, vat_rate: isBill ? pnum(form.vatRate) : 0, vat_amount: vat, total: subtotal + vat,
+          paid_from_account: form.paidFrom || null,
+          applied_deposit: kindKey === "vpayment" ? pnum(form.applyDeposit) : 0,
+          entry_id: entryId,
+        }),
+      });
+      // 3. its lines
+      await sbFetch(`purchase_lines?doc_id=eq.${doc.id}`, { method: "DELETE" });
+      const keep = (lineRows || []).filter((r) => pnum(r.amount) > 0 || pnum(r.qty) > 0);
+      if (hasLines && keep.length) {
+        await sbFetch("purchase_lines", {
+          method: "POST",
+          body: JSON.stringify(keep.map((r) => ({
+            doc_id: doc.id, product_code: r.productCode || null, description: r.description || "",
+            qty: pnum(r.qty), unit_price: pnum(r.unitPrice), amount: pnum(r.amount), account_id: r.account_id || null,
+          }))),
+        });
+      }
+      // 4. the warehouse: take out what the old version moved, put in the new
+      if (isBill) {
+        const reason = kindKey === "purchase" ? "purchase" : "purchase return";
+        const sign = kindKey === "purchase" ? 1 : -1;
+        try {
+          await sbFetch(`stock_moves?reference=eq.${encodeURIComponent(doc.doc_no)}&reason=eq.${encodeURIComponent(reason)}`, { method: "DELETE" });
+          const moves = keep.filter((r) => r.productCode && pnum(r.qty) > 0).map((r) => ({
+            product: r.productCode, qty: sign * pnum(r.qty), reason, reference: doc.doc_no,
+            move_date: form.docDate, created_by: authUser?.email || "unknown",
+          }));
+          if (moves.length) await sbFetch("stock_moves", { method: "POST", body: JSON.stringify(moves) });
+        } catch (err) { setError("Saved, but the warehouse was not updated — is stock-setup.sql run?"); }
+      }
+      await reload();
+      logActivity?.(`Edited ${def.label}`, form.vendorName, doc.doc_no);
+      return true;
+    } catch (err) {
+      setError("Couldn't save the changes to that document.");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // Delete a vendor document and everything it created: its lines (they
   // cascade), its ledger entry (gl_lines cascade), and the warehouse
   // movement a purchase or purchase return made.
@@ -6304,6 +6397,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
           onSave={saveVendorDoc}
           onSaveVendor={saveVendor}
           onDelete={deleteVendorDoc}
+          onUpdate={updateVendorDoc}
         />
       )}
 
@@ -6925,7 +7019,7 @@ const PRICE_COL = COST_PRODUCTS.reduce((m, p) => ({ ...m, [p.visitKey]: p.priceC
 // All of them except the purchase order write into the same ledger the
 // reports and the export already read.
 // ============================================================================
-function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, busy, error, selected, onSelect, nextDocNo, onSave, onSaveVendor, onDelete }) {
+function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, busy, error, selected, onSelect, nextDocNo, onSave, onSaveVendor, onDelete, onUpdate }) {
   const def = VENDOR_DOCS.find((d) => d.key === selected) || VENDOR_DOCS[0];
   const today = new Date().toISOString().slice(0, 10);
   const blankLine = () => ({ productCode: "", description: "", qty: "", unitPrice: "", amount: "", amountTyped: false, account_id: "" });
@@ -6937,6 +7031,32 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
   const [rows, setRows] = useState([blankLine()]);
   const [vendorForm, setVendorForm] = useState(null);
   const [showDocs, setShowDocs] = useState(true);
+  const [editing, setEditing] = useState(null);   // the document being edited, or null for a new one
+  const [viewing, setViewing] = useState(null);   // id of the document whose details are open
+  const formTop = useRef(null);
+
+  const docLines = (docId) => (lines || []).filter((l) => l.doc_id === docId);
+  const accLabel = (id) => { const a = accounts.find((x) => x.id === id); return a ? `${a.code} · ${a.name}` : "—"; };
+  const skuLabel = (code) => { const k = SKUS.find((x) => x.code === code); return k ? k.label : (code || "—"); };
+
+  function startEdit(d) {
+    setEditing(d);
+    setForm({
+      docDate: d.doc_date || today, vendorId: d.vendor_id || "", vendorName: d.vendor_name || "",
+      reference: d.reference || "", memo: d.memo || "",
+      amount: String(d.subtotal ?? d.total ?? ""), paidFrom: d.paid_from_account || "",
+      applyDeposit: d.applied_deposit ? String(d.applied_deposit) : "",
+      vatRate: String(d.vat_rate ?? 0), vatAmount: d.vat_amount ? String(d.vat_amount) : "",
+    });
+    const ls = docLines(d.id);
+    setRows(ls.length ? ls.map((l) => ({
+      productCode: l.product_code || "", description: l.description || "",
+      qty: l.qty ? String(l.qty) : "", unitPrice: l.unit_price ? String(l.unit_price) : "",
+      amount: String(l.amount ?? ""), amountTyped: true, account_id: l.account_id || "",
+    })) : [blankLine()]);
+    setTimeout(() => formTop.current && formTop.current.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  }
+  function cancelEdit() { setEditing(null); setForm(emptyForm); setRows([blankLine()]); }
 
   const isBill = selected === "purchase" || selected === "preturn";
   // Purchase Order gets the same product-line table as a real bill (so you
@@ -6969,8 +7089,9 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
   }
 
   async function submit() {
-    const ok = await onSave(selected, { ...form, vatAmount: isBill ? String(vatUsed) : "" }, rows);
-    if (ok) { setForm({ ...emptyForm, docDate: form.docDate }); setRows([blankLine()]); }
+    const payload = { ...form, vatAmount: isBill ? String(vatUsed) : "" };
+    const ok = editing ? await onUpdate(editing, payload, rows) : await onSave(selected, payload, rows);
+    if (ok) { setEditing(null); setForm({ ...emptyForm, docDate: form.docDate }); setRows([blankLine()]); }
   }
 
   const lbl = { display: "block", fontSize: 10, color: C.textFaint, marginBottom: 4 };
@@ -6992,7 +7113,7 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
         {VENDOR_DOCS.map((d) => (
           <button
             key={d.key}
-            onClick={() => { onSelect(d.key); setForm(emptyForm); setRows([blankLine()]); }}
+            onClick={() => { onSelect(d.key); setEditing(null); setViewing(null); setForm(emptyForm); setRows([blankLine()]); }}
             style={{
               background: selected === d.key ? C.gold : "none",
               border: `1px solid ${selected === d.key ? C.gold : C.border}`,
@@ -7082,10 +7203,17 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
         </div>
       ) : (
         /* ---------------- the six document forms ---------------- */
-        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 16 }}>
+        <div ref={formTop} style={{ background: C.surface, border: `1px solid ${editing ? C.gold : C.border}`, borderRadius: 12, padding: 16, marginBottom: 16, scrollMarginTop: 80 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 13, flexWrap: "wrap", gap: 8 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>New {def.label.toLowerCase()}</div>
-            <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: C.gold, fontWeight: 700 }}>{nextDocNo(selected)}</div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: editing ? C.gold : C.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+              {editing ? `Editing ${def.label.toLowerCase()}` : `New ${def.label.toLowerCase()}`}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: C.gold, fontWeight: 700 }}>{editing ? editing.doc_no : nextDocNo(selected)}</div>
+              {editing && (
+                <button onClick={cancelEdit} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 7, padding: "5px 10px", fontSize: 11.5, cursor: "pointer" }}>Cancel edit</button>
+              )}
+            </div>
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginBottom: 12 }}>
@@ -7210,7 +7338,7 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
 
           <button onClick={submit} disabled={busy || !form.vendorName}
             style={{ background: form.vendorName ? `linear-gradient(135deg, ${C.goldBright}, ${C.gold})` : C.border, color: form.vendorName ? "#1A1508" : C.textFaint, border: "none", borderRadius: 9, padding: "12px 26px", fontSize: 13.5, fontWeight: 700, cursor: form.vendorName ? "pointer" : "default" }}>
-            {busy ? "Saving…" : def.posts ? `Save and post ${def.label.toLowerCase()}` : `Save ${def.label.toLowerCase()}`}
+            {busy ? "Saving…" : editing ? `Save changes to ${editing.doc_no}` : def.posts ? `Save and post ${def.label.toLowerCase()}` : `Save ${def.label.toLowerCase()}`}
           </button>
           {!def.posts && (
             <div style={{ fontSize: 11, color: C.textFaint, marginTop: 8 }}>
@@ -7246,17 +7374,35 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
                 </thead>
                 <tbody>
                   {mine.map((d) => (
-                    <tr key={d.id} style={{ borderTop: `1px solid ${C.border}` }}>
-                      <td style={{ padding: "9px 8px", fontFamily: "'IBM Plex Mono', monospace", color: C.gold }}>{d.doc_no}</td>
+                    <React.Fragment key={d.id}>
+                    <tr onClick={() => setViewing(viewing === d.id ? null : d.id)} style={{ borderTop: `1px solid ${C.border}`, cursor: "pointer", background: editing && editing.id === d.id ? `${C.gold}14` : viewing === d.id ? C.bg2 : "none" }}>
+                      <td style={{ padding: "9px 8px", fontFamily: "'IBM Plex Mono', monospace", color: C.gold }}>
+                        <span style={{ display: "inline-block", width: 12, color: C.textFaint }}>{viewing === d.id ? "▾" : "▸"}</span>{d.doc_no}
+                      </td>
                       <td style={{ padding: "9px 8px", color: C.textDim }}>{fmtDate(d.doc_date)}</td>
                       <td style={{ padding: "9px 8px" }}>{d.vendor_name}</td>
                       <td style={{ padding: "9px 8px", color: C.textDim }}>{d.reference || "—"}</td>
                       {isBill && <td style={{ padding: "9px 8px", textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", color: C.textDim }}>{money(d.vat_amount)}</td>}
                       <td style={{ padding: "9px 8px", textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 }}>{money(d.total)}</td>
                       <td style={{ padding: "9px 8px", fontSize: 11, color: d.entry_id ? C.emerald : C.textFaint }}>{d.entry_id ? "posted" : def.posts ? "—" : "n/a"}</td>
-                      <td style={{ padding: "9px 8px", textAlign: "right" }}>
+                      <td style={{ padding: "9px 8px", textAlign: "right", whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
                         <button
-                          onClick={() => onDelete && onDelete(d)}
+                          onClick={() => setViewing(viewing === d.id ? null : d.id)}
+                          title="View details"
+                          style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 7px", cursor: "pointer", color: C.textDim, display: "inline-flex", alignItems: "center", marginRight: 6 }}
+                        >
+                          <Eye size={14} />
+                        </button>
+                        <button
+                          onClick={() => startEdit(d)}
+                          disabled={busy}
+                          title="Edit this document"
+                          style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 7px", cursor: busy ? "default" : "pointer", color: C.gold, display: "inline-flex", alignItems: "center", marginRight: 6 }}
+                        >
+                          <Pencil size={14} />
+                        </button>
+                        <button
+                          onClick={() => { if (editing && editing.id === d.id) cancelEdit(); onDelete && onDelete(d); }}
                           disabled={busy}
                           title="Delete this document"
                           style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 7px", cursor: busy ? "default" : "pointer", color: "#E07A7A", display: "inline-flex", alignItems: "center" }}
@@ -7265,6 +7411,49 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
                         </button>
                       </td>
                     </tr>
+                    {viewing === d.id && (
+                      <tr style={{ background: C.bg2 }}>
+                        <td colSpan={isBill ? 8 : 7} style={{ padding: "10px 14px 14px" }}>
+                          <div style={{ display: "flex", gap: 22, flexWrap: "wrap", fontSize: 12, color: C.textDim, marginBottom: docLines(d.id).length ? 10 : 0 }}>
+                            <span>Date: <b style={{ color: C.text }}>{fmtDate(d.doc_date)}</b></span>
+                            <span>Their ref: <b style={{ color: C.text }}>{d.reference || "—"}</b></span>
+                            {d.memo && <span>Note: <b style={{ color: C.text }}>{d.memo}</b></span>}
+                            {d.paid_from_account && <span>Paid from: <b style={{ color: C.text }}>{accLabel(d.paid_from_account)}</b></span>}
+                            {Number(d.applied_deposit) > 0 && <span>Deposit used: <b style={{ color: C.text }}>{money(d.applied_deposit)}</b></span>}
+                            <span>Sub-total: <b style={{ color: C.text }}>{money(d.subtotal)}</b></span>
+                            {Number(d.vat_amount) > 0 && <span>VAT: <b style={{ color: C.text }}>{money(d.vat_amount)}</b></span>}
+                            <span>Total: <b style={{ color: C.gold }}>{money(d.total)}</b></span>
+                          </div>
+                          {docLines(d.id).length > 0 && (
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                              <thead>
+                                <tr style={{ color: C.textFaint, textAlign: "left" }}>
+                                  <th style={{ padding: "5px 6px" }}>Product</th>
+                                  <th style={{ padding: "5px 6px" }}>Description</th>
+                                  <th style={{ padding: "5px 6px", textAlign: "right" }}>Qty</th>
+                                  <th style={{ padding: "5px 6px", textAlign: "right" }}>Unit $</th>
+                                  <th style={{ padding: "5px 6px", textAlign: "right" }}>Amount $</th>
+                                  <th style={{ padding: "5px 6px" }}>Account</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {docLines(d.id).map((l) => (
+                                  <tr key={l.id} style={{ borderTop: `1px solid ${C.border}` }}>
+                                    <td style={{ padding: "6px" }}>{l.product_code ? skuLabel(l.product_code) : "—"}</td>
+                                    <td style={{ padding: "6px", color: C.textDim }}>{l.description || "—"}</td>
+                                    <td style={{ padding: "6px", textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" }}>{Number(l.qty || 0).toLocaleString()}</td>
+                                    <td style={{ padding: "6px", textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" }}>{l.unit_price ? `$${Number(l.unit_price)}` : "—"}</td>
+                                    <td style={{ padding: "6px", textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" }}>{money(l.amount)}</td>
+                                    <td style={{ padding: "6px", color: C.textDim }}>{accLabel(l.account_id)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
                   ))}
                 </tbody>
               </table>
