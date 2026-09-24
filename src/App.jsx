@@ -3637,12 +3637,16 @@ function StoreSearchSelect({ C, stores, value, onChange }) {
 // ---- Online sale product lines + warehouse --------------------------------
 // One product grid used by Online Sales (new + edit) and by Pending Payments
 // when a payment is assigned to Online. Lines are kept as { code: {qty, price} }.
-const emptyOnlineLines = () => Object.fromEntries(SKUS.map((x) => [x.code, { qty: "", price: String(x.priceOptions[0]) }]));
-const onlineLinesFromItems = (items) => {
+const emptyOnlineLines = () => Object.fromEntries(SKUS.map((x) => [x.code, { qty: "", price: String(x.priceOptions[0]), free: "" }]));
+const onlineLinesFromItems = (items, freeMoves) => {
   const base = emptyOnlineLines();
-  (items || []).forEach((i) => { if (base[i.product]) base[i.product] = { qty: String(Number(i.qty) || ""), price: String(Number(i.price) || 0) }; });
+  (items || []).forEach((i) => { if (base[i.product]) base[i.product] = { ...base[i.product], qty: String(Number(i.qty) || ""), price: String(Number(i.price) || 0) }; });
+  (freeMoves || []).forEach((m) => { if (base[m.product]) base[m.product].free = String(Math.abs(Number(m.qty) || 0) + (pnum(base[m.product].free) || 0)); });
   return base;
 };
+const freeOnlineLines = (lines) => SKUS
+  .map((x) => ({ code: x.code, label: x.label, qty: pnum(lines[x.code]?.free) }))
+  .filter((l) => l.qty > 0);
 const activeOnlineLines = (lines) => SKUS
   .map((x) => ({ code: x.code, label: x.label, qty: pnum(lines[x.code]?.qty), price: pnum(lines[x.code]?.price) }))
   .filter((l) => l.qty > 0);
@@ -3669,6 +3673,16 @@ async function saveOnlineSaleLines(sbFetch, saleId, lines, takeStock, date, who)
         body: JSON.stringify(act.map((l) => ({ product: l.code, qty: -l.qty, reason: "online sale", reference: ref, move_date: date || todayStr(), created_by: who || "unknown" }))),
       });
     }
+    // Free / promotion boxes: out of the warehouse as a "sample" — counted as
+    // a marketing expense at cost in Profit & Margin, never as sales revenue.
+    await sbFetch(`stock_moves?reference=eq.${ref}&reason=eq.sample`, { method: "DELETE" });
+    const free = freeOnlineLines(lines);
+    if (free.length) {
+      await sbFetch("stock_moves", {
+        method: "POST",
+        body: JSON.stringify(free.map((l) => ({ product: l.code, qty: -l.qty, reason: "sample", reference: ref, move_date: date || todayStr(), created_by: who || "unknown" }))),
+      });
+    }
     return true;
   } catch (e) {
     return false; // stock table missing — the sale itself is still saved
@@ -3676,19 +3690,40 @@ async function saveOnlineSaleLines(sbFetch, saleId, lines, takeStock, date, who)
 }
 
 function OnlineLinesGrid({ C, lines, setLines }) {
+  const cols = "minmax(96px, 130px) 68px minmax(0, 1fr) 64px";
+  const inp = { background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 8px", fontSize: 13, width: "100%", boxSizing: "border-box" };
   return (
     <div style={{ display: "grid", gap: 8 }}>
+      <div style={{ display: "grid", gridTemplateColumns: cols, gap: 8, fontSize: 9.5, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+        <span>Product</span><span>Sold</span><span>Price</span><span title="Given free (promotion) — leaves the warehouse, counted as a sample expense">Free 🎁</span>
+      </div>
       {SKUS.map((x) => (
-        <div key={x.code} style={{ display: "grid", gridTemplateColumns: "minmax(110px, 130px) 80px minmax(0, 1fr)", gap: 8, alignItems: "center" }}>
+        <div key={x.code} style={{ display: "grid", gridTemplateColumns: cols, gap: 8, alignItems: "center" }}>
           <div style={{ fontSize: 13, color: C.textDim }}>{x.label}</div>
-          <input
-            type="number" placeholder="qty" value={lines[x.code]?.qty || ""}
-            onChange={(e) => setLines({ ...lines, [x.code]: { ...lines[x.code], qty: e.target.value } })}
-            style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", boxSizing: "border-box" }}
-          />
+          <input type="number" min="0" placeholder="qty" value={lines[x.code]?.qty || ""}
+            onChange={(e) => setLines({ ...lines, [x.code]: { ...lines[x.code], qty: e.target.value } })} style={inp} />
           <PriceDropdown skuCode={x.code} value={lines[x.code]?.price} onChange={(v) => setLines({ ...lines, [x.code]: { ...lines[x.code], price: v } })} C={C} />
+          <input type="number" min="0" placeholder="0" value={lines[x.code]?.free || ""}
+            onChange={(e) => setLines({ ...lines, [x.code]: { ...lines[x.code], free: e.target.value } })}
+            style={{ ...inp, borderColor: pnum(lines[x.code]?.free) > 0 ? C.gold : C.border }} />
         </div>
       ))}
+      {freeOnlineLines(lines).length > 0 && (
+        <div style={{ fontSize: 11.5, color: C.goldBright }}>
+          🎁 Free: {freeOnlineLines(lines).map((l) => `${l.qty} ${l.label}`).join(", ")} — leaves the warehouse and is recorded as a promotion/sample expense (at cost), not as a sale.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PromoNoteInput({ C, lines, value, onChange }) {
+  if (freeOnlineLines(lines || {}).length === 0) return null;
+  return (
+    <div style={{ marginTop: 8 }}>
+      <label style={{ fontSize: 9, color: C.textFaint }}>Promotion (optional)</label>
+      <input type="text" value={value || ""} placeholder="e.g. Buy 10 get 1 free, Pchum Ben promo" onChange={(e) => onChange(e.target.value)}
+        style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", boxSizing: "border-box" }} />
     </div>
   );
 }
@@ -3699,7 +3734,8 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
   const [sales, setSales] = useState([]);
   const [items, setItems] = useState([]); // online_sale_items, all of them, keyed by sale_id client-side
   const [selectedMonth, setSelectedMonth] = useState(currentMonthKey());
-  const [form, setForm] = useState({ date: todayStr(), customer_name: "", description: "", channel: "online" });
+  const [form, setForm] = useState({ date: todayStr(), customer_name: "", description: "", channel: "online", promo: "" });
+  const [freeMoves, setFreeMoves] = useState([]); // free/promo boxes given with an order (stock_moves reason "sample", ref OS…)
   const [channelFilter, setChannelFilter] = useState("all");
   const [storeNames, setStoreNames] = useState([]);
   const [lineForm, setLineForm] = useState(() => Object.fromEntries(SKUS.map((x) => [x.code, { qty: "", price: String(x.priceOptions[0]) }])));
@@ -3724,6 +3760,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
       try {
         const mv = await sbFetch(`stock_moves?select=reference&reason=eq.${encodeURIComponent("online sale")}`);
         setStockRefs(new Set((mv || []).map((m) => m.reference)));
+        setFreeMoves((await sbFetch("stock_moves?select=product,qty,reference&reason=eq.sample&reference=like.OS*")) || []);
       } catch (e) { /* stock table optional */ }
       setMissing(false);
     } catch (e) {
@@ -3751,6 +3788,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
           date: form.date,
           customer_name: form.customer_name.trim(),
           channel: form.channel || "online",
+          promo_note: freeOnlineLines(lineForm).length ? (form.promo || "").trim() || null : null,
           description: form.description.trim(),
           amount: draftTotal,
           created_by: authUser?.email || "unknown",
@@ -3759,7 +3797,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
       const stockOk = await saveOnlineSaleLines(sbFetch, inserted.id, lineForm, true, form.date, authUser?.email);
       if (!stockOk) setError("Sale saved, but the warehouse wasn't updated — is the stock table set up?");
       logActivity?.("Logged online sale", form.customer_name.trim(), `${activeLines.map((l) => `${l.qty} ${l.label}`).join(", ")} — ${money(draftTotal)}`);
-      setForm({ date: form.date, customer_name: "", description: "", channel: form.channel });
+      setForm({ date: form.date, customer_name: "", description: "", channel: form.channel, promo: "" });
       setLineForm(emptyOnlineLines());
       await reload();
     } catch (e) {
@@ -3778,6 +3816,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
       const stockOk = await saveOnlineSaleLines(sbFetch, editing.id, editing.lines, true, sale?.date, authUser?.email);
       // A sale logged by hand is worth exactly its lines. One that came from a
       // bank payment keeps the amount actually received.
+      await sbFetch(`online_sales?id=eq.${editing.id}`, { method: "PATCH", body: JSON.stringify({ promo_note: freeOnlineLines(editing.lines).length ? (editing.promo || "").trim() || null : null }) });
       if (!editing.keepAmount && act.length) {
         await sbFetch(`online_sales?id=eq.${editing.id}`, { method: "PATCH", body: JSON.stringify({ amount: act.reduce((a, l) => a + l.qty * l.price, 0) }) });
       }
@@ -3795,7 +3834,10 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
   async function deleteSale(id) {
     if (!window.confirm("Delete this online sale and its product lines? Any boxes it took out of the warehouse go back in.")) return;
     try {
-      try { await sbFetch(`stock_moves?reference=eq.${onlineRef(id)}&reason=eq.${encodeURIComponent("online sale")}`, { method: "DELETE" }); } catch (e) { /* no stock table */ }
+      try {
+        await sbFetch(`stock_moves?reference=eq.${onlineRef(id)}&reason=eq.${encodeURIComponent("online sale")}`, { method: "DELETE" });
+        await sbFetch(`stock_moves?reference=eq.${onlineRef(id)}&reason=eq.sample`, { method: "DELETE" });
+      } catch (e) { /* no stock table */ }
       await sbFetch(`online_sales?id=eq.${id}`, { method: "DELETE" }); // online_sale_items cascade-deletes
       setSales((prev) => prev.filter((x) => x.id !== id));
       setItems((prev) => prev.filter((x) => x.sale_id !== id));
@@ -3890,6 +3932,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
 
         <div style={{ fontSize: 10, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Products</div>
         <OnlineLinesGrid C={C} lines={lineForm} setLines={setLineForm} />
+        <PromoNoteInput C={C} lines={lineForm} value={form.promo} onChange={(v) => setForm({ ...form, promo: v })} />
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
           <div style={{ fontSize: 13 }}>
@@ -3931,13 +3974,14 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
                     </div>
                     <div style={{ fontSize: 11, color: C.textFaint }}>
                       {fmtDate(s.date)} · {lines.map((l) => `${l.qty} ${labelFor(l.product)}`).join(", ") || "no items"}
+                      {(() => { const fr = freeMoves.filter((m) => m.reference === onlineRef(s.id)); return fr.length ? <span style={{ color: C.goldBright }}> · 🎁 free {fr.map((m) => `${Math.abs(Number(m.qty))} ${labelFor(m.product)}`).join(", ")}{s.promo_note ? ` (${s.promo_note})` : ""}</span> : null; })()}
                       {s.description ? ` · ${s.description}` : ""}
                     </div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, fontWeight: 700, color: C.emerald }}>${Number(s.amount).toLocaleString("en-US", MONEY2)}</span>
                     <button type="button" onClick={(e) => { e.stopPropagation(); setPrintSale(s); }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "5px 10px", fontSize: 11, cursor: "pointer" }}>Invoice</button>
-                    <button type="button" title="Edit products" onClick={(e) => { e.stopPropagation(); setExpandedId(s.id); setEditing({ id: s.id, lines: onlineLinesFromItems(lines), keepAmount: lines.length === 0 }); }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.gold, borderRadius: 8, padding: "5px 8px", cursor: "pointer", display: "inline-flex", alignItems: "center" }}><Pencil size={13} /></button>
+                    <button type="button" title="Edit products" onClick={(e) => { e.stopPropagation(); setExpandedId(s.id); setEditing({ id: s.id, lines: onlineLinesFromItems(lines, freeMoves.filter((m) => m.reference === onlineRef(s.id))), keepAmount: lines.length === 0, promo: s.promo_note || "" }); }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.gold, borderRadius: 8, padding: "5px 8px", cursor: "pointer", display: "inline-flex", alignItems: "center" }}><Pencil size={13} /></button>
                     <button type="button" onClick={(e) => { e.stopPropagation(); deleteSale(s.id); }} style={{ background: "none", border: "none", color: C.textFaint, cursor: "pointer" }}><Trash2 size={14} /></button>
                   </div>
                 </div>
@@ -3945,6 +3989,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
                   <div style={{ marginTop: 10, paddingTop: 12, borderTop: `1px solid ${C.gold}55` }} onClick={(e) => e.stopPropagation()}>
                     <div style={{ fontSize: 10, color: C.gold, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700, marginBottom: 8 }}>Edit products</div>
                     <OnlineLinesGrid C={C} lines={editing.lines} setLines={(ls) => setEditing({ ...editing, lines: ls })} />
+                    <PromoNoteInput C={C} lines={editing.lines} value={editing.promo} onChange={(v) => setEditing({ ...editing, promo: v })} />
                     {(() => {
                       const t = activeOnlineLines(editing.lines).reduce((a, l) => a + l.qty * l.price, 0);
                       const diff = editing.keepAmount && Math.abs(t - Number(s.amount || 0)) > 0.009;
@@ -4122,6 +4167,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
           method: "POST",
           body: JSON.stringify({
             date: draft.date, customer_name: custName, channel: isCod ? "cod" : "online",
+            promo_note: freeOnlineLines(draft.lines || {}).length ? (draft.promo || "").trim() || null : null,
             description: draft.notes, amount: parseFloat(draft.paid) || 0, created_by: authUser?.email || "unknown",
           }),
         });
@@ -4130,7 +4176,8 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
           if (!ok) setError("Assigned, but the warehouse wasn't updated — is the stock table set up?");
         }
         const act = activeOnlineLines(draft.lines);
-        summary = `${isCod ? "COD" : "Online Sales"} · ${custName} · ${act.map((l) => `${l.qty} ${l.label}`).join(", ")}`;
+        const fr = freeOnlineLines(draft.lines || {});
+        summary = `${isCod ? "COD" : "Online Sales"} · ${custName} · ${act.map((l) => `${l.qty} ${l.label}`).join(", ")}${fr.length ? ` + free ${fr.map((l) => `${l.qty} ${l.label}`).join(", ")}` : ""}`;
         logActivity?.("Assigned payment", custName, `$${row.amount} → ${isCod ? "COD" : "Online Sales"}`);
       }
 
@@ -4316,6 +4363,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
                       {draft.type === "online" && <input type="text" value={draft.customerName} onChange={(e) => setDraft({ ...draft, customerName: e.target.value })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }} />}
                       <div style={{ fontSize: 9, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", margin: "12px 0 8px" }}>What did they buy?</div>
                       <OnlineLinesGrid C={C} lines={draft.lines || emptyOnlineLines()} setLines={(ls) => setDraft({ ...draft, lines: ls })} />
+                      <PromoNoteInput C={C} lines={draft.lines} value={draft.promo} onChange={(v) => setDraft({ ...draft, promo: v })} />
                       {(() => {
                         const t = activeOnlineLines(draft.lines || {}).reduce((a, l) => a + l.qty * l.price, 0);
                         const diff = t > 0 && Math.abs(t - pnum(draft.paid)) > 0.009;
@@ -11818,19 +11866,29 @@ function StoresPage({ authUser, C, sbFetch, logActivity }) {
 // (there are only ever a few valid selling prices per product, so free typing
 // invites typos). The COD discount is applied once to an invoice's total,
 // not per line — see the invoice generator for that.
+// Pick one of the usual prices, or choose "Type a price…" to enter any price.
 function PriceDropdown({ skuCode, value, onChange, C }) {
   const sku = SKUS.find((s) => s.code === skuCode);
   const options = sku?.priceOptions || [];
-  const current = parseFloat(value) || 0;
-  const selected = options.find((o) => Math.abs(o - current) < 0.005) ?? options[0];
-
+  const current = parseFloat(value);
+  const inList = !isNaN(current) && options.some((o) => Math.abs(o - current) < 0.005);
+  const [typing, setTyping] = useState(!isNaN(current) && !inList && String(value) !== "");
+  const box = { background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 9px", fontSize: 13, width: "100%", boxSizing: "border-box" };
+  if (typing) {
+    return (
+      <div style={{ display: "flex", gap: 4 }}>
+        <input type="number" inputMode="decimal" step="0.01" min="0" autoFocus value={value} placeholder="0.00"
+          onChange={(e) => onChange(e.target.value)} style={{ ...box, flex: 1, minWidth: 0 }} />
+        <button type="button" title="Back to the price list" onClick={() => { setTyping(false); if (!inList) onChange(String(options[0] ?? "")); }}
+          style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "0 9px", fontSize: 12, cursor: "pointer", flexShrink: 0 }}>list</button>
+      </div>
+    );
+  }
+  const selected = inList ? options.find((o) => Math.abs(o - current) < 0.005) : options[0];
   return (
-    <select
-      value={selected}
-      onChange={(e) => onChange(e.target.value)}
-      style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 9px", fontSize: 13, width: "100%" }}
-    >
+    <select value={selected} onChange={(e) => { if (e.target.value === "__type") { setTyping(true); onChange(""); } else onChange(e.target.value); }} style={box}>
       {options.map((o) => <option key={o} value={o}>${o.toFixed(2)}</option>)}
+      <option value="__type">Type a price…</option>
     </select>
   );
 }
