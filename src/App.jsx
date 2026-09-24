@@ -3514,6 +3514,65 @@ function ProvinceCoveragePage({ authUser, C, sbFetch, logActivity }) {
   );
 }
 
+// ---- Online sale product lines + warehouse --------------------------------
+// One product grid used by Online Sales (new + edit) and by Pending Payments
+// when a payment is assigned to Online. Lines are kept as { code: {qty, price} }.
+const emptyOnlineLines = () => Object.fromEntries(SKUS.map((x) => [x.code, { qty: "", price: String(x.priceOptions[0]) }]));
+const onlineLinesFromItems = (items) => {
+  const base = emptyOnlineLines();
+  (items || []).forEach((i) => { if (base[i.product]) base[i.product] = { qty: String(Number(i.qty) || ""), price: String(Number(i.price) || 0) }; });
+  return base;
+};
+const activeOnlineLines = (lines) => SKUS
+  .map((x) => ({ code: x.code, label: x.label, qty: pnum(lines[x.code]?.qty), price: pnum(lines[x.code]?.price) }))
+  .filter((l) => l.qty > 0);
+const onlineRef = (saleId) => `OS${String(saleId).padStart(6, "0")}`;
+
+// Replace an online sale's product lines, and (optionally) its warehouse
+// movement. Stock leaves under reason "online sale" with the OS number as the
+// reference, so editing or deleting the sale can find and undo it.
+async function saveOnlineSaleLines(sbFetch, saleId, lines, takeStock, date, who) {
+  const act = activeOnlineLines(lines);
+  await sbFetch(`online_sale_items?sale_id=eq.${saleId}`, { method: "DELETE" });
+  if (act.length) {
+    await sbFetch("online_sale_items", {
+      method: "POST",
+      body: JSON.stringify(act.map((l) => ({ sale_id: saleId, product: l.code, qty: l.qty, price: l.price, line_total: Math.round(l.qty * l.price * 100) / 100 }))),
+    });
+  }
+  const ref = onlineRef(saleId);
+  try {
+    await sbFetch(`stock_moves?reference=eq.${ref}&reason=eq.${encodeURIComponent("online sale")}`, { method: "DELETE" });
+    if (takeStock && act.length) {
+      await sbFetch("stock_moves", {
+        method: "POST",
+        body: JSON.stringify(act.map((l) => ({ product: l.code, qty: -l.qty, reason: "online sale", reference: ref, move_date: date || todayStr(), created_by: who || "unknown" }))),
+      });
+    }
+    return true;
+  } catch (e) {
+    return false; // stock table missing — the sale itself is still saved
+  }
+}
+
+function OnlineLinesGrid({ C, lines, setLines }) {
+  return (
+    <div style={{ display: "grid", gap: 8 }}>
+      {SKUS.map((x) => (
+        <div key={x.code} style={{ display: "grid", gridTemplateColumns: "minmax(110px, 130px) 80px minmax(0, 1fr)", gap: 8, alignItems: "center" }}>
+          <div style={{ fontSize: 13, color: C.textDim }}>{x.label}</div>
+          <input
+            type="number" placeholder="qty" value={lines[x.code]?.qty || ""}
+            onChange={(e) => setLines({ ...lines, [x.code]: { ...lines[x.code], qty: e.target.value } })}
+            style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", boxSizing: "border-box" }}
+          />
+          <PriceDropdown skuCode={x.code} value={lines[x.code]?.price} onChange={(v) => setLines({ ...lines, [x.code]: { ...lines[x.code], price: v } })} C={C} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
   const [loading, setLoading] = useState(true);
   const [missing, setMissing] = useState(false);
@@ -3526,6 +3585,8 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
   const [printSale, setPrintSale] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(null); // { id, lines, takeStock }
+  const [stockRefs, setStockRefs] = useState(new Set()); // OS numbers that already took stock out
 
   async function reload() {
     try {
@@ -3534,6 +3595,10 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
         sbFetch("online_sale_items?select=*"),
       ]);
       setSales(s || []); setItems(i || []);
+      try {
+        const mv = await sbFetch(`stock_moves?select=reference&reason=eq.${encodeURIComponent("online sale")}`);
+        setStockRefs(new Set((mv || []).map((m) => m.reference)));
+      } catch (e) { /* stock table optional */ }
       setMissing(false);
     } catch (e) {
       setMissing(true);
@@ -3564,15 +3629,11 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
           created_by: authUser?.email || "unknown",
         }),
       });
-      await sbFetch("online_sale_items", {
-        method: "POST",
-        body: JSON.stringify(activeLines.map((l) => ({
-          sale_id: inserted.id, product: l.code, qty: l.qty, price: l.price, line_total: l.qty * l.price,
-        }))),
-      });
+      const stockOk = await saveOnlineSaleLines(sbFetch, inserted.id, lineForm, true, form.date, authUser?.email);
+      if (!stockOk) setError("Sale saved, but the warehouse wasn't updated — is the stock table set up?");
       logActivity?.("Logged online sale", form.customer_name.trim(), `${activeLines.map((l) => `${l.qty} ${l.label}`).join(", ")} — ${money(draftTotal)}`);
       setForm({ date: form.date, customer_name: "", description: "" });
-      setLineForm(Object.fromEntries(SKUS.map((x) => [x.code, { qty: "", price: String(x.priceOptions[0]) }])));
+      setLineForm(emptyOnlineLines());
       await reload();
     } catch (e) {
       setError("Couldn't save. Run the online_sales.sql / online_sale_items.sql setup if this is the first time.");
@@ -3581,9 +3642,33 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
     }
   }
 
-  async function deleteSale(id) {
-    if (!window.confirm("Delete this online sale and its product lines?")) return;
+  async function saveEdit() {
+    if (!editing) return;
+    const sale = sales.find((x) => x.id === editing.id);
+    const act = activeOnlineLines(editing.lines);
+    setBusy(true); setError("");
     try {
+      const stockOk = await saveOnlineSaleLines(sbFetch, editing.id, editing.lines, true, sale?.date, authUser?.email);
+      // A sale logged by hand is worth exactly its lines. One that came from a
+      // bank payment keeps the amount actually received.
+      if (!editing.keepAmount && act.length) {
+        await sbFetch(`online_sales?id=eq.${editing.id}`, { method: "PATCH", body: JSON.stringify({ amount: act.reduce((a, l) => a + l.qty * l.price, 0) }) });
+      }
+      if (!stockOk) setError("Saved, but the warehouse wasn't updated — is the stock table set up?");
+      logActivity?.("Edited online sale", sale?.customer_name || "", act.map((l) => `${l.qty} ${l.label}`).join(", "));
+      setEditing(null);
+      await reload();
+    } catch (e) {
+      setError("Couldn't save the items: " + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteSale(id) {
+    if (!window.confirm("Delete this online sale and its product lines? Any boxes it took out of the warehouse go back in.")) return;
+    try {
+      try { await sbFetch(`stock_moves?reference=eq.${onlineRef(id)}&reason=eq.${encodeURIComponent("online sale")}`, { method: "DELETE" }); } catch (e) { /* no stock table */ }
       await sbFetch(`online_sales?id=eq.${id}`, { method: "DELETE" }); // online_sale_items cascade-deletes
       setSales((prev) => prev.filter((x) => x.id !== id));
       setItems((prev) => prev.filter((x) => x.sale_id !== id));
@@ -3668,24 +3753,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
         </div>
 
         <div style={{ fontSize: 10, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Products</div>
-        <div style={{ display: "grid", gap: 8, marginBottom: 12 }}>
-          {SKUS.map((x) => (
-            <div key={x.code} style={{ display: "grid", gridTemplateColumns: "130px 90px 1fr", gap: 10, alignItems: "center" }}>
-              <div style={{ fontSize: 13, color: C.textDim }}>{x.label}</div>
-              <input
-                type="number" placeholder="qty" value={lineForm[x.code]?.qty || ""}
-                onChange={(e) => setLineForm({ ...lineForm, [x.code]: { ...lineForm[x.code], qty: e.target.value } })}
-                style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13 }}
-              />
-              <PriceDropdown
-                skuCode={x.code}
-                value={lineForm[x.code]?.price}
-                onChange={(v) => setLineForm({ ...lineForm, [x.code]: { ...lineForm[x.code], price: v } })}
-                C={C}
-              />
-            </div>
-          ))}
-        </div>
+        <OnlineLinesGrid C={C} lines={lineForm} setLines={setLineForm} />
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
           <div style={{ fontSize: 13 }}>
@@ -3723,11 +3791,35 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, fontWeight: 700, color: C.emerald }}>${Number(s.amount).toLocaleString("en-US", MONEY2)}</span>
                     <button type="button" onClick={(e) => { e.stopPropagation(); setPrintSale(s); }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "5px 10px", fontSize: 11, cursor: "pointer" }}>Invoice</button>
+                    <button type="button" title="Edit products" onClick={(e) => { e.stopPropagation(); setExpandedId(s.id); setEditing({ id: s.id, lines: onlineLinesFromItems(lines), keepAmount: lines.length === 0 }); }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.gold, borderRadius: 8, padding: "5px 8px", cursor: "pointer", display: "inline-flex", alignItems: "center" }}><Pencil size={13} /></button>
                     <button type="button" onClick={(e) => { e.stopPropagation(); deleteSale(s.id); }} style={{ background: "none", border: "none", color: C.textFaint, cursor: "pointer" }}><Trash2 size={14} /></button>
                   </div>
                 </div>
-                {expanded && (
+                {editing && editing.id === s.id && (
+                  <div style={{ marginTop: 10, paddingTop: 12, borderTop: `1px solid ${C.gold}55` }} onClick={(e) => e.stopPropagation()}>
+                    <div style={{ fontSize: 10, color: C.gold, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700, marginBottom: 8 }}>Edit products</div>
+                    <OnlineLinesGrid C={C} lines={editing.lines} setLines={(ls) => setEditing({ ...editing, lines: ls })} />
+                    {(() => {
+                      const t = activeOnlineLines(editing.lines).reduce((a, l) => a + l.qty * l.price, 0);
+                      const diff = editing.keepAmount && Math.abs(t - Number(s.amount || 0)) > 0.009;
+                      return (
+                        <div style={{ fontSize: 12, color: diff ? C.amber : C.textDim, marginBottom: 10 }}>
+                          Products total: <b>${t.toLocaleString("en-US", MONEY2)}</b>
+                          {editing.keepAmount ? ` · amount received stays $${Number(s.amount).toLocaleString("en-US", MONEY2)}` : ""}
+                          {diff ? " — doesn't match, check the quantities or prices" : ""}
+                        </div>
+                      );
+                    })()}
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button type="button" onClick={saveEdit} disabled={busy} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>{busy ? "Saving…" : "Save products"}</button>
+                      <button type="button" onClick={() => setEditing(null)} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 14px", fontSize: 12.5, color: C.textDim, cursor: "pointer" }}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+                {expanded && !(editing && editing.id === s.id) && (
                   <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
+                    {lines.length === 0 && <div style={{ fontSize: 12, color: C.amber }}>No products recorded yet — click the pencil to add them.</div>}
+                    {lines.length > 0 && <div style={{ fontSize: 11, color: stockRefs.has(onlineRef(s.id)) ? C.emerald : C.textFaint, marginBottom: 4 }}>{stockRefs.has(onlineRef(s.id)) ? "✓ Taken out of the warehouse" : "Not taken out of the warehouse"}</div>}
                     {lines.map((l) => (
                       <div key={l.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0", color: C.textDim }}>
                         <span>{labelFor(l.product)} × {l.qty} @ ${Number(l.price).toFixed(2)}</span>
@@ -3812,6 +3904,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
       owed: "0",
       customerName: row.payer_name || "",
       notes: [row.remark, `ABA ${row.transaction_id || ""}`].filter(Boolean).join(" — ").trim(),
+      lines: emptyOnlineLines(),
     });
   }
 
@@ -3868,14 +3961,20 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
         logActivity?.("Assigned payment", storeName, `$${row.amount} → Invoice ${inv?.invoice_number || ""}`);
       } else {
         if (!draft.customerName.trim()) { setError("Add a customer name or order reference."); setBusy(false); return; }
-        await sbFetch("online_sales", {
+        if (activeOnlineLines(draft.lines || {}).length === 0) { setError("Add the products in this order (at least one quantity), so the warehouse and profit stay right."); setBusy(false); return; }
+        const [insertedSale] = await sbFetch("online_sales", {
           method: "POST",
           body: JSON.stringify({
             date: draft.date, customer_name: draft.customerName.trim(),
             description: draft.notes, amount: parseFloat(draft.paid) || 0, created_by: authUser?.email || "unknown",
           }),
         });
-        summary = `Online Sales · ${draft.customerName.trim()}`;
+        if (insertedSale?.id) {
+          const ok = await saveOnlineSaleLines(sbFetch, insertedSale.id, draft.lines, true, draft.date, authUser?.email);
+          if (!ok) setError("Assigned, but the warehouse wasn't updated — is the stock table set up?");
+        }
+        const act = activeOnlineLines(draft.lines);
+        summary = `Online Sales · ${draft.customerName.trim()} · ${act.map((l) => `${l.qty} ${l.label}`).join(", ")}`;
         logActivity?.("Assigned payment", draft.customerName.trim(), `$${row.amount} → Online Sales`);
       }
 
@@ -4032,6 +4131,17 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
                     <div style={{ marginBottom: 10 }}>
                       <label style={{ fontSize: 9, color: C.textFaint }}>Customer / order ref</label>
                       <input type="text" value={draft.customerName} onChange={(e) => setDraft({ ...draft, customerName: e.target.value })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }} />
+                      <div style={{ fontSize: 9, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", margin: "12px 0 8px" }}>What did they buy?</div>
+                      <OnlineLinesGrid C={C} lines={draft.lines || emptyOnlineLines()} setLines={(ls) => setDraft({ ...draft, lines: ls })} />
+                      {(() => {
+                        const t = activeOnlineLines(draft.lines || {}).reduce((a, l) => a + l.qty * l.price, 0);
+                        const diff = t > 0 && Math.abs(t - pnum(draft.paid)) > 0.009;
+                        return t > 0 ? (
+                          <div style={{ fontSize: 12, color: diff ? C.amber : C.textDim, marginTop: 8 }}>
+                            Products total: <b>${t.toLocaleString("en-US", MONEY2)}</b>{diff ? ` — payment is $${pnum(draft.paid).toLocaleString("en-US", MONEY2)}, check quantities or prices` : " ✓ matches the payment"}
+                          </div>
+                        ) : null;
+                      })()}
                     </div>
                   )}
 
