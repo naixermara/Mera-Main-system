@@ -5397,13 +5397,13 @@ const VENDOR_DOCS = [
   { key: "master",   label: "Setup Master Data", posts: false, help: "Your suppliers — name, tax number, address. Everything else picks from this list." },
   { key: "po",       label: "Purchase Order",    posts: false, help: "What you have ordered. A commitment, not yet a cost — nothing reaches the books until the goods and the bill arrive." },
   { key: "vdeposit", label: "Vendor Deposit",    posts: true,  help: "Money paid up front. Held as an advance to that supplier until a purchase uses it." },
-  { key: "purchase", label: "Purchase",          posts: true,  help: "Their bill. Records the cost and the 10% VAT you reclaim, and what you now owe them." },
+  { key: "purchase", label: "Purchase",          posts: true,  help: "Their bill. Records the cost and what you now owe them. VAT is 0 unless you type a rate." },
   { key: "preturn",  label: "Purchase Return",   posts: true,  help: "Goods sent back. Reverses the cost and the VAT, and reduces what you owe." },
   { key: "vpayment", label: "Vendor Payment",    posts: true,  help: "You pay a supplier. Clears what you owe, and can use up a deposit you already paid." },
   { key: "vrefund",  label: "Vendor Refund",     posts: true,  help: "Money coming back from a supplier — an unused deposit, or an overpayment." },
 ];
 
-const VAT_RATE_DEFAULT = 10;
+const VAT_RATE_DEFAULT = 0; // suppliers' bills carry no VAT for now; type a rate on a bill that has it
 
 const POST_KINDS = [
   { key: "expense", label: "Post Expense", help: "Money spent. Debits the expense, credits where it was paid from." },
@@ -6930,7 +6930,7 @@ const PRICE_COL = COST_PRODUCTS.reduce((m, p) => ({ ...m, [p.visitKey]: p.priceC
 function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, busy, error, selected, onSelect, nextDocNo, onSave, onSaveVendor, onDelete }) {
   const def = VENDOR_DOCS.find((d) => d.key === selected) || VENDOR_DOCS[0];
   const today = new Date().toISOString().slice(0, 10);
-  const blankLine = () => ({ productCode: "", description: "", qty: "", unitPrice: "", amount: "", account_id: "" });
+  const blankLine = () => ({ productCode: "", description: "", qty: "", unitPrice: "", amount: "", amountTyped: false, account_id: "" });
   const emptyForm = {
     docDate: today, vendorId: "", vendorName: "", reference: "", memo: "",
     amount: "", paidFrom: "", applyDeposit: "", vatRate: String(VAT_RATE_DEFAULT), vatAmount: "",
@@ -6958,9 +6958,12 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
     setRows((prev) => prev.map((r, j) => {
       if (j !== i) return r;
       const next = { ...r, ...patch };
-      // Typing a quantity and a unit price fills the amount; typing the
-      // amount directly still wins, so a lump-sum line needs no quantity.
-      if (("qty" in patch || "unitPrice" in patch) && next.qty !== "" && next.unitPrice !== "") {
+      // Typing a quantity and a unit price fills the amount. Once you type
+      // the amount yourself (the exact figure on their bill), it stays —
+      // changing qty or price afterwards no longer overwrites it. Clear the
+      // amount box to go back to qty x price.
+      if ("amount" in patch) next.amountTyped = patch.amount !== "";
+      if (!next.amountTyped && ("qty" in patch || "unitPrice" in patch) && next.qty !== "" && next.unitPrice !== "") {
         next.amount = String(((pnum(next.qty) || 0) * (pnum(next.unitPrice) || 0)).toFixed(2));
       }
       return next;
@@ -7113,39 +7116,46 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
                 Lines. Pick a product to have the boxes counted into your warehouse; leave it blank for services, freight or anything not stocked.
               </div>
               {rows.map((r, i) => (
-                <div key={i} style={{ display: "grid", gridTemplateColumns: "1.1fr 1.4fr 0.6fr 0.7fr 0.8fr 1.2fr auto", gap: 6, marginBottom: 6, alignItems: "end" }}>
+                <div key={i} style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: 10, marginBottom: 8 }}>
+                 <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "flex-end" }}>
+                 <div style={{ flex: 1, minWidth: 0, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
                   <div>
-                    {i === 0 && <label style={lbl}>Product</label>}
+                    <label style={lbl}>Product</label>
                     <select value={r.productCode} onChange={(e) => { const sk = SKUS.find((x) => x.code === e.target.value); setRow(i, { productCode: e.target.value, description: r.description || (sk ? sk.label : "") }); }} style={inp}>
                       <option value="">— none —</option>
                       {SKUS.map((x) => <option key={x.code} value={x.code}>{x.label}</option>)}
                     </select>
                   </div>
                   <div>
-                    {i === 0 && <label style={lbl}>Description</label>}
+                    <label style={lbl}>Description</label>
                     <input value={r.description} onChange={(e) => setRow(i, { description: e.target.value })} style={inp} />
                   </div>
+                 </div>
+                  <button onClick={() => setRows((prev) => prev.length === 1 ? [blankLine()] : prev.filter((_, j) => j !== i))}
+                    title="Remove this line"
+                    style={{ flex: "none", background: "none", border: `1px solid ${C.border}`, color: C.textFaint, borderRadius: 8, padding: "9px 11px", fontSize: 12, cursor: "pointer" }}>×</button>
+                 </div>
+                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8, alignItems: "end" }}>
                   <div>
-                    {i === 0 && <label style={lbl}>Qty</label>}
+                    <label style={lbl}>Qty</label>
                     <input inputMode="decimal" value={r.qty} onChange={(e) => setRow(i, { qty: e.target.value })} placeholder="0" style={{ ...inp, textAlign: "right" }} />
                   </div>
                   <div>
-                    {i === 0 && <label style={lbl}>Unit $</label>}
+                    <label style={lbl}>Unit $</label>
                     <input inputMode="decimal" value={r.unitPrice} onChange={(e) => setRow(i, { unitPrice: e.target.value })} placeholder="0.00" style={{ ...inp, textAlign: "right" }} />
                   </div>
                   <div>
-                    {i === 0 && <label style={lbl}>Amount $</label>}
+                    <label style={lbl}>Amount $</label>
                     <input inputMode="decimal" value={r.amount} onChange={(e) => setRow(i, { amount: e.target.value })} placeholder="0.00" style={{ ...inp, textAlign: "right" }} />
                   </div>
-                  <div>
-                    {i === 0 && <label style={lbl}>Goes to account{selected === "po" ? " (optional)" : ""}</label>}
+                  <div style={{ gridColumn: "span 2", minWidth: 0 }}>
+                    <label style={lbl}>Goes to account{selected === "po" ? " (optional)" : ""}</label>
                     <select value={r.account_id} onChange={(e) => setRow(i, { account_id: e.target.value })} style={inp}>
                       <option value="">Choose…</option>
                       {costAccounts.map((a) => <option key={a.id} value={a.id}>{a.code} · {a.name}</option>)}
                     </select>
                   </div>
-                  <button onClick={() => setRows((prev) => prev.length === 1 ? [blankLine()] : prev.filter((_, j) => j !== i))}
-                    style={{ background: "none", border: `1px solid ${C.border}`, color: C.textFaint, borderRadius: 8, padding: "9px 11px", fontSize: 12, cursor: "pointer" }}>×</button>
+                 </div>
                 </div>
               ))}
               <button onClick={() => setRows((prev) => [...prev, blankLine()])}
