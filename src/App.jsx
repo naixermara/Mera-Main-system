@@ -573,6 +573,7 @@ export default function MeraConsignmentApp() {
   // Polled independently of whichever page is open, so the sidebar badge
   // stays current even if the person never visits Pending Payments directly.
   useEffect(() => {
+    if (!PENDING_PAYMENTS_ENABLED) return;
     let cancelled = false;
     async function checkPending() {
       try {
@@ -1390,8 +1391,8 @@ export default function MeraConsignmentApp() {
         onPick={goTo}
         mobileOpen={navMobile}
         onCloseMobile={() => setNavMobile(false)}
-        pendingCount={pendingPaymentCount}
-        badges={{ "Pending Payments": pendingPaymentCount, "Corporate Accounts": corpPaymentDueCount }}
+        pendingCount={PENDING_PAYMENTS_ENABLED ? pendingPaymentCount : 0}
+        badges={{ "Pending Payments": PENDING_PAYMENTS_ENABLED ? pendingPaymentCount : 0, "Corporate Accounts": corpPaymentDueCount }}
       />
 
       <div className="mera-shell" style={{ maxWidth: 920, margin: "0 auto", padding: "40px 20px 0" }}>
@@ -1554,7 +1555,7 @@ export default function MeraConsignmentApp() {
               >
                 Online &amp; COD
               </button>
-              <button
+              {PENDING_PAYMENTS_ENABLED && <button
                 onClick={() => setSalesSubPage("pending")}
                 style={{
                   background: "none", border: "none", padding: "6px 2px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginLeft: 14,
@@ -1563,7 +1564,7 @@ export default function MeraConsignmentApp() {
                 }}
               >
                 Pending Payments
-              </button>
+              </button>}
               <button
                 onClick={() => setSalesSubPage("coverage")}
                 style={{
@@ -1589,7 +1590,7 @@ export default function MeraConsignmentApp() {
               <CreditTermPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             ) : salesSubPage === "online" ? (
               <OnlineSalesPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
-            ) : salesSubPage === "pending" ? (
+            ) : salesSubPage === "pending" && PENDING_PAYMENTS_ENABLED ? (
               <PendingPaymentsPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} onCountChange={setPendingPaymentCount} />
             ) : salesSubPage === "coverage" ? (
               <ProvinceCoveragePage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
@@ -5723,7 +5724,7 @@ const NAV = [
     { label: "Corporate Accounts", page: "sales", sub: "consignment", view: "bigco" },
     { label: "Credit Term",        page: "sales", sub: "credit" },
     { label: "Online & COD",       page: "sales", sub: "online" },
-    { label: "Pending Payments",   page: "sales", sub: "pending" },
+    ...(PENDING_PAYMENTS_ENABLED ? [{ label: "Pending Payments",   page: "sales", sub: "pending" }] : []),
     { label: "Province Coverage",  page: "sales", sub: "coverage" },
     { label: "Stores",             page: "stores" },
   ]},
@@ -12699,6 +12700,11 @@ function storeLabel(st) {
   if (!st) return "";
   return st.nickname ? `${st.nickname} (${st.name})` : st.name;
 }
+
+// Pending Payments (ABA payments from the Telegram bot) is paused: hidden from
+// the menu, the Sales tabs and the badge. Nothing is deleted — the bot keeps
+// saving payments in the background. Set to true to turn it back on.
+const PENDING_PAYMENTS_ENABLED = false;
 
 function pnum(v) {
   // Accept numbers pasted from Excel or typed with symbols:
