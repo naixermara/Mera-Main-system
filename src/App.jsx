@@ -999,9 +999,9 @@ export default function MeraConsignmentApp() {
           first_sent: details.firstSent,
           zone_province: details.zoneProvince ?? null,
           zone_district: details.zoneDistrict ?? null,
-          pl_initial: details.pl,
-          night_initial: details.night,
-          day_initial: details.dayp,
+          // Every product's opening stock, from the one SKUS list — this used
+          // to name only PL/Night/Day, so Period Pant and Summer never saved.
+          ...Object.fromEntries(SKUS.map((x) => [x.initCol, Number(details[x.initKey]) || 0])),
           salesperson: details.salesperson || "",
         }),
       });
@@ -1013,7 +1013,8 @@ export default function MeraConsignmentApp() {
         logActivity(
           "Edited store details",
           before.name,
-          `Day ${before.day}→${details.day}, opening PL ${before.pl}→${details.pl}, Night ${before.night}→${details.night}, Day ${before.dayp}→${details.dayp}`
+          `Day ${before.day}→${details.day}, opening ` +
+            SKUS.map((x) => `${x.label} ${Number(before[x.initKey]) || 0}→${Number(details[x.initKey]) || 0}`).join(", ")
         );
         if ((before.salesperson || "") !== (details.salesperson || "")) {
           logActivity(
