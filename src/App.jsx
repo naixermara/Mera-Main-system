@@ -7012,8 +7012,8 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
                   <th style={t.thL}>Description</th><th style={t.th}>Debit</th><th style={t.th}>Credit</th>
                 </tr></thead>
                 <tbody>
-                  {journal.map((e) =>
-                    linesOf(e.id).map((l, idx) => (
+                  {journal.map((e) => [
+                    ...linesOf(e.id).map((l, idx) => (
                       <tr key={l.id}>
                         <td style={t.tdL}>{idx === 0 ? fmtDate(e.entry_date) : ""}</td>
                         <td style={{ ...t.tdL, fontFamily: "'IBM Plex Mono', monospace" }}>{idx === 0 ? e.entry_no || "" : ""}</td>
@@ -7024,10 +7024,18 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
                         <td style={t.td}>{Number(l.debit) > 0 ? money(l.debit) : ""}</td>
                         <td style={t.td}>{Number(l.credit) > 0 ? money(l.credit) : ""}</td>
                       </tr>
-                    ))
-                  )}
+                    )),
+                    // One total per entry, like the accountant's BizAdvisor journal.
+                    <tr key={`${e.id}-tot`}>
+                      <td style={{ ...t.tdL, borderBottom: forPrint ? "1px solid #000" : `1px solid ${C.border}` }} colSpan={4}>
+                        <span style={{ ...t.sub, fontWeight: 600 }}>Total {e.entry_no || ""}</span>
+                      </td>
+                      <td style={{ ...t.td, fontWeight: 700, borderTop: forPrint ? "1px solid #000" : `1px solid ${C.border}`, borderBottom: forPrint ? "1px solid #000" : `1px solid ${C.border}` }}>{money(linesOf(e.id).reduce((x, l) => x + Number(l.debit || 0), 0))}</td>
+                      <td style={{ ...t.td, fontWeight: 700, borderTop: forPrint ? "1px solid #000" : `1px solid ${C.border}`, borderBottom: forPrint ? "1px solid #000" : `1px solid ${C.border}` }}>{money(linesOf(e.id).reduce((x, l) => x + Number(l.credit || 0), 0))}</td>
+                    </tr>,
+                  ])}
                   <tr style={t.tot}>
-                    <td style={t.tdL} colSpan={4}>Total — {journal.length} entr{journal.length === 1 ? "y" : "ies"}</td>
+                    <td style={t.tdL} colSpan={4}>Grand total — {journal.length} entr{journal.length === 1 ? "y" : "ies"}</td>
                     <td style={t.td}>{money(trial.totalDr)}</td>
                     <td style={t.td}>{money(trial.totalCr)}</td>
                   </tr>
@@ -7037,42 +7045,68 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
           }
 
           if (reportKind === "gl") {
+            // Laid out like the accountant's BizAdvisor General Ledger Detail:
+            // Date · No. · Ref · Description · Split · Debit · Credit · Balance,
+            // then "Total <code> - <name>" under each account.
+            const splitOf = (r) => {
+              const others = linesOf(r.entry_id).filter((l) => l.id !== r.id && l.account_id !== r.account_id);
+              const ids = Array.from(new Set(others.map((l) => l.account_id)));
+              if (ids.length === 1) { const o = acctOf(ids[0]); return o ? `${o.code} - ${o.name}` : ""; }
+              return ids.length ? "-SPLIT-" : "";
+            };
+            const line = forPrint ? "1px solid #000" : `1px solid ${C.border}`;
+            const grandDr = ledgerAccounts.reduce((x, a) => x + a.rows.reduce((y, r) => y + Number(r.debit || 0), 0), 0);
+            const grandCr = ledgerAccounts.reduce((x, a) => x + a.rows.reduce((y, r) => y + Number(r.credit || 0), 0), 0);
             return (
-              <div>
-                {ledgerAccounts.map((a) => (
-                  <div key={a.id} style={{ marginBottom: forPrint ? 14 : 20, breakInside: "avoid" }}>
-                    <div style={{ fontWeight: 700, fontSize: forPrint ? 11 : 13.5, marginBottom: 4, borderBottom: forPrint ? "1px solid #000" : `1px solid ${C.border}`, paddingBottom: 3 }}>
-                      {a.code} · {a.name} <span style={{ ...t.sub, fontWeight: 400, fontSize: forPrint ? 10 : 11.5 }}>({a.type})</span>
-                    </div>
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: forPrint ? 10 : 12.5 }}>
-                      <tbody>
-                        <tr>
-                          <td style={{ ...t.tdL, ...t.sub }} colSpan={3}>Opening balance</td>
-                          <td style={t.td}></td><td style={t.td}></td>
-                          <td style={{ ...t.td, fontWeight: 600 }}>{money(a.opening)}</td>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: forPrint ? 9.5 : 12.5 }}>
+                <thead><tr style={forPrint ? {} : { color: C.textFaint, fontSize: 10.5, textTransform: "uppercase" }}>
+                  <th style={t.thL}>Date</th><th style={t.thL}>No.</th><th style={t.thL}>Ref</th>
+                  <th style={t.thL}>Description</th><th style={t.thL}>Split</th>
+                  <th style={t.th}>Debit</th><th style={t.th}>Credit</th><th style={t.th}>Balance</th>
+                </tr></thead>
+                <tbody>
+                  {ledgerAccounts.map((a) => {
+                    const dr = a.rows.reduce((x, r) => x + Number(r.debit || 0), 0);
+                    const cr = a.rows.reduce((x, r) => x + Number(r.credit || 0), 0);
+                    return [
+                      <tr key={`${a.id}-h`}>
+                        <td style={{ ...t.tdL, fontWeight: 700, paddingTop: forPrint ? 10 : 16 }} colSpan={7}>
+                          {a.code} - {a.name} <span style={{ ...t.sub, fontWeight: 400 }}>({a.type})</span>
+                        </td>
+                        <td style={{ ...t.td, fontWeight: 700, paddingTop: forPrint ? 10 : 16 }}>{money(a.opening)}</td>
+                      </tr>,
+                      ...a.rows.map((r) => (
+                        <tr key={r.id}>
+                          <td style={t.tdL}>{fmtDate(r.entry?.entry_date)}</td>
+                          <td style={{ ...t.tdL, fontFamily: "'IBM Plex Mono', monospace" }}>{r.entry?.entry_no || ""}</td>
+                          <td style={{ ...t.tdL, ...t.sub }}>{r.entry?.reference || ""}</td>
+                          <td style={{ ...t.tdL, ...t.sub }}>{r.memo || r.entry?.memo || ""}</td>
+                          <td style={{ ...t.tdL, ...t.sub }}>{splitOf(r)}</td>
+                          <td style={t.td}>{Number(r.debit) > 0 ? money(r.debit) : ""}</td>
+                          <td style={t.td}>{Number(r.credit) > 0 ? money(r.credit) : ""}</td>
+                          <td style={t.td}>{money(r.balance)}</td>
                         </tr>
-                        {a.rows.map((r) => (
-                          <tr key={r.id}>
-                            <td style={t.tdL}>{fmtDate(r.entry?.entry_date)}</td>
-                            <td style={{ ...t.tdL, fontFamily: "'IBM Plex Mono', monospace" }}>{r.entry?.entry_no || ""}</td>
-                            <td style={{ ...t.tdL, ...t.sub }}>{r.entry?.memo || ""}</td>
-                            <td style={t.td}>{Number(r.debit) > 0 ? money(r.debit) : ""}</td>
-                            <td style={t.td}>{Number(r.credit) > 0 ? money(r.credit) : ""}</td>
-                            <td style={t.td}>{money(r.balance)}</td>
-                          </tr>
-                        ))}
-                        <tr style={t.tot}>
-                          <td style={t.tdL} colSpan={3}>Closing balance</td>
-                          <td style={t.td}>{money(a.rows.reduce((x, r) => x + Number(r.debit || 0), 0))}</td>
-                          <td style={t.td}>{money(a.rows.reduce((x, r) => x + Number(r.credit || 0), 0))}</td>
-                          <td style={t.td}>{money(a.closing)}</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                ))}
-                {ledgerAccounts.length === 0 && <div style={{ ...t.sub, fontSize: 12.5, padding: "20px 0" }}>No movement in this period.</div>}
-              </div>
+                      )),
+                      <tr key={`${a.id}-t`}>
+                        <td style={{ ...t.tdL, fontWeight: 700 }} colSpan={5}>Total {a.code} - {a.name}</td>
+                        <td style={{ ...t.td, fontWeight: 700, borderTop: line }}>{money(dr)}</td>
+                        <td style={{ ...t.td, fontWeight: 700, borderTop: line }}>{money(cr)}</td>
+                        <td style={{ ...t.td, fontWeight: 700, borderTop: line }}>{money(a.closing)}</td>
+                      </tr>,
+                    ];
+                  })}
+                  {ledgerAccounts.length === 0 ? (
+                    <tr><td style={{ ...t.tdL, ...t.sub, padding: "20px 0" }} colSpan={8}>No movement in this period.</td></tr>
+                  ) : (
+                    <tr style={t.tot}>
+                      <td style={t.tdL} colSpan={5}>Grand total — {ledgerAccounts.length} account{ledgerAccounts.length === 1 ? "" : "s"}</td>
+                      <td style={t.td}>{money(grandDr)}</td>
+                      <td style={t.td}>{money(grandCr)}</td>
+                      <td style={t.td}></td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             );
           }
 
@@ -7270,7 +7304,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
               </div>
             )}
 
-            <div style={{ overflowX: "auto", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: reportKind === "gl" ? "16px 18px" : 0 }}>
+            <div style={{ overflowX: "auto", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 0 }}>
               {body(false)}
             </div>
 
