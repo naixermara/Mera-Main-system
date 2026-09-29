@@ -534,6 +534,9 @@ export default function MeraConsignmentApp() {
   // Sidebar. navPick is the label of the item showing, so the sidebar can
   // highlight it; childTab is handed to a page that has its own inner tabs.
   const [navPick, setNavPick] = useState(() => loadSavedNav()?.navPick || "Consignment");
+  // Store opened from "Find any store" (credit / corporate). Declared up here
+  // with the other state: React needs every useState above the login check.
+  const [storeFocus, setStoreFocus] = useState(null);
   const [navGroup, setNavGroup] = useState(() => groupIndexForLabel(loadSavedNav()?.navPick || "Consignment"));
   const [childTab, setChildTab] = useState(() => loadSavedNav()?.childTab || null);
   const [navMobile, setNavMobile] = useState(false);
@@ -1132,7 +1135,6 @@ export default function MeraConsignmentApp() {
     setShowPayments(storeId);
     setShowBreakdown(false);
     setShowVisitedBreakdown(false);
-    setShowOwedBreakdown(false);
     setShowRemainingBreakdown(false);
   }
 
@@ -1333,7 +1335,6 @@ export default function MeraConsignmentApp() {
   // future shortcut all land in the same state.
   // "Find any store" in the sidebar: one search across consignment, credit
   // and corporate, then opens the store in whichever section it lives in.
-  const [storeFocus, setStoreFocus] = useState(null);
   function openStoreFromSearch(hit) {
     setChildTab(null);
     setPage("sales");
