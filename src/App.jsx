@@ -1331,7 +1331,32 @@ export default function MeraConsignmentApp() {
 
   // One place that moves the app, so the sidebar, the overview cards and any
   // future shortcut all land in the same state.
+  // "Find any store" in the sidebar: one search across consignment, credit
+  // and corporate, then opens the store in whichever section it lives in.
+  const [storeFocus, setStoreFocus] = useState(null);
+  function openStoreFromSearch(hit) {
+    setChildTab(null);
+    setPage("sales");
+    if (hit.type === "consignment") {
+      setNavPick("Consignment");
+      setSalesSubPage("consignment");
+      setConsignmentSubView("regular");
+      jumpToStore(hit.name, hit.id);
+    } else if (hit.type === "credit") {
+      setNavPick("Credit Term");
+      setSalesSubPage("credit");
+      setStoreFocus({ ...hit, n: Date.now() });
+    } else {
+      setNavPick("Corporate Accounts");
+      setSalesSubPage("consignment");
+      setConsignmentSubView("bigco");
+      setStoreFocus({ ...hit, n: Date.now() });
+    }
+    window.scrollTo?.(0, 0);
+  }
+
   function goTo(item) {
+    setStoreFocus(null);
     setNavPick(item.label);
     setChildTab(item.tab || null);
     setPage(item.page);
@@ -1395,6 +1420,8 @@ export default function MeraConsignmentApp() {
         openGroup={navGroup}
         onOpenGroup={setNavGroup}
         onPick={goTo}
+        onFindStore={openStoreFromSearch}
+        sbFetch={sbFetch}
         mobileOpen={navMobile}
         onCloseMobile={() => setNavMobile(false)}
         pendingCount={PENDING_PAYMENTS_ENABLED ? pendingPaymentCount : 0}
@@ -1593,7 +1620,7 @@ export default function MeraConsignmentApp() {
                 }}
               />
             ) : salesSubPage === "credit" ? (
-              <CreditTermPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
+              <CreditTermPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} focus={storeFocus?.type === "credit" ? storeFocus : null} />
             ) : salesSubPage === "online" ? (
               <OnlineSalesPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             ) : salesSubPage === "pending" && PENDING_PAYMENTS_ENABLED ? (
@@ -1627,7 +1654,7 @@ export default function MeraConsignmentApp() {
         </div>
 
         {consignmentSubView === "bigco" ? (
-          <BigCoPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
+          <BigCoPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} focus={storeFocus?.type === "corporate" ? storeFocus : null} />
         ) : (
         <>
 
@@ -4453,11 +4480,17 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
   );
 }
 
-function CreditTermPage({ authUser, C, sbFetch, logActivity }) {
+function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
   const [stores, setStores] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saveError, setSaveError] = useState(false);
   const [expanded, setExpanded] = useState(null);
+  // Opened from "Find any store": search for it and open its card.
+  useEffect(() => {
+    if (!focus) return;
+    setMainSearchQuery(focus.name);
+    setExpanded(focus.id);
+  }, [focus?.n]);
   const [showNewStore, setShowNewStore] = useState(false);
   const [newStoreForm, setNewStoreForm] = useState({ name: "", creditDays: "30", notes: "" });
   const [showLogInvoice, setShowLogInvoice] = useState(null);
@@ -4860,6 +4893,9 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity }) {
   const visibleStores = useMemo(() => {
     return enrichedStores
       .filter((s) => {
+        // While searching, show every match — including stores fully paid
+        // in an earlier month — so a name you type is never "missing".
+        if (mainSearchQuery.trim()) return true;
         if (!s.isComplete) return true;
         if (s.completionMonth === selectedMonth) return true;
         // Also keep a completed store visible if it had any real activity (billed or collected)
@@ -7878,12 +7914,85 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
   );
 }
 
-function SideNav({ C, nav, active, openGroup, onOpenGroup, onPick, mobileOpen, onCloseMobile, badges = {} }) {
+const STORE_TYPE_LABEL = { consignment: "Consignment", credit: "Credit", corporate: "Corporate" };
+
+// One search box for every store, whatever kind it is. Loads the three store
+// lists when you click into it (so it is always current) and matches the
+// official name or the nickname.
+function StoreFinder({ C, sbFetch, onFind }) {
+  const [q, setQ] = useState("");
+  const [all, setAll] = useState(null);
+  const [open, setOpen] = useState(false);
+  async function load() {
+    try {
+      const pick = "id,name,nickname";
+      const [a, b, c] = await Promise.all([
+        sbFetch(`stores?select=id,name,day`).catch(() => []),
+        sbFetch(`credit_stores?select=${pick}`).catch(() => []),
+        sbFetch(`bigco_stores?select=${pick}`).catch(() => []),
+      ]);
+      setAll([
+        ...(a || []).map((x) => ({ type: "consignment", id: x.id, name: x.name, nickname: "", extra: x.day ? `Day ${x.day}` : "" })),
+        ...(b || []).map((x) => ({ type: "credit", id: x.id, name: x.name, nickname: x.nickname || "", extra: "" })),
+        ...(c || []).map((x) => ({ type: "corporate", id: x.id, name: x.name, nickname: x.nickname || "", extra: "" })),
+      ]);
+    } catch (e) { setAll([]); }
+  }
+  const term = q.trim().toLowerCase();
+  const hits = !term || !all ? [] : all
+    .filter((x) => `${x.name} ${x.nickname}`.toLowerCase().includes(term))
+    .sort((x, y) => (x.name.toLowerCase().startsWith(term) ? 0 : 1) - (y.name.toLowerCase().startsWith(term) ? 0 : 1) || x.name.localeCompare(y.name))
+    .slice(0, 15);
+  const tone = { consignment: C.goldBright, credit: C.emerald, corporate: C.amber };
+  function pick(h) { onFind(h); setQ(""); setOpen(false); }
+  return (
+    <div style={{ position: "relative", padding: "0 12px 14px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 7, background: C.bg2, border: `1px solid ${open ? C.gold : C.border}`, borderRadius: 8, padding: "7px 9px" }}>
+        <Search size={13} color={C.textFaint} />
+        <input
+          value={q}
+          onChange={(e) => { setQ(e.target.value); setOpen(true); }}
+          onFocus={() => { setOpen(true); load(); }}
+          onBlur={() => setTimeout(() => setOpen(false), 180)}
+          onKeyDown={(e) => { if (e.key === "Enter" && hits[0]) pick(hits[0]); if (e.key === "Escape") { setQ(""); setOpen(false); } }}
+          placeholder="Find any store…"
+          style={{ flex: 1, minWidth: 0, background: "none", border: "none", outline: "none", color: C.text, fontSize: 12.5 }}
+        />
+      </div>
+      {open && term && (
+        <div style={{ position: "absolute", left: 12, right: 12, top: "100%", marginTop: -8, zIndex: 80, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 9, boxShadow: "0 10px 30px rgba(0,0,0,0.45)", maxHeight: 360, overflowY: "auto" }}>
+          {!all ? (
+            <div style={{ padding: 12, fontSize: 12, color: C.textFaint }}>Loading…</div>
+          ) : hits.length === 0 ? (
+            <div style={{ padding: 12, fontSize: 12, color: C.textFaint }}>No store matches "{q.trim()}"</div>
+          ) : hits.map((h) => (
+            <div
+              key={h.type + h.id}
+              onMouseDown={(e) => { e.preventDefault(); pick(h); }}
+              style={{ padding: "8px 11px", cursor: "pointer", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = C.surfaceHover)}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, color: C.text, lineHeight: 1.35, wordBreak: "break-word" }}>{h.nickname || h.name}</div>
+                {(h.nickname || h.extra) && <div style={{ fontSize: 10.5, color: C.textFaint, lineHeight: 1.35, wordBreak: "break-word" }}>{[h.nickname ? h.name : "", h.extra].filter(Boolean).join(" · ")}</div>}
+              </div>
+              <span style={{ flexShrink: 0, fontSize: 9.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, color: tone[h.type], border: `1px solid ${tone[h.type]}70` }}>{STORE_TYPE_LABEL[h.type]}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SideNav({ C, nav, active, openGroup, onOpenGroup, onPick, mobileOpen, onCloseMobile, badges = {}, onFindStore, sbFetch }) {
   const panel = (
     <div style={{ width: 214, flexShrink: 0, background: C.surface, borderRight: `1px solid ${C.border}`, height: "100%", overflowY: "auto", padding: "16px 0 30px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 16px 16px", fontSize: 15, letterSpacing: "0.18em", textTransform: "uppercase", color: C.gold, fontWeight: 700 }}>
         <Sparkles size={15} /> MÈRA
       </div>
+      {onFindStore && <StoreFinder C={C} sbFetch={sbFetch} onFind={(h) => { onFindStore(h); onCloseMobile(); }} />}
       {nav.map((g, gi) => {
         const open = openGroup === gi;
         const groupBadgeTotal = g.items.reduce((a, it) => a + (badges[it.label] || 0), 0);
@@ -8856,11 +8965,18 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
   );
 }
 
-function BigCoPage({ authUser, C, sbFetch, logActivity }) {
+function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
   const [stores, setStores] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saveError, setSaveError] = useState(false);
   const [expanded, setExpanded] = useState(null);
+  // Opened from "Find any store": show just that store, opened.
+  const [focusName, setFocusName] = useState("");
+  useEffect(() => {
+    if (!focus) return;
+    setFocusName(focus.name);
+    setExpanded(focus.id);
+  }, [focus?.n]);
   const [showNewStore, setShowNewStore] = useState(false);
   const [newStoreForm, setNewStoreForm] = useState({ name: "", notes: "", parentId: "" });
   const [addingBranchTo, setAddingBranchTo] = useState(null);
@@ -9159,13 +9275,14 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
   }, [stores, selectedMonth]);
 
   const visibleStores = useMemo(() => {
+    if (focusName) return enrichedStores.filter((s) => s.name === focusName);
     return enrichedStores.filter((s) => {
       if (!s.isComplete) return true;
       if (s.completionMonth === selectedMonth) return true;
       if (s.monthBilled > 0 || s.monthCollected > 0) return true;
       return false;
     });
-  }, [enrichedStores, selectedMonth]);
+  }, [enrichedStores, selectedMonth, focusName]);
 
   const totals = useMemo(() => {
     const monthBilled = enrichedStores.reduce((a, s) => a + s.monthBilled, 0);
@@ -9454,6 +9571,13 @@ function BigCoPage({ authUser, C, sbFetch, logActivity }) {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {focusName && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: C.surface, border: `1px solid ${C.gold}60`, borderRadius: 10, padding: "9px 14px", marginBottom: 12, fontSize: 12.5, color: C.textDim }}>
+          <span>Showing only <b style={{ color: C.text }}>{focusName}</b></span>
+          <button type="button" onClick={() => setFocusName("")} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 10px", fontSize: 11.5, color: C.goldBright, cursor: "pointer" }}>Show all stores</button>
         </div>
       )}
 
