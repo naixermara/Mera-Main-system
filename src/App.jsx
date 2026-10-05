@@ -4495,7 +4495,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
   const [showNewStore, setShowNewStore] = useState(false);
   const [newStoreForm, setNewStoreForm] = useState({ name: "", creditDays: "30", notes: "" });
   const [showLogInvoice, setShowLogInvoice] = useState(null);
-  const [invoiceForm, setInvoiceForm] = useState({ invoiceDate: new Date().toISOString().slice(0, 10), invoiceNumber: "", amount: "", paid: "", notes: "", plSold: "", nightSold: "", daySold: "" });
+  const [invoiceForm, setInvoiceForm] = useState({ invoiceDate: new Date().toISOString().slice(0, 10), invoiceNumber: "", amount: "", paid: "", notes: "", plSold: "", nightSold: "", daySold: "", pantSold: "", shortSold: "" });
   const [showHistory, setShowHistory] = useState(null);
   const [selectedMonth, setSelectedMonth] = useState(currentMonthKey());
   const [editingStore, setEditingStore] = useState(null);
@@ -4504,7 +4504,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
   const [showQuickLog, setShowQuickLog] = useState(false);
   const [quickLogStoreId, setQuickLogStoreId] = useState(null);
   const [storeSearchQuery, setStoreSearchQuery] = useState("");
-  const [quickInvoiceForm, setQuickInvoiceForm] = useState({ invoiceDate: new Date().toISOString().slice(0, 10), invoiceNumber: "", amount: "", paid: "", notes: "", plSold: "", nightSold: "", daySold: "" });
+  const [quickInvoiceForm, setQuickInvoiceForm] = useState({ invoiceDate: new Date().toISOString().slice(0, 10), invoiceNumber: "", amount: "", paid: "", notes: "", plSold: "", nightSold: "", daySold: "", pantSold: "", shortSold: "" });
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [deletingBulk, setDeletingBulk] = useState(false);
   const [editStoreForm, setEditStoreForm] = useState(null);
@@ -4515,7 +4515,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
   const [showOutstandingBreakdown, setShowOutstandingBreakdown] = useState(false);
   const [editInvoiceForm, setEditInvoiceForm] = useState(null);
   const [showLogPayment, setShowLogPayment] = useState(null);
-  const [paymentForm, setPaymentForm] = useState({ paymentDate: new Date().toISOString().slice(0, 10), paymentAmount: "", newSaleAmount: "", invoiceNumber: "", plSold: "", nightSold: "", daySold: "", notes: "" });
+  const [paymentForm, setPaymentForm] = useState({ paymentDate: new Date().toISOString().slice(0, 10), paymentAmount: "", newSaleAmount: "", invoiceNumber: "", plSold: "", nightSold: "", daySold: "", pantSold: "", shortSold: "", notes: "" });
   const [showPayHistory, setShowPayHistory] = useState(null);
   const [editingPaymentId, setEditingPaymentId] = useState(null);
   const [editPaymentForm, setEditPaymentForm] = useState(null);
@@ -4546,6 +4546,8 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
               plSold: Number(inv.pl_sold || 0),
               nightSold: Number(inv.night_sold || 0),
               daySold: Number(inv.day_sold || 0),
+              pantSold: Number(inv.pant_sold || 0),
+              shortSold: Number(inv.short_sold || 0),
             })),
           payments: paymentRows
             .filter((p) => p.store_id === s.id)
@@ -4605,6 +4607,8 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
           pl_sold: parseFloat(form.plSold) || 0,
           night_sold: parseFloat(form.nightSold) || 0,
           day_sold: parseFloat(form.daySold) || 0,
+          pant_sold: parseFloat(form.pantSold) || 0,
+          short_sold: parseFloat(form.shortSold) || 0,
           created_by: authUser?.email || "unknown",
         }),
       });
@@ -4625,6 +4629,8 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                     plSold: Number(inserted.pl_sold || 0),
                     nightSold: Number(inserted.night_sold || 0),
                     daySold: Number(inserted.day_sold || 0),
+                    pantSold: Number(inserted.pant_sold || 0),
+                    shortSold: Number(inserted.short_sold || 0),
                   },
                 ],
               }
@@ -4687,7 +4693,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
   // they paid toward their balance. Either, both, or neither field can be used per entry.
   async function logEntry(storeId, form) {
     try {
-      const hasNewSale = parseFloat(form.newSaleAmount) > 0 || parseFloat(form.plSold) > 0 || parseFloat(form.nightSold) > 0 || parseFloat(form.daySold) > 0;
+      const hasNewSale = parseFloat(form.newSaleAmount) > 0 || parseFloat(form.plSold) > 0 || parseFloat(form.nightSold) > 0 || parseFloat(form.daySold) > 0 || parseFloat(form.pantSold) > 0 || parseFloat(form.shortSold) > 0;
       const hasPayment = parseFloat(form.paymentAmount) > 0;
       let ok = true;
       if (hasNewSale) {
@@ -4700,6 +4706,8 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
           plSold: form.plSold,
           nightSold: form.nightSold,
           daySold: form.daySold,
+          pantSold: form.pantSold,
+          shortSold: form.shortSold,
         });
         ok = ok && invoiceOk;
       }
@@ -4819,6 +4827,8 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
           pl_sold: changes.plSold,
           night_sold: changes.nightSold,
           day_sold: changes.daySold,
+          pant_sold: changes.pantSold ?? 0,
+          short_sold: changes.shortSold ?? 0,
         }),
       });
       setStores((prev) =>
@@ -4956,7 +4966,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
             onClick={() => {
               setQuickLogStoreId(null);
               setStoreSearchQuery("");
-              setQuickInvoiceForm({ invoiceDate: new Date().toISOString().slice(0, 10), invoiceNumber: "", amount: "", paid: "", notes: "", plSold: "", nightSold: "", daySold: "" });
+              setQuickInvoiceForm({ invoiceDate: new Date().toISOString().slice(0, 10), invoiceNumber: "", amount: "", paid: "", notes: "", plSold: "", nightSold: "", daySold: "", pantSold: "", shortSold: "" });
               setShowQuickLog(true);
             }}
             className="primarybtn"
@@ -5312,7 +5322,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
 
                   <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                     <button
-                      onClick={(e) => { e.stopPropagation(); setShowLogPayment(s.id); setPaymentForm({ paymentDate: new Date().toISOString().slice(0, 10), paymentAmount: "", newSaleAmount: "", invoiceNumber: "", plSold: "", nightSold: "", daySold: "", notes: "" }); }}
+                      onClick={(e) => { e.stopPropagation(); setShowLogPayment(s.id); setPaymentForm({ paymentDate: new Date().toISOString().slice(0, 10), paymentAmount: "", newSaleAmount: "", invoiceNumber: "", plSold: "", nightSold: "", daySold: "", pantSold: "", shortSold: "", notes: "" }); }}
                       style={{ flex: 1, background: C.gold, border: "none", borderRadius: 8, padding: "9px 0", fontSize: 12, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}
                     >
                       + Log entry
@@ -5351,7 +5361,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                           <input type="text" value={paymentForm.invoiceNumber} onChange={(e) => setPaymentForm({ ...paymentForm, invoiceNumber: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} placeholder="Optional" />
                         </div>
                       </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 8 }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginBottom: 8 }}>
                         <div>
                           <label style={{ fontSize: 9, color: C.textFaint }}>Panty Liner</label>
                           <input type="number" value={paymentForm.plSold} onChange={(e) => setPaymentForm({ ...paymentForm, plSold: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} placeholder="0" />
@@ -5363,6 +5373,14 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                         <div>
                           <label style={{ fontSize: 9, color: C.textFaint }}>Day</label>
                           <input type="number" value={paymentForm.daySold} onChange={(e) => setPaymentForm({ ...paymentForm, daySold: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} placeholder="0" />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: 9, color: C.textFaint }}>Period Pant</label>
+                          <input type="number" value={paymentForm.pantSold} onChange={(e) => setPaymentForm({ ...paymentForm, pantSold: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} placeholder="0" />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: 9, color: C.textFaint }}>Coolmint</label>
+                          <input type="number" value={paymentForm.shortSold} onChange={(e) => setPaymentForm({ ...paymentForm, shortSold: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} placeholder="0" />
                         </div>
                       </div>
 
@@ -5382,7 +5400,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                             const ok = await logEntry(s.id, paymentForm);
                             if (ok) {
                               setShowLogPayment(null);
-                              setPaymentForm({ paymentDate: new Date().toISOString().slice(0, 10), paymentAmount: "", newSaleAmount: "", invoiceNumber: "", plSold: "", nightSold: "", daySold: "", notes: "" });
+                              setPaymentForm({ paymentDate: new Date().toISOString().slice(0, 10), paymentAmount: "", newSaleAmount: "", invoiceNumber: "", plSold: "", nightSold: "", daySold: "", pantSold: "", shortSold: "", notes: "" });
                             }
                           }}
                           style={{ flex: 1, background: C.gold, border: "none", borderRadius: 6, padding: "7px 0", fontSize: 12, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}
@@ -5494,7 +5512,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                                 </div>
                               </div>
                               <div style={{ fontSize: 9, color: C.textFaint, marginBottom: 4 }}>Units sold</div>
-                              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 8 }}>
+                              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginBottom: 8 }}>
                                 <div>
                                   <label style={{ fontSize: 9, color: C.textFaint }}>Panty Liner</label>
                                   <input type="number" value={editInvoiceForm.plSold} onChange={(e) => setEditInvoiceForm({ ...editInvoiceForm, plSold: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
@@ -5506,6 +5524,14 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                                 <div>
                                   <label style={{ fontSize: 9, color: C.textFaint }}>Day</label>
                                   <input type="number" value={editInvoiceForm.daySold} onChange={(e) => setEditInvoiceForm({ ...editInvoiceForm, daySold: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
+                                </div>
+                                <div>
+                                  <label style={{ fontSize: 9, color: C.textFaint }}>Period Pant</label>
+                                  <input type="number" value={editInvoiceForm.pantSold} onChange={(e) => setEditInvoiceForm({ ...editInvoiceForm, pantSold: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
+                                </div>
+                                <div>
+                                  <label style={{ fontSize: 9, color: C.textFaint }}>Coolmint</label>
+                                  <input type="number" value={editInvoiceForm.shortSold} onChange={(e) => setEditInvoiceForm({ ...editInvoiceForm, shortSold: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
                                 </div>
                               </div>
                               <div style={{ marginBottom: 8 }}>
@@ -5524,6 +5550,8 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                                       plSold: parseFloat(editInvoiceForm.plSold) || 0,
                                       nightSold: parseFloat(editInvoiceForm.nightSold) || 0,
                                       daySold: parseFloat(editInvoiceForm.daySold) || 0,
+                                      pantSold: parseFloat(editInvoiceForm.pantSold) || 0,
+                                      shortSold: parseFloat(editInvoiceForm.shortSold) || 0,
                                     });
                                     if (ok) setEditingInvoiceId(null);
                                   }}
@@ -5542,7 +5570,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                             <div
                               style={{ fontSize: 11, color: C.textDim, cursor: "pointer", flex: 1 }}
                               onClick={() => {
-                                setEditInvoiceForm({ invoiceDate: inv.invoiceDate, invoiceNumber: inv.invoiceNumber, amount: inv.amount, paid: inv.paid, notes: inv.notes, plSold: inv.plSold, nightSold: inv.nightSold, daySold: inv.daySold });
+                                setEditInvoiceForm({ invoiceDate: inv.invoiceDate, invoiceNumber: inv.invoiceNumber, amount: inv.amount, paid: inv.paid, notes: inv.notes, plSold: inv.plSold, nightSold: inv.nightSold, daySold: inv.daySold, pantSold: inv.pantSold, shortSold: inv.shortSold });
                                 setEditingInvoiceId(inv.id);
                               }}
                             >
@@ -5556,11 +5584,13 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                                 {remaining > 0 && effectiveRemaining > 0 && <span style={{ color: isOverdue ? C.rose : C.textDim }}> · ${effectiveRemaining.toLocaleString("en-US", MONEY2)} remaining, due {new Date(due + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short" })}{isOverdue ? " (overdue)" : ""}</span>}
                                 {remaining > 0 && effectiveRemaining === 0 && <span style={{ color: C.emerald }}> · covered by a separate payment</span>}
                               </div>
-                              {(inv.plSold > 0 || inv.nightSold > 0 || inv.daySold > 0) && (
+                              {(inv.plSold > 0 || inv.nightSold > 0 || inv.daySold > 0 || inv.pantSold > 0 || inv.shortSold > 0) && (
                                 <div style={{ marginTop: 2, color: C.textFaint }}>
                                   {inv.plSold > 0 && <span>PL: {inv.plSold} </span>}
                                   {inv.nightSold > 0 && <span>Night: {inv.nightSold} </span>}
-                                  {inv.daySold > 0 && <span>Day: {inv.daySold}</span>}
+                                  {inv.daySold > 0 && <span>Day: {inv.daySold} </span>}
+                                  {inv.pantSold > 0 && <span>Pant: {inv.pantSold} </span>}
+                                  {inv.shortSold > 0 && <span>Coolmint: {inv.shortSold}</span>}
                                 </div>
                               )}
                               {inv.notes && <div style={{ marginTop: 2, fontStyle: "italic" }}>{inv.notes}</div>}
@@ -5683,7 +5713,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
 
             <div style={{ marginBottom: 6 }}>
               <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase" }}>Units sold</label>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
                 <div>
                   <label style={{ fontSize: 10, color: C.textFaint }}>Panty Liner</label>
                   <input type="number" value={quickInvoiceForm.plSold} onChange={(e) => setQuickInvoiceForm({ ...quickInvoiceForm, plSold: e.target.value })} placeholder="0" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 14, background: C.bg2, color: C.text }} />
@@ -5695,6 +5725,14 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                 <div>
                   <label style={{ fontSize: 10, color: C.textFaint }}>Day</label>
                   <input type="number" value={quickInvoiceForm.daySold} onChange={(e) => setQuickInvoiceForm({ ...quickInvoiceForm, daySold: e.target.value })} placeholder="0" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 14, background: C.bg2, color: C.text }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 10, color: C.textFaint }}>Period Pant</label>
+                  <input type="number" value={quickInvoiceForm.pantSold} onChange={(e) => setQuickInvoiceForm({ ...quickInvoiceForm, pantSold: e.target.value })} placeholder="0" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 14, background: C.bg2, color: C.text }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 10, color: C.textFaint }}>Coolmint</label>
+                  <input type="number" value={quickInvoiceForm.shortSold} onChange={(e) => setQuickInvoiceForm({ ...quickInvoiceForm, shortSold: e.target.value })} placeholder="0" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 14, background: C.bg2, color: C.text }} />
                 </div>
               </div>
             </div>
@@ -8083,7 +8121,29 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
   const [onlineSaleItems, setOnlineSaleItems] = useState([]);
   const [miscExpenses, setMiscExpenses] = useState([]);
   const [showExpenseBreakdown, setShowExpenseBreakdown] = useState(false);
-  const [expenseForm, setExpenseForm] = useState({ date: todayStr(), description: "", amount: "" });
+  const [expenseForm, setExpenseForm] = useState({ date: todayStr(), description: "", amount: "", declare: false, accountId: "", paidFromId: "" });
+  // Declared expenses live in the Accounting ledger (gl_*). Only accounting
+  // users can read or post there, so for anyone else glReady stays false and
+  // the "Declare for tax" option is simply not offered.
+  const canDeclare = ACCOUNTING_EMAILS.includes(String(authUser?.email || "").toLowerCase());
+  const [glReady, setGlReady] = useState(false);
+  const [glAccounts, setGlAccounts] = useState([]);
+  const [glEntries, setGlEntries] = useState([]);
+  const [glLines, setGlLines] = useState([]);
+  async function reloadLedger() {
+    if (!canDeclare) return;
+    try {
+      const [a, e, l] = await Promise.all([
+        sbFetch("gl_accounts?select=id,code,name,type,is_cash,active&order=code.asc"),
+        sbFetch("gl_entries?select=id,entry_no,entry_date,kind,memo"),
+        sbFetch("gl_lines?select=id,entry_id,account_id,debit,credit,memo"),
+      ]);
+      setGlAccounts(a || []); setGlEntries(e || []); setGlLines(l || []);
+      setGlReady(true);
+    } catch (err) {
+      setGlReady(false);
+    }
+  }
   const [expenseError, setExpenseError] = useState("");
   const [expenseMissing, setExpenseMissing] = useState(false);
 
@@ -8101,12 +8161,41 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
     if (!expenseForm.description.trim()) { setExpenseError("Add a short description."); return; }
     if (!amount || amount <= 0) { setExpenseError("Enter an amount greater than 0."); return; }
     setExpenseError("");
+    if (expenseForm.declare) {
+      // Declared: a normal Expense entry in Accounting (EX000…), exactly what
+      // Accounting → Post → Expense makes — debit the expense, credit where
+      // it was paid from. The accountant sees it in every report.
+      if (!expenseForm.accountId) { setExpenseError("Pick the expense account."); return; }
+      if (!expenseForm.paidFromId) { setExpenseError("Pick where it was paid from."); return; }
+      const used = glEntries.map((e) => e.entry_no).filter((n) => n && n.startsWith("EX"))
+        .map((n) => parseInt(n.slice(2), 10)).filter((n) => !isNaN(n));
+      const entryNo = "EX" + String((used.length ? Math.max(...used) : 0) + 1).padStart(6, "0");
+      try {
+        const [head] = await sbFetch("gl_entries", {
+          method: "POST",
+          body: JSON.stringify({ entry_no: entryNo, entry_date: expenseForm.date, kind: "expense", memo: expenseForm.description.trim(), created_by: authUser?.email || "unknown" }),
+        });
+        await sbFetch("gl_lines", {
+          method: "POST",
+          body: JSON.stringify([
+            { entry_id: head.id, account_id: expenseForm.accountId, debit: amount, credit: 0, memo: expenseForm.description.trim() },
+            { entry_id: head.id, account_id: expenseForm.paidFromId, debit: 0, credit: amount, memo: expenseForm.description.trim() },
+          ]),
+        });
+        setExpenseForm({ ...expenseForm, description: "", amount: "" });
+        logActivity?.("Posted declared expense", expenseForm.description.trim(), `${entryNo} · ${money(amount)}`);
+        await reloadLedger();
+      } catch (e) {
+        setExpenseError("Couldn't post it to Accounting — nothing was saved. Try again, or use Accounting → Post.");
+      }
+      return;
+    }
     try {
       await sbFetch("misc_expenses", {
         method: "POST",
         body: JSON.stringify({ date: expenseForm.date, description: expenseForm.description.trim(), amount, created_by: authUser?.email || "unknown" }),
       });
-      setExpenseForm({ date: expenseForm.date, description: "", amount: "" });
+      setExpenseForm({ ...expenseForm, description: "", amount: "" });
       logActivity?.("Logged private expense", expenseForm.description.trim(), money(amount));
       await reloadMiscExpenses();
     } catch (e) {
@@ -8152,6 +8241,7 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
         // online_sales tables missing just means no online revenue tracked yet
       }
       await reloadMiscExpenses();
+      await reloadLedger();
       try {
         setCosts((await sbFetch("product_costs?select=*")) || []);
         setCostsMissing(false);
@@ -8208,8 +8298,10 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
     visits.forEach((v) => v.date && acc.push(monthKey(v.date)));
     bigcoReports.forEach((r) => r.report_date && acc.push(monthKey(r.report_date)));
     creditInvoices.forEach((i) => i.invoice_date && acc.push(monthKey(i.invoice_date)));
+    miscExpenses.forEach((m) => m.date && acc.push(monthKey(m.date)));
+    glEntries.forEach((e) => e.entry_date && acc.push(monthKey(e.entry_date)));
     return monthsThrough(acc);
-  }, [visits, bigcoReports, creditInvoices]);
+  }, [visits, bigcoReports, creditInvoices, miscExpenses, glEntries]);
 
   const report = useMemo(() => {
     const costOf = (k) => {
@@ -8271,7 +8363,24 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
     // Private expenses — logged only here, never posted to the Accounting
     // ledger. Still a real cost, so they reduce profit like anything else.
     const monthExpenses = miscExpenses.filter((m) => monthKey(m.date) === selectedMonth);
-    const otherExpenseCost = monthExpenses.reduce((a, m) => a + Number(m.amount || 0), 0);
+    const privateExpenseCost = monthExpenses.reduce((a, m) => a + Number(m.amount || 0), 0);
+
+    // Declared expenses — everything on an expense account in the Accounting
+    // ledger this month (posted here, in Accounting → Post, vendor bills,
+    // imported journals). 5xxxxxx cost-of-goods accounts are left out: the
+    // COGS line above already prices the boxes sold, so counting them again
+    // would charge the same stock twice.
+    const expenseAcct = new Map(glAccounts.filter((a) => a.type === "expense" && !String(a.code || "").startsWith("5")).map((a) => [a.id, a]));
+    const monthEntryIds = new Map(glEntries.filter((e) => monthKey(e.entry_date) === selectedMonth).map((e) => [e.id, e]));
+    const declaredExpenses = glLines
+      .filter((l) => monthEntryIds.has(l.entry_id) && expenseAcct.has(l.account_id))
+      .map((l) => {
+        const e = monthEntryIds.get(l.entry_id); const a = expenseAcct.get(l.account_id);
+        return { id: l.id, date: e.entry_date, entryNo: e.entry_no, description: l.memo || e.memo || "", account: `${a.code} · ${a.name}`, amount: Number(l.debit || 0) - Number(l.credit || 0) };
+      })
+      .filter((x) => Math.abs(x.amount) > 0.005);
+    const declaredExpenseCost = declaredExpenses.reduce((a, x) => a + x.amount, 0);
+    const otherExpenseCost = privateExpenseCost + declaredExpenseCost;
 
     // Online Sales — a third channel tracked only here, never posted to
     // Accounting (not declared for that channel), but it's real revenue for
@@ -8288,8 +8397,8 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
     const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
     const priced = lines.every((l) => l.perBox > 0);
 
-    return { lines, revenue, consignRevenue, corpRevenue, creditRevenue, onlineRevenue, onlineCogs, cogs, sampleCost, sampleBreakdown, otherExpenseCost, monthExpenses, profit, margin, priced, stockValueAll, collectedAll, paidRatio };
-  }, [visits, bigcoReports, creditInvoices, stores, costs, stockMoves, miscExpenses, onlineSales, onlineSaleItems, selectedMonth, consignBasis]);
+    return { lines, revenue, consignRevenue, corpRevenue, creditRevenue, onlineRevenue, onlineCogs, cogs, sampleCost, sampleBreakdown, otherExpenseCost, privateExpenseCost, declaredExpenseCost, declaredExpenses, monthExpenses, profit, margin, priced, stockValueAll, collectedAll, paidRatio };
+  }, [visits, bigcoReports, creditInvoices, stores, costs, stockMoves, miscExpenses, onlineSales, onlineSaleItems, selectedMonth, consignBasis, glAccounts, glEntries, glLines]);
 
   const cell = { padding: "10px 8px", textAlign: "right", whiteSpace: "nowrap" };
   const th = { textAlign: "right", padding: "11px 8px", fontWeight: 700 };
@@ -8396,14 +8505,14 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
               onClick={() => setShowExpenseBreakdown(!showExpenseBreakdown)}
               style={{ textAlign: "left", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "18px 20px", cursor: "pointer" }}
             >
-              <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Other expenses</div>
+              <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Expenses</div>
               <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: C.amber }}>${report.otherExpenseCost.toLocaleString("en-US", MONEY2)}</div>
-              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>private, not in Accounting · tap to view</div>
+              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>declared ${report.declaredExpenseCost.toLocaleString("en-US", MONEY2)} · not declared ${report.privateExpenseCost.toLocaleString("en-US", MONEY2)} · tap to add</div>
             </button>
             <div style={{ background: C.surface, border: `1px solid ${C.gold}50`, borderRadius: 12, padding: "18px 20px" }}>
               <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Gross profit</div>
               <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: report.profit >= 0 ? C.emerald : C.rose }}>${report.profit.toLocaleString("en-US", MONEY2)}</div>
-              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>after samples and other expenses</div>
+              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>after samples and all expenses</div>
             </div>
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "18px 20px" }}>
               <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Margin</div>
@@ -8433,15 +8542,48 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
           {showExpenseBreakdown && (
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px", marginBottom: 18 }}>
               <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 4 }}>
-                Private expenses — {monthLabel(selectedMonth)}
+                Expenses — {monthLabel(selectedMonth)}
               </div>
-              <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 12 }}>
-                Reduces profit here only. Never posted to Accounting — for anything that needs to be declared for tax, use Accounting → Post Expense instead.
+              <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 12, lineHeight: 1.5 }}>
+                Every expense lowers profit here. <b style={{ color: C.textDim }}>Declared</b> ones are also posted to Accounting (for the accountant and tax reports).
+                <b style={{ color: C.textDim }}> Not declared</b> ones stay only on this page.
               </div>
 
               {expenseMissing && (
                 <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, color: C.amber, borderRadius: 8, padding: "8px 10px", fontSize: 11.5, marginBottom: 12 }}>
                   This needs a one-time setup: create a <code>misc_expenses</code> table in Supabase (columns: date, description, amount, created_by).
+                </div>
+              )}
+
+              {canDeclare && glReady && (
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 9, color: C.textFaint, marginBottom: 4 }}>Declare for tax?</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {[[true, "Yes — declare (goes to Accounting)"], [false, "No — keep private"]].map(([v, label]) => (
+                      <button key={String(v)} type="button" onClick={() => setExpenseForm({ ...expenseForm, declare: v })}
+                        style={{ flex: 1, minWidth: 150, background: expenseForm.declare === v ? (v ? C.emeraldBg : C.amberBg) : "none", border: `1px solid ${expenseForm.declare === v ? (v ? C.emerald : C.amber) : C.border}`, color: expenseForm.declare === v ? (v ? C.emerald : C.amber) : C.textDim, borderRadius: 8, padding: "8px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  {expenseForm.declare && (
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+                      <div style={{ flex: 1, minWidth: 170 }}>
+                        <label style={{ fontSize: 9, color: C.textFaint }}>Expense account</label>
+                        <select value={expenseForm.accountId} onChange={(e) => setExpenseForm({ ...expenseForm, accountId: e.target.value })} style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, width: "100%", display: "block" }}>
+                          <option value="">— pick —</option>
+                          {glAccounts.filter((a) => a.type === "expense" && a.active !== false).map((a) => <option key={a.id} value={a.id}>{a.code} · {a.name}</option>)}
+                        </select>
+                      </div>
+                      <div style={{ flex: 1, minWidth: 150 }}>
+                        <label style={{ fontSize: 9, color: C.textFaint }}>Paid from</label>
+                        <select value={expenseForm.paidFromId} onChange={(e) => setExpenseForm({ ...expenseForm, paidFromId: e.target.value })} style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, width: "100%", display: "block" }}>
+                          <option value="">— pick —</option>
+                          {glAccounts.filter((a) => a.is_cash && a.active !== false).map((a) => <option key={a.id} value={a.id}>{a.code} · {a.name}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -8459,13 +8601,31 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
                   <input type="number" inputMode="decimal" value={expenseForm.amount} onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })} placeholder="0.00" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: 100, display: "block" }} />
                 </div>
                 <button type="button" onClick={addPrivateExpense} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>
-                  Add
+                  {expenseForm.declare ? "Add & post" : "Add"}
                 </button>
               </div>
               {expenseError && <div style={{ fontSize: 11.5, color: C.rose, marginBottom: 10 }}>{expenseError}</div>}
 
-              {report.monthExpenses.length === 0 ? (
-                <div style={{ fontSize: 12, color: C.textFaint, padding: "4px 0" }}>No private expenses logged this month.</div>
+              {report.declaredExpenses.length > 0 && (
+                <div style={{ fontSize: 10, fontWeight: 700, color: C.emerald, textTransform: "uppercase", letterSpacing: "0.06em", margin: "4px 0 2px" }}>Declared · in Accounting · ${report.declaredExpenseCost.toLocaleString("en-US", MONEY2)}</div>
+              )}
+              {report.declaredExpenses.map((x) => (
+                <div key={x.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: `1px solid ${C.border}`, gap: 10 }}>
+                  <span style={{ fontSize: 13, minWidth: 0 }}>
+                    {x.description || x.account} <span style={{ color: C.textFaint }}>· {fmtDate(x.date)}</span>
+                    <div style={{ fontSize: 10.5, color: C.textFaint }}>{x.entryNo} · {x.account}</div>
+                  </span>
+                  <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 600, color: C.emerald, flexShrink: 0 }} title="To change or delete, use Accounting → Entries">${x.amount.toLocaleString("en-US", MONEY2)}</span>
+                </div>
+              ))}
+              {report.declaredExpenses.length > 0 && (
+                <div style={{ fontSize: 10.5, color: C.textFaint, padding: "5px 0 2px" }}>To change or delete a declared expense, use Accounting → Entries (it's part of the official books).</div>
+              )}
+              {report.monthExpenses.length > 0 && (
+                <div style={{ fontSize: 10, fontWeight: 700, color: C.amber, textTransform: "uppercase", letterSpacing: "0.06em", margin: "12px 0 2px" }}>Not declared · this page only · ${report.privateExpenseCost.toLocaleString("en-US", MONEY2)}</div>
+              )}
+              {report.monthExpenses.length === 0 && report.declaredExpenses.length === 0 ? (
+                <div style={{ fontSize: 12, color: C.textFaint, padding: "4px 0" }}>No expenses this month.</div>
               ) : (
                 report.monthExpenses.map((m) => (
                   <div key={m.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: `1px solid ${C.border}`, gap: 10 }}>
