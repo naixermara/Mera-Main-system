@@ -6531,6 +6531,32 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
     return { rows, totalDr, totalCr, balanced: Math.abs(totalDr - totalCr) < 0.005, income, expense, profit: income - expense };
   }, [accounts, lines, monthEntries]);
 
+  // Trial Balance the way the accountant's BizAdvisor prints it: one NET
+  // figure per account, in the Debit column if it is positive and in Credit
+  // if negative, "as at" the last day of the month. Balance-sheet accounts
+  // (asset / liability / equity) build up from the very first entry; income
+  // and expense accounts build up from 1 January of that year. (The month's
+  // gross debits and credits — what `trial` holds — are still what the
+  // Journal totals use.)
+  const tb = useMemo(() => {
+    const end = `${month}-31`;
+    const yearStart = `${month.slice(0, 4)}-01-01`;
+    const dateOf = new Map(entries.map((e) => [e.id, e.entry_date]));
+    const rows = accounts.map((a) => {
+      const pl = a.type === "income" || a.type === "expense";
+      const net = lines.reduce((x, l) => {
+        if (l.account_id !== a.id) return x;
+        const d = dateOf.get(l.entry_id);
+        if (!d || d > end || (pl && d < yearStart)) return x;
+        return x + Number(l.debit || 0) - Number(l.credit || 0);
+      }, 0);
+      return { ...a, net, dr: net > 0.005 ? net : 0, cr: net < -0.005 ? -net : 0 };
+    }).filter((r) => r.dr || r.cr);
+    const totalDr = rows.reduce((a, r) => a + r.dr, 0);
+    const totalCr = rows.reduce((a, r) => a + r.cr, 0);
+    return { rows, totalDr, totalCr, balanced: Math.abs(totalDr - totalCr) < 0.005, asAt: new Date(month + "-01T00:00:00") };
+  }, [accounts, lines, entries, month]);
+
   const cashBalances = useMemo(() => cashAccounts.map((a) => {
     const ls = lines.filter((l) => l.account_id === a.id);
     return { ...a, balance: ls.reduce((x, l) => x + Number(l.debit || 0) - Number(l.credit || 0), 0) };
@@ -7061,18 +7087,18 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
                   <th style={t.thL}>Account</th><th style={t.thL}>Type</th><th style={t.th}>Debit</th><th style={t.th}>Credit</th>
                 </tr></thead>
                 <tbody>
-                  {trial.rows.map((r) => (
+                  {tb.rows.map((r) => (
                     <tr key={r.id}>
                       <td style={t.tdL}>{r.code} · {r.name}</td>
                       <td style={{ ...t.tdL, ...t.sub, fontSize: forPrint ? 10 : 11.5 }}>{r.type}</td>
-                      <td style={t.td}>{r.dr ? money(r.dr) : "—"}</td>
-                      <td style={t.td}>{r.cr ? money(r.cr) : "—"}</td>
+                      <td style={t.td}>{r.dr ? money(r.dr) : ""}</td>
+                      <td style={t.td}>{r.cr ? money(r.cr) : ""}</td>
                     </tr>
                   ))}
                   <tr style={t.tot}>
-                    <td style={t.tdL} colSpan={2}>Total</td>
-                    <td style={t.td}>{money(trial.totalDr)}</td>
-                    <td style={t.td}>{money(trial.totalCr)}</td>
+                    <td style={t.tdL} colSpan={2}>Total — as at {fmtDate(`${month}-${String(new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0).getDate()).padStart(2, "0")}`)}</td>
+                    <td style={t.td}>{money(tb.totalDr)}</td>
+                    <td style={t.td}>{money(tb.totalCr)}</td>
                   </tr>
                 </tbody>
               </table>
@@ -7384,8 +7410,8 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
             </div>
 
             {reportKind === "trial" && (
-              <div style={{ marginTop: 12, fontSize: 12.5, fontWeight: 700, color: trial.balanced ? C.emerald : C.rose }}>
-                {trial.balanced ? "Balanced — debits equal credits." : `OUT OF BALANCE by ${money(Math.abs(trial.totalDr - trial.totalCr))}`}
+              <div style={{ marginTop: 12, fontSize: 12.5, fontWeight: 700, color: tb.balanced ? C.emerald : C.rose }}>
+                {tb.balanced ? "Balanced — debits equal credits." : `OUT OF BALANCE by ${money(Math.abs(tb.totalDr - tb.totalCr))}`}
               </div>
             )}
 
@@ -7420,7 +7446,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
                   {body(true)}
                   {reportKind === "trial" && (
                     <div style={{ marginTop: 10, fontSize: 11, fontWeight: 700 }}>
-                      {trial.balanced ? "Balanced — debits equal credits." : `OUT OF BALANCE by ${money(Math.abs(trial.totalDr - trial.totalCr))}`}
+                      {tb.balanced ? "Balanced — debits equal credits." : `OUT OF BALANCE by ${money(Math.abs(tb.totalDr - tb.totalCr))}`}
                     </div>
                   )}
                   <div style={{ display: "flex", justifyContent: "space-between", marginTop: 44 }}>
@@ -13085,7 +13111,7 @@ function PayrollPage({ authUser, C, sbFetch, logActivity }) {
   const emptyStaff = {
     staff_no: "", name: "", name_kh: "", gender: "", position: "", pay_type: "salary",
     monthly_salary: "", aba_number: "", phone: "", start_date: "", end_date: "",
-    annual_leave_days: "15", notes: "",
+    annual_leave_days: "15", working_days: "26", notes: "",
   };
   const [showNewStaff, setShowNewStaff] = useState(false);
   const [staffForm, setStaffForm] = useState(emptyStaff);
@@ -13214,6 +13240,7 @@ function PayrollPage({ authUser, C, sbFetch, logActivity }) {
       start_date: staffForm.start_date || null,
       end_date: staffForm.end_date || null,
       annual_leave_days: pnum(staffForm.annual_leave_days) || 15,
+      working_days: pnum(staffForm.working_days) || STANDARD_DAYS,
       notes: staffForm.notes || null,
     };
     try {
@@ -13278,8 +13305,11 @@ function PayrollPage({ authUser, C, sbFetch, logActivity }) {
         aba_number: s.aba_number || null,
         staff_start_date: s.start_date || null,
         base_salary: Number(s.monthly_salary) || 0,
-        days_worked: STANDARD_DAYS,
-        standard_days: STANDARD_DAYS,
+        // Each person's own full month: 26 for full-time, fewer for part-time
+        // (e.g. 13 for Mon–Wed). Starting days_worked at the same number means
+        // a full month pays the full salary; type fewer for days missed.
+        days_worked: pnum(s.working_days) || STANDARD_DAYS,
+        standard_days: pnum(s.working_days) || STANDARD_DAYS,
         commission: 0,
         bonus: 0,
         advance: 0,
@@ -13591,6 +13621,11 @@ function PayrollPage({ authUser, C, sbFetch, logActivity }) {
                   <input style={inputStyle} inputMode="decimal" value={staffForm.annual_leave_days} onChange={(e) => setStaffForm({ ...staffForm, annual_leave_days: e.target.value })} placeholder="15" />
                   <div style={{ fontSize: 10, color: C.textFaint, marginTop: 4 }}>0 = keep them off the leave list</div>
                 </div>
+                <div>
+                  <label style={labelStyle}>Working days / month</label>
+                  <input style={inputStyle} inputMode="decimal" value={staffForm.working_days} onChange={(e) => setStaffForm({ ...staffForm, working_days: e.target.value })} placeholder="26" />
+                  <div style={{ fontSize: 10, color: C.textFaint, marginTop: 4 }}>26 = full-time · part-time e.g. 13 (3 days a week)</div>
+                </div>
                 <div style={{ gridColumn: "1 / -1" }}><label style={labelStyle}>Notes</label><input style={inputStyle} value={staffForm.notes} onChange={(e) => setStaffForm({ ...staffForm, notes: e.target.value })} /></div>
               </div>
               <button onClick={saveStaff} className="primarybtn" style={{ marginTop: 16, background: `linear-gradient(135deg, ${C.goldBright}, ${C.gold})`, color: "#1A1508", border: "none", borderRadius: 10, padding: "11px 22px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
@@ -13617,7 +13652,7 @@ function PayrollPage({ authUser, C, sbFetch, logActivity }) {
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                     <div style={{ fontSize: 15, fontWeight: 700, color: C.goldBright }}>{money(s.monthly_salary)}<span style={{ fontSize: 11, color: C.textFaint, fontWeight: 400 }}>/mo</span></div>
-                    <button onClick={() => { setStaffForm({ staff_no: s.staff_no || "", name: s.name || "", name_kh: s.name_kh || "", gender: s.gender || "", position: s.position || "", pay_type: s.pay_type || "salary", monthly_salary: String(s.monthly_salary ?? ""), aba_number: s.aba_number || "", phone: s.phone || "", start_date: s.start_date || "", end_date: s.end_date || "", annual_leave_days: String(s.annual_leave_days ?? 15), notes: s.notes || "" }); setEditingStaffId(s.id); setShowNewStaff(true); }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer" }}>Edit</button>
+                    <button onClick={() => { setStaffForm({ staff_no: s.staff_no || "", name: s.name || "", name_kh: s.name_kh || "", gender: s.gender || "", position: s.position || "", pay_type: s.pay_type || "salary", monthly_salary: String(s.monthly_salary ?? ""), aba_number: s.aba_number || "", phone: s.phone || "", start_date: s.start_date || "", end_date: s.end_date || "", annual_leave_days: String(s.annual_leave_days ?? 15), working_days: String(s.working_days ?? STANDARD_DAYS), notes: s.notes || "" }); setEditingStaffId(s.id); setShowNewStaff(true); }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer" }}>Edit</button>
                     <button onClick={() => toggleActive(s)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer" }}>{s.active ? "Deactivate" : "Reactivate"}</button>
                     <button onClick={() => deleteStaff(s)} style={{ background: "none", border: "none", color: C.textFaint, cursor: "pointer" }}><Trash2 size={15} /></button>
                   </div>
@@ -13718,6 +13753,9 @@ function PayrollPage({ authUser, C, sbFetch, logActivity }) {
                           <td key={f} style={{ padding: "10px 8px", width: 88 }}>
                             {rowLocked ? <div style={{ textAlign: "right", color: C.textDim }}>{f === "days_worked" ? pnum(r[f]) : money(r[f])}</div>
                               : <input style={cellInput} inputMode="decimal" value={r[f] ?? ""} onChange={(e) => editRow(r.id, f, e.target.value)} />}
+                            {f === "days_worked" && (pnum(r.standard_days) || STANDARD_DAYS) !== STANDARD_DAYS && (
+                              <div style={{ fontSize: 9.5, color: C.amber, textAlign: "center", marginTop: 3 }}>of {pnum(r.standard_days)} · part-time</div>
+                            )}
                           </td>
                         ))}
                         <td style={{ padding: "10px 8px", textAlign: "right", color: C.textDim, whiteSpace: "nowrap" }}>{money(earnedOf(r))}</td>
