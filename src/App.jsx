@@ -4210,10 +4210,9 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
             amount: parseFloat(draft.paid) || 0, notes: draft.notes, created_by: authUser?.email || "unknown",
           }),
         });
-        await sbFetch(`credit_invoices?id=eq.${draft.invoiceId}`, {
-          method: "PATCH",
-          body: JSON.stringify({ paid: Number(inv?.paid || 0) + (parseFloat(draft.paid) || 0) }),
-        });
+        // The payment row above (tied to this invoice) is the record. Credit Term
+        // adds invoice.paid AND payment rows together, so also raising the
+        // invoice's paid would count the same money twice.
         summary = `Credit Term · ${storeName} · Invoice ${inv?.invoice_number || draft.invoiceId}`;
         logActivity?.("Assigned payment", storeName, `$${row.amount} → Invoice ${inv?.invoice_number || ""}`);
       } else {
@@ -4847,9 +4846,11 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
   }
 
   function dueDate(invoiceDate, creditDays) {
+    // Plain calendar maths in local time. (toISOString() converts to UTC,
+    // which in Cambodia (UTC+7) moved every due date one day earlier.)
     const d = new Date(invoiceDate + "T00:00:00");
     d.setDate(d.getDate() + creditDays);
-    return d.toISOString().slice(0, 10);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   }
 
   const enrichedStores = useMemo(() => {
@@ -4892,12 +4893,17 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
       // Complete = every invoice fully paid, with at least one invoice logged. Once complete, the
       // store "belongs" to whichever month its last invoice was dated, so it's still findable there.
       const isComplete = s.invoices.length > 0 && outstanding === 0;
+      // For the card header: when each still-unpaid invoice was released and
+      // when it falls due, oldest first, so follow-up is one glance.
+      const openInvoices = invoicesByDate
+        .map((inv) => ({ id: inv.id, no: inv.invoiceNumber, date: inv.invoiceDate, due: dueDate(inv.invoiceDate, s.creditDays), remaining: inv.amount - (invoiceEffectivePaid[inv.id] ?? inv.paid) }))
+        .filter((x) => x.remaining > 0.005);
       const lastInvoiceDate = s.invoices.length ? [...s.invoices].map((inv) => inv.invoiceDate).sort().slice(-1)[0] : null;
       const completionMonth = lastInvoiceDate ? monthKey(lastInvoiceDate) : null;
       const invoicedThisMonth = monthInvoices.length > 0;
       const notedInvoices = [...s.invoices].filter((inv) => inv.notes && inv.notes.trim()).sort((a, b) => a.invoiceDate.localeCompare(b.invoiceDate));
       const latestNote = notedInvoices.length ? notedInvoices[notedInvoices.length - 1].notes : "";
-      return { ...s, monthBilled, monthCollected, monthOwed, allTimeBilled, allTimeCollected, outstanding, overdueCount: overdueInvoices.length, isComplete, completionMonth, invoicedThisMonth, latestNote, invoiceEffectivePaid };
+      return { ...s, monthBilled, monthCollected, monthOwed, allTimeBilled, allTimeCollected, outstanding, overdueCount: overdueInvoices.length, isComplete, completionMonth, invoicedThisMonth, latestNote, invoiceEffectivePaid, openInvoices, lastInvoiceDate, today };
     });
   }, [stores, selectedMonth]);
 
@@ -5203,6 +5209,36 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                       Net {s.creditDays} days{s.overdueCount > 0 ? ` · ${s.overdueCount} overdue` : ""}
                       {s.isComplete && <span style={{ color: C.emerald }}> · Completed</span>}
                     </div>
+                    {/* Invoice release dates → due dates, so you can see at a glance
+                        what was sold when and which payment to chase. */}
+                    {(() => {
+                      const short = (d) => `${Number(d.slice(8, 10))} ${["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][Number(d.slice(5, 7)) - 1]}`;
+                      if (!s.openInvoices.length) {
+                        return s.lastInvoiceDate ? <div style={{ fontSize: 11, color: C.textFaint, marginTop: 3 }}>Last invoice {short(s.lastInvoiceDate)} · all paid</div> : null;
+                      }
+                      // Same release date + same due date → one chip with a count.
+                      const groups = [];
+                      for (const x of s.openInvoices) {
+                        const g = groups.find((g) => g.date === x.date && g.due === x.due);
+                        if (g) { g.n += 1; g.amt += x.remaining; } else groups.push({ date: x.date, due: x.due, n: 1, amt: x.remaining });
+                      }
+                      const shown = groups.slice(0, 4);
+                      return (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 5 }}>
+                          {shown.map((g) => {
+                            const late = g.due < s.today;
+                            return (
+                              <span key={g.date + g.due} title={`${g.n} invoice${g.n > 1 ? "s" : ""} · $${g.amt.toFixed(2)} unpaid`}
+                                style={{ fontSize: 10.5, padding: "2px 7px", borderRadius: 6, whiteSpace: "nowrap",
+                                  border: `1px solid ${late ? C.rose : C.border}`, color: late ? C.rose : C.textDim, background: late ? C.roseBg : "transparent" }}>
+                                Sold {short(g.date)}{g.n > 1 ? ` ×${g.n}` : ""} → {late ? "was due" : "due"} {short(g.due)} · ${g.amt.toFixed(2)}
+                              </span>
+                            );
+                          })}
+                          {groups.length > shown.length && <span style={{ fontSize: 10.5, color: C.textFaint, padding: "2px 2px" }}>+{groups.length - shown.length} more</span>}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
