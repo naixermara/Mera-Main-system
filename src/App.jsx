@@ -2781,7 +2781,7 @@ function KolPage({ authUser, C, sbFetch, logActivity }) {
           style={{ textAlign: "left", background: C.surface, border: `1px solid ${showAds ? C.gold : C.border}`, borderRadius: 12, padding: "16px 18px", cursor: "pointer" }}
         >
           <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Ads boosting</div>
-          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 22, fontWeight: 600, marginTop: 6, color: C.gold }}>${adTotal.toLocaleString("en-US", MONEY2)}</div>
+          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 22, fontWeight: 600, marginTop: 6, color: C.rose }}>${adTotal.toLocaleString("en-US", MONEY2)}</div>
           <div style={{ fontSize: 10, color: C.textFaint, marginTop: 4 }}>Facebook + TikTok · tap to edit</div>
         </button>
         <button
@@ -2843,7 +2843,7 @@ function KolPage({ authUser, C, sbFetch, logActivity }) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, flexWrap: "wrap", gap: 10 }}>
                 <div style={{ fontSize: 13 }}>
                   <span style={{ color: C.textFaint }}>Month total: </span>
-                  <b style={{ fontFamily: "'IBM Plex Mono', monospace", color: C.goldBright }}>
+                  <b style={{ fontFamily: "'IBM Plex Mono', monospace", color: C.rose }}>
                     ${adDraft.reduce((a, r) => a + (parseFloat(r.amount) || 0), 0).toLocaleString("en-US", MONEY2)}
                   </b>
                 </div>
