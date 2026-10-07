@@ -9368,12 +9368,21 @@ function SalesReportPage({ authUser, C, sbFetch }) {
         <div style={{ textAlign: "center", color: C.textFaint, padding: "40px 0" }}>Loading…</div>
       ) : (
         <>
+          {(() => {
+            const now = new Date(); const nowKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+            if (selectedMonth !== nowKey) return null;
+            return (
+              <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 10 }}>
+                {monthLabel(selectedMonth).split(" ")[0]} so far (1–{now.getDate()}): the month isn't finished, so it will look lower than {monthLabel(prevKey).split(" ")[0]} until it ends.
+              </div>
+            );
+          })()}
           <div className="sr-tiles">
             <div style={card}><div style={tileLabel}>Total sales</div><div style={tileVal}>{fm(cur.total)}</div>{chg(change(cur.total, prev.total, true))}</div>
             <div style={card}><div style={tileLabel}>Boxes sold</div><div style={tileVal}>{fi(cur.units)}</div>{chg(change(cur.units, prev.units))}</div>
             <div style={card}><div style={tileLabel}>Customers who bought</div><div style={tileVal}>{cur.customers.length}</div>
               <span style={{ fontSize: 11.5, fontWeight: 700, color: cur.customers.length >= prev.customers.length ? C.emerald : C.rose }}>
-                {cur.customers.length >= prev.customers.length ? "▲" : "▼"} {Math.abs(cur.customers.length - prev.customers.length)} vs {monthLabel(prevKey).split(" ")[0].slice(0, 3)}
+                {cur.customers.length >= prev.customers.length ? "▲" : "▼"} {Math.abs(cur.customers.length - prev.customers.length)} {cur.customers.length >= prev.customers.length ? "more" : "fewer"} than {monthLabel(prevKey).split(" ")[0].slice(0, 3)} ({prev.customers.length})
               </span></div>
             <div style={card}><div style={tileLabel}>Not paid yet</div><div style={{ ...tileVal, color: cur.owed > 0 ? C.amber : C.emerald }}>{fm(cur.owed)}</div>
               <span style={{ fontSize: 11.5, color: C.textFaint }}>{cur.total ? `${Math.round((cur.owed / cur.total) * 100)}% of this month's sales` : "—"} · Credit &amp; Corporate</span></div>
