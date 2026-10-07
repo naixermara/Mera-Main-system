@@ -5617,7 +5617,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                               <div style={{ marginTop: 2 }}>
                                 <span>${inv.amount.toLocaleString("en-US", MONEY2)} billed</span>
                                 {inv.paid > 0 && <span style={{ color: C.emerald }}> · ${inv.paid.toLocaleString("en-US", MONEY2)} paid</span>}
-                                {remaining > 0 && effectiveRemaining > 0 && <span style={{ color: isOverdue ? C.rose : C.textDim }}> · ${effectiveRemaining.toLocaleString("en-US", MONEY2)} remaining, due {new Date(due + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short" })}{isOverdue ? " (overdue)" : ""}</span>}
+                                {remaining > 0 && effectiveRemaining > 0 && <span style={{ color: isOverdue ? C.rose : C.amber }}> · <b style={{ fontWeight: 700 }}>${effectiveRemaining.toLocaleString("en-US", MONEY2)} remaining</b>, due {new Date(due + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short" })}{isOverdue ? <b> (overdue)</b> : ""}</span>}
                                 {remaining > 0 && effectiveRemaining === 0 && <span style={{ color: C.emerald }}> · covered by a separate payment</span>}
                               </div>
                               {(inv.plSold > 0 || inv.nightSold > 0 || inv.daySold > 0 || inv.pantSold > 0 || inv.shortSold > 0) && (
