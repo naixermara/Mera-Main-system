@@ -211,40 +211,40 @@ const SKUS = [
   {
     code: "pl", visitKey: "Panty Liner", label: "Panty Liner",
     initKey: "pl", priceKey: "plPrice",
-    initCol: "pl_initial", priceCol: "pl_price", qtyCol: "pl_qty", soldCol: "pl_sold",
-    formQty: "plQty", formPrice: "plPrice", formSold: "plSold", formReturned: "plReturned",
+    initCol: "pl_initial", priceCol: "pl_price", qtyCol: "pl_qty", freeCol: "pl_free", soldCol: "pl_sold",
+    formQty: "plQty", formFree: "plFree", formPrice: "plPrice", formSold: "plSold", formReturned: "plReturned",
     name: "Mera Panty Liner (ប្រចាំថ្ងៃ)", barcode: "8849308071235", unit: "Box",
     priceOptions: [1.40, 1.30, 1.15],
   },
   {
     code: "night", visitKey: "Night", label: "Night (យប់)",
     initKey: "night", priceKey: "nightPrice",
-    initCol: "night_initial", priceCol: "night_price", qtyCol: "night_qty", soldCol: "night_sold",
-    formQty: "nightQty", formPrice: "nightPrice", formSold: "nightSold", formReturned: "nightReturned",
+    initCol: "night_initial", priceCol: "night_price", qtyCol: "night_qty", freeCol: "night_free", soldCol: "night_sold",
+    formQty: "nightQty", formFree: "nightFree", formPrice: "nightPrice", formSold: "nightSold", formReturned: "nightReturned",
     name: "Mera for night time(យប់)", barcode: "8849308071259", unit: "Box",
     priceOptions: [2.00, 1.90, 1.70, 1.55],
   },
   {
     code: "day", visitKey: "Day", label: "Day (ថ្ងៃ)",
     initKey: "dayp", priceKey: "dayPrice",
-    initCol: "day_initial", priceCol: "day_price", qtyCol: "day_qty", soldCol: "day_sold",
-    formQty: "dayQty", formPrice: "dayPrice", formSold: "daySold", formReturned: "dayReturned",
+    initCol: "day_initial", priceCol: "day_price", qtyCol: "day_qty", freeCol: "day_free", soldCol: "day_sold",
+    formQty: "dayQty", formFree: "dayFree", formPrice: "dayPrice", formSold: "daySold", formReturned: "dayReturned",
     name: "Mera for day(ថ្ងៃ)", barcode: "8849308071242", unit: "Box",
     priceOptions: [2.00, 1.90, 1.70, 1.55],
   },
   {
     code: "pant", visitKey: "Period Pant", label: "Period Pant",
     initKey: "pant", priceKey: "pantPrice",
-    initCol: "pant_initial", priceCol: "pant_price", qtyCol: "pant_qty", soldCol: "pant_sold",
-    formQty: "pantQty", formPrice: "pantPrice", formSold: "pantSold", formReturned: "pantReturned",
+    initCol: "pant_initial", priceCol: "pant_price", qtyCol: "pant_qty", freeCol: "pant_free", soldCol: "pant_sold",
+    formQty: "pantQty", formFree: "pantFree", formPrice: "pantPrice", formSold: "pantSold", formReturned: "pantReturned",
     name: "Mera Period Pant", barcode: "8849308071273", unit: "Box",
     priceOptions: [1.90, 1.80, 1.70, 1.65],
   },
   {
     code: "short", visitKey: "Summer Short", label: "Summer (Coolmint)",
     initKey: "short", priceKey: "shortPrice",
-    initCol: "short_initial", priceCol: "short_price", qtyCol: "short_qty", soldCol: "short_sold",
-    formQty: "shortQty", formPrice: "shortPrice", formSold: "shortSold", formReturned: "shortReturned",
+    initCol: "short_initial", priceCol: "short_price", qtyCol: "short_qty", freeCol: "short_free", soldCol: "short_sold",
+    formQty: "shortQty", formFree: "shortFree", formPrice: "shortPrice", formSold: "shortSold", formReturned: "shortReturned",
     name: "Mera Summer (Coolmint)", barcode: "8849308071266", unit: "Box",
     priceOptions: [1.75, 1.60, 1.55, 1.40],
   },
@@ -10416,7 +10416,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
     saleDate: new Date().toISOString().slice(0, 10),
     issuedBy: "", saleRep: "", paymentMethod: "",
     autoInvoice: false, // "Also generate the invoice right after" shortcut
-    ...Object.fromEntries(SKUS.flatMap((x) => [[x.formQty, ""], [x.formPrice, ""]])),
+    ...Object.fromEntries(SKUS.flatMap((x) => [[x.formQty, ""], [x.formFree, ""], [x.formPrice, ""]])),
     notes: "",
   };
   const [dnForm, setDnForm] = useState(emptyDNForm);
@@ -10594,11 +10594,14 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
       // Refuse to send out more than is held. Checked before anything is
       // written, so a rejected note leaves no half-made records behind.
       const wanted = SKUS.map((x) => ({ product: x.code, qty: parseFloat(dnForm[x.formQty]) || 0 }));
+      // Free gift boxes leave the warehouse too, so they count against stock.
+      const freeWanted = SKUS.map((x) => ({ product: x.code, qty: parseFloat(dnForm[x.formFree]) || 0 })).filter((w) => w.qty > 0);
       if (!stockMissing) {
-        const short = wanted.filter((w) => w.qty > (stock[w.product] || 0));
+        const need = (code) => (wanted.find((w) => w.product === code)?.qty || 0) + (freeWanted.find((w) => w.product === code)?.qty || 0);
+        const short = SKUS.map((x) => ({ product: x.code, qty: need(x.code) })).filter((w) => w.qty > (stock[w.product] || 0));
         if (short.length) {
           setStockError(
-            short.map((w) => `${stockLabel(w.product)}: asked for ${w.qty}, only ${stock[w.product] || 0} in stock`).join(" · ")
+            short.map((w) => `${stockLabel(w.product)}: asked for ${w.qty}${freeWanted.some((f) => f.product === w.product) ? " (incl. free)" : ""}, only ${stock[w.product] || 0} in stock`).join(" · ")
           );
           return false;
         }
@@ -10632,6 +10635,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
           payment_method: dnForm.paymentMethod,
           ...Object.fromEntries(SKUS.flatMap((x) => [
             [x.qtyCol, parseFloat(dnForm[x.formQty]) || 0],
+            [x.freeCol, parseFloat(dnForm[x.formFree]) || 0],
             [x.priceCol, parseFloat(dnForm[x.formPrice]) || 0],
           ])),
           notes: dnForm.notes,
@@ -10643,6 +10647,10 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
       setDnForm(emptyDNForm);
       setSaveError(false);
       if (!stockMissing) await addStockMove(wanted.map((w) => ({ ...w, qty: -w.qty })), "delivery", dnNumber);
+      // Free gift boxes: out of the warehouse as a "sample" — counted as a
+      // promotion expense at cost in Profit & Margin, never as a sale, and
+      // not put on a consignment store's shelf (the store doesn't owe for them).
+      if (!stockMissing && freeWanted.length) await addStockMove(freeWanted.map((w) => ({ ...w, qty: -w.qty })), "sample", dnNumber);
       setStockError("");
       // A consignment drop is also a restock of that store's shelf, so raise
       // what Sales shows sitting there. Corporate and credit stores bill per
@@ -10752,6 +10760,14 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
         // never really happened.
         const wanted = SKUS.map((x) => ({ product: x.code, qty: parseFloat(note[x.qtyCol]) || 0 }));
         await addStockMove(wanted, "return", `${note.dn_number} (deleted)`);
+        // Free gift boxes went out as a "sample" under this DN number — remove
+        // those moves so the stock comes back and Profit stops counting them.
+        if (SKUS.some((x) => (parseFloat(note[x.freeCol]) || 0) > 0)) {
+          try {
+            await sbFetch(`stock_moves?reference=eq.${encodeURIComponent(note.dn_number)}&reason=eq.sample`, { method: "DELETE" });
+            setStockMoves((prev) => prev.filter((m) => !(m.reference === note.dn_number && m.reason === "sample")));
+          } catch (err) { /* stock table missing */ }
+        }
         // A consignment delivery also raised that store's own shelf count —
         // reverse that side too, or the store looks like it's still holding
         // stock that was actually never delivered.
@@ -10937,7 +10953,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                   }
                   let run = 0;
                   const rowsOut = mine.map((m) => { run += Number(m.qty) || 0; return { ...m, run }; }).reverse();
-                  const REASON = { opening: "Opening count", received: "Received in", adjustment: "Correction", return: "Back from a store", delivery: "Sent on a delivery note", purchase: "Bought from a supplier", "purchase return": "Returned to supplier" };
+                  const REASON = { opening: "Opening count", received: "Received in", adjustment: "Correction", return: "Back from a store", delivery: "Sent on a delivery note", sample: "Free gift / sample", purchase: "Bought from a supplier", "purchase return": "Returned to supplier" };
                   return (
                     <div style={{ overflowX: "auto" }}>
                       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 430 }}>
@@ -11099,6 +11115,11 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                         {" · "}{dn.business_type === "credit" ? "Credit Term" : dn.business_type === "corporate" ? "Corporate Accounts" : "Consignment"}
                         {linkedInvoices.length > 0 && ` · ${linkedInvoices.length} invoice${linkedInvoices.length === 1 ? "" : "s"} generated`}
                       </div>
+                      {SKUS.some((x) => (Number(dn[x.freeCol]) || 0) > 0) && (
+                        <div style={{ fontSize: 11, color: C.goldBright, marginTop: 2 }}>
+                          🎁 Free gift: {SKUS.filter((x) => (Number(dn[x.freeCol]) || 0) > 0).map((x) => `${Number(dn[x.freeCol])} ${x.label}`).join(", ")}
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -11421,18 +11442,25 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
             )}
 
             <div style={{ fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 8, textTransform: "uppercase" }}>Products</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 4 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1.1fr 0.8fr 0.8fr 1.4fr", gap: 6, marginBottom: 4 }}>
               <div style={{ fontSize: 9, color: C.textFaint }}></div>
               <div style={{ fontSize: 9, color: C.textFaint }}>Qty (Box)</div>
+              <div style={{ fontSize: 9, color: C.textFaint }} title="Given free (gift / promotion) — leaves the warehouse, not charged">Free 🎁</div>
               <div style={{ fontSize: 9, color: C.textFaint }}>Price $ (internal only)</div>
             </div>
-            {SKUS.map((x) => ({ code: x.code, key: x.code, label: x.label, qk: x.formQty, pk: x.formPrice })).map((p) => (
-              <div key={p.key} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.4fr", gap: 6, marginBottom: 8, alignItems: "start" }}>
+            {SKUS.map((x) => ({ code: x.code, key: x.code, label: x.label, qk: x.formQty, fk: x.formFree, pk: x.formPrice })).map((p) => (
+              <div key={p.key} style={{ display: "grid", gridTemplateColumns: "1.1fr 0.8fr 0.8fr 1.4fr", gap: 6, marginBottom: 8, alignItems: "start" }}>
                 <div style={{ fontSize: 13, color: C.textDim, paddingTop: 8 }}>{p.label}</div>
                 <input type="number" value={dnForm[p.qk]} onChange={(e) => setDnForm({ ...dnForm, [p.qk]: e.target.value })} placeholder="0" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 13, background: C.bg2, color: C.text }} />
+                <input type="number" inputMode="numeric" min="0" value={dnForm[p.fk] || ""} onChange={(e) => setDnForm({ ...dnForm, [p.fk]: e.target.value })} placeholder="0" style={{ width: "100%", border: `1.5px solid ${(parseFloat(dnForm[p.fk]) || 0) > 0 ? C.gold : C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 13, background: C.bg2, color: C.text, minWidth: 0, boxSizing: "border-box" }} />
                 <PriceDropdown skuCode={p.code} value={dnForm[p.pk]} onChange={(v) => setDnForm({ ...dnForm, [p.pk]: v })} C={C} />
               </div>
             ))}
+            {SKUS.some((x) => (parseFloat(dnForm[x.formFree]) || 0) > 0) && (
+              <div style={{ fontSize: 11.5, color: C.goldBright, marginBottom: 6 }}>
+                🎁 Free: {SKUS.filter((x) => (parseFloat(dnForm[x.formFree]) || 0) > 0).map((x) => `${parseFloat(dnForm[x.formFree])} ${x.label}`).join(", ")} — printed on the note as a free gift, leaves the warehouse, not charged on the invoice. Counted as a promotion cost in Profit &amp; Margin.
+              </div>
+            )}
             <div style={{ fontSize: 10, color: C.textFaint, marginBottom: 14 }}>Price won't show on the printed delivery note — it carries over automatically when you generate an invoice.</div>
 
             <div style={{ marginBottom: 18, marginTop: 10 }}>
@@ -11516,9 +11544,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
 function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, logActivity, onClose, onCreated }) {
   const [invoiceType, setInvoiceType] = useState(dn.business_type === "credit" || dn.business_type === "corporate" ? "commercial" : "consignment");
   const [form, setForm] = useState({
-    plPrice: dn.pl_price ? String(dn.pl_price) : "",
-    nightPrice: dn.night_price ? String(dn.night_price) : "",
-    dayPrice: dn.day_price ? String(dn.day_price) : "",
+    ...Object.fromEntries(SKUS.map((x) => [x.formPrice, dn[x.priceCol] ? String(dn[x.priceCol]) : ""])),
     discountPercent: "0",
     vatPercent: "10",
     exchangeRate: "4046",
@@ -11561,10 +11587,13 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
           payment_term: form.paymentTerm,
           issued_by: dn.issued_by,
           sale_rep: dn.sale_rep,
-          pl_qty: dn.pl_qty, night_qty: dn.night_qty, day_qty: dn.day_qty,
-          pl_price: parseFloat(form.plPrice) || 0,
-          night_price: parseFloat(form.nightPrice) || 0,
-          day_price: parseFloat(form.dayPrice) || 0,
+          // Every product on the note carries over — sold boxes at their
+          // price, and any free gift boxes (printed at $0.00).
+          ...Object.fromEntries(SKUS.flatMap((x) => [
+            [x.qtyCol, Number(dn[x.qtyCol]) || 0],
+            [x.freeCol, Number(dn[x.freeCol]) || 0],
+            [x.priceCol, parseFloat(form[x.formPrice]) || 0],
+          ])),
           discount_percent: parseFloat(form.discountPercent) || 0,
           vat_percent: invoiceType === "tax" ? (parseFloat(form.vatPercent) || 0) : 0,
           exchange_rate: parseFloat(form.exchangeRate) || 4046,
@@ -11615,20 +11644,19 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
         </div>
 
         <div style={{ fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 8, textTransform: "uppercase" }}>Prices (per box)</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 14 }}>
-          <div>
-            <label style={{ fontSize: 9, color: C.textFaint }}>Panty Liner</label>
-            <input type="number" step="0.01" value={form.plPrice} onChange={(e) => setForm({ ...form, plPrice: e.target.value })} placeholder="0.00" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 13, background: C.bg2, color: C.text }} />
-          </div>
-          <div>
-            <label style={{ fontSize: 9, color: C.textFaint }}>Night</label>
-            <input type="number" step="0.01" value={form.nightPrice} onChange={(e) => setForm({ ...form, nightPrice: e.target.value })} placeholder="0.00" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 13, background: C.bg2, color: C.text }} />
-          </div>
-          <div>
-            <label style={{ fontSize: 9, color: C.textFaint }}>Day</label>
-            <input type="number" step="0.01" value={form.dayPrice} onChange={(e) => setForm({ ...form, dayPrice: e.target.value })} placeholder="0.00" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 13, background: C.bg2, color: C.text }} />
-          </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
+          {SKUS.filter((x) => (Number(dn[x.qtyCol]) || 0) > 0 || (!SKUS.some((y) => Number(dn[y.qtyCol]) > 0) && ["pl", "night", "day"].includes(x.code))).map((x) => (
+            <div key={x.code}>
+              <label style={{ fontSize: 9, color: C.textFaint }}>{x.label} · {Number(dn[x.qtyCol]) || 0} box</label>
+              <input type="number" step="0.01" value={form[x.formPrice]} onChange={(e) => setForm({ ...form, [x.formPrice]: e.target.value })} placeholder="0.00" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 13, background: C.bg2, color: C.text, boxSizing: "border-box" }} />
+            </div>
+          ))}
         </div>
+        {SKUS.some((x) => (Number(dn[x.freeCol]) || 0) > 0) && (
+          <div style={{ fontSize: 11.5, color: C.goldBright, marginBottom: 14 }}>
+            🎁 Free gift on this note: {SKUS.filter((x) => (Number(dn[x.freeCol]) || 0) > 0).map((x) => `${Number(dn[x.freeCol])} ${x.label}`).join(", ")} — shown on the invoice at $0.00.
+          </div>
+        )}
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
           <div>
@@ -11686,6 +11714,11 @@ function SingleDocument({ d, isDN, pageBreak, catalog }) {
     PRODUCT_FALLBACK.find((p) => p.code === code) || { name: code, barcode: "", unit: "Box" };
   const products = SKUS
     .map((x) => ({ key: x.code, qty: Number(d[x.qtyCol] || 0), price: Number(d[x.priceCol] || 0) }))
+    .map((p) => { const m = look(p.key); return { ...p, code: m.barcode || "", label: m.name, unit: m.unit || "Box" }; })
+    .filter((p) => p.qty > 0);
+  // Free gift boxes — printed as their own lines at $0.00, never charged.
+  const freeItems = SKUS
+    .map((x) => ({ key: x.code, qty: Number(d[x.freeCol] || 0) }))
     .map((p) => { const m = look(p.key); return { ...p, code: m.barcode || "", label: m.name, unit: m.unit || "Box" }; })
     .filter((p) => p.qty > 0);
 
@@ -11826,7 +11859,21 @@ function SingleDocument({ d, isDN, pageBreak, catalog }) {
                 </>}
               </tr>
             ))}
-            {Array.from({ length: Math.max(0, 4 - products.length) }).map((_, i) => (
+            {freeItems.map((p, i) => (
+              <tr key={"free" + p.key}>
+                <td style={{ ...td, textAlign: "center" }}>{products.length + i + 1}</td>
+                <td style={{ ...td, textAlign: "center" }}>{p.code}</td>
+                <td style={td}>{p.label} <b>— Free gift (ហ្វ្រី)</b></td>
+                <td style={{ ...td, textAlign: "center" }}>{p.unit}</td>
+                <td style={{ ...td, textAlign: "center" }}>{p.qty}</td>
+                {!isDN && <>
+                  <td style={{ ...td, textAlign: "right" }}>$0.00</td>
+                  <td style={{ ...td, textAlign: "center" }}>FOC</td>
+                  <td style={{ ...td, textAlign: "right" }}>$0.00</td>
+                </>}
+              </tr>
+            ))}
+            {Array.from({ length: Math.max(0, 4 - products.length - freeItems.length) }).map((_, i) => (
               <tr key={"blank" + i}>
                 <td style={{ border: "1px solid #000", padding: "7px 4px" }}>&nbsp;</td>
                 <td style={{ border: "1px solid #000" }}></td>
@@ -11842,7 +11889,7 @@ function SingleDocument({ d, isDN, pageBreak, catalog }) {
         {isDN ? (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, fontSize: 11 }}>
             <div>- Payment Method : {d.payment_method || "—"}</div>
-            <div><b>Total Qty :</b> {products.reduce((a, p) => a + p.qty, 0)}</div>
+            <div><b>Total Qty :</b> {products.reduce((a, p) => a + p.qty, 0) + freeItems.reduce((a, p) => a + p.qty, 0)}{freeItems.length > 0 && <> (incl. {freeItems.reduce((a, p) => a + p.qty, 0)} free)</>}</div>
           </div>
         ) : (
           <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 6 }}>
