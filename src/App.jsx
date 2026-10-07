@@ -16,6 +16,8 @@ const OWNER_EMAIL = "rosamaramfi@gmail.com";
 const PAYROLL_EMAILS = ["rosamaramfi@gmail.com", "kimlychea116@gmail.com"];
 // Accounting is its own list so the accountant can be added here without
 // also giving them payroll. Keep it in step with is_accounting_user() in SQL.
+// The Sales Report (all sales, customers, channels) is for the owner only.
+const SALES_REPORT_EMAILS = ["rosamaramfi@gmail.com"];
 const ACCOUNTING_EMAILS = ["rosamaramfi@gmail.com", "kimlychea116@gmail.com", "acc@rolyamfi.com.kh"];
 
 let currentAccessToken = null;
@@ -524,6 +526,7 @@ export default function MeraConsignmentApp() {
   const [authLoading, setAuthLoading] = useState(false);
   const canSeePayroll = PAYROLL_EMAILS.includes(String(authUser?.email || "").toLowerCase());
   const canSeeAccounting = ACCOUNTING_EMAILS.includes(String(authUser?.email || "").toLowerCase());
+  const canSeeSalesReport = SALES_REPORT_EMAILS.includes(String(authUser?.email || "").toLowerCase());
 
   const [page, setPage] = useState(() => loadSavedNav()?.page || "sales");
   // Set when "+ New delivery note" is pressed on a consignment store. Delivery &
@@ -1327,9 +1330,12 @@ export default function MeraConsignmentApp() {
   }
 
   // Sections the signed-in person may actually open.
+  // Staff who land on the owner-only report (e.g. from a saved tab) go back to Consignment.
+  if (authUser && !canSeeSalesReport && salesSubPage === "report") setSalesSubPage("consignment");
+
   const visibleNav = NAV.filter((g) =>
     g.needs === "payroll" ? canSeePayroll : g.needs === "accounting" ? canSeeAccounting : true
-  );
+  ).map((g) => ({ ...g, items: g.items.filter((it) => it.needs !== "owner" || canSeeSalesReport) }));
 
   // One place that moves the app, so the sidebar, the overview cards and any
   // future shortcut all land in the same state.
@@ -1449,7 +1455,7 @@ export default function MeraConsignmentApp() {
               </span>
             </div>
             <h1 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 34, margin: "6px 0 0", letterSpacing: "-0.01em" }}>
-              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? "Delivery & Invoices" : page === "stores" ? "Stores" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "sales" ? (salesSubPage === "total" ? "Sales Total" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online & COD Sales" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : "Consignment Operations") : "Consignment Operations"}
+              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? "Delivery & Invoices" : page === "stores" ? "Stores" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "sales" ? (salesSubPage === "total" ? "Sales Total" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online & COD Sales" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : "Consignment Operations") : "Consignment Operations"}
             </h1>
             <div style={{ height: 2, width: 46, background: `linear-gradient(90deg, ${C.gold}, transparent)`, marginTop: 10 }} />
           </div>
@@ -1559,6 +1565,16 @@ export default function MeraConsignmentApp() {
               >
                 Total
               </button>
+              {canSeeSalesReport && <button
+                onClick={() => setSalesSubPage("report")}
+                style={{
+                  background: "none", border: "none", padding: "6px 2px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginRight: 14,
+                  color: salesSubPage === "report" ? C.gold : C.textFaint,
+                  borderBottom: `2px solid ${salesSubPage === "report" ? C.gold : "transparent"}`,
+                }}
+              >
+                Report
+              </button>}
               <button
                 onClick={() => setSalesSubPage("consignment")}
                 style={{
@@ -1620,6 +1636,8 @@ export default function MeraConsignmentApp() {
                   else { setSalesSubPage("consignment"); setConsignmentSubView(dest === "corporate" ? "bigco" : "regular"); }
                 }}
               />
+            ) : salesSubPage === "report" && canSeeSalesReport ? (
+              <SalesReportPage authUser={authUser} C={C} sbFetch={sbFetch} />
             ) : salesSubPage === "credit" ? (
               <CreditTermPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} focus={storeFocus?.type === "credit" ? storeFocus : null} />
             ) : salesSubPage === "online" ? (
@@ -5837,6 +5855,7 @@ const NAV = [
   ]},
   { name: "Sales", items: [
     { label: "Total",              page: "sales", sub: "total" },
+    { label: "Sales report",       page: "sales", sub: "report", needs: "owner" },
     { label: "Consignment",        page: "sales", sub: "consignment", view: "regular" },
     { label: "Corporate Accounts", page: "sales", sub: "consignment", view: "bigco" },
     { label: "Credit Term",        page: "sales", sub: "credit" },
@@ -8975,6 +8994,483 @@ function SalesTotalPage({ authUser, C, sbFetch, onNavigate }) {
                 </div>
               ))}
             </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// Real .xlsx export (no library). A tiny zip writer ("stored", uncompressed)
+// plus the handful of XML parts Excel needs, so the download opens cleanly
+// in Excel, Google Sheets and on phones without any "file format" warning.
+// ============================================================================
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
+  return t;
+})();
+function crc32(bytes) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function zipStore(files) {
+  const enc = new TextEncoder();
+  const parts = []; const central = []; let offset = 0;
+  const u16 = (v) => [v & 0xFF, (v >>> 8) & 0xFF];
+  const u32 = (v) => [v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF];
+  files.forEach((f) => {
+    const name = enc.encode(f.name); const data = enc.encode(f.text); const crc = crc32(data);
+    const local = new Uint8Array([...u32(0x04034b50), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(0), ...u16(0x21),
+      ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), ...u16(0)]);
+    parts.push(local, name, data);
+    central.push(new Uint8Array([...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(0), ...u16(0x21),
+      ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0),
+      ...u32(0), ...u32(offset)]), name);
+    offset += local.length + name.length + data.length;
+  });
+  const cdSize = central.reduce((a, p) => a + p.length, 0);
+  const end = new Uint8Array([...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(files.length), ...u16(files.length),
+    ...u32(cdSize), ...u32(offset), ...u16(0)]);
+  return new Blob([...parts, ...central, end], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+}
+// Cell styles: 0 plain · 1 header · 2 money · 3 whole number · 4 percent ·
+// 5 bold · 6 title · 7 bold money · 8 bold number · 9 small grey note · 10 bold percent
+const XL = { plain: 0, head: 1, money: 2, int: 3, pct: 4, bold: 5, title: 6, bmoney: 7, bint: 8, note: 9, bpct: 10, label: 11 };
+function buildXlsx(sheets) {
+  const colName = (i) => { let s = ""; i += 1; while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; };
+  const sheetXml = (sh) => {
+    const rows = sh.rows.map((row, r) => {
+      const cells = (row || []).map((cell, c) => {
+        if (cell === null || cell === undefined || cell === "") return "";
+        const o = typeof cell === "object" ? cell : { v: cell };
+        if (o.v === null || o.v === undefined || o.v === "") return o.s ? `<c r="${colName(c)}${r + 1}" s="${o.s}"/>` : "";
+        const ref = `${colName(c)}${r + 1}`; const st = o.s ? ` s="${o.s}"` : "";
+        if (typeof o.v === "number" && isFinite(o.v)) return `<c r="${ref}"${st}><v>${Math.round(o.v * 1e6) / 1e6}</v></c>`;
+        return `<c r="${ref}"${st} t="inlineStr"><is><t xml:space="preserve">${xmlEscape(o.v)}</t></is></c>`;
+      }).join("");
+      return `<row r="${r + 1}">${cells}</row>`;
+    }).join("");
+    const cols = (sh.widths || []).map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join("");
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><sheetViews><sheetView workbookViewId="0" showGridLines="0"/></sheetViews>${cols ? `<cols>${cols}</cols>` : ""}<sheetData>${rows}</sheetData><pageMargins left="0.5" right="0.5" top="0.6" bottom="0.6" header="0.3" footer="0.3"/><pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/></worksheet>`;
+  };
+  const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<numFmts count="3"><numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0.00;[Red]-&quot;$&quot;#,##0.00;&quot;-&quot;"/><numFmt numFmtId="165" formatCode="#,##0;-#,##0;&quot;-&quot;"/><numFmt numFmtId="166" formatCode="0%;-0%;&quot;-&quot;"/></numFmts>
+<fonts count="5"><font><sz val="10"/><name val="Arial"/></font><font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Arial"/></font><font><b/><sz val="10"/><name val="Arial"/></font><font><b/><sz val="15"/><name val="Arial"/></font><font><i/><sz val="9"/><color rgb="FF666666"/><name val="Arial"/></font></fonts>
+<fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF5B3F8C"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEDE7F6"/></patternFill></fill></fills>
+<borders count="2"><border/><border><left style="thin"><color rgb="FFBFBFBF"/></left><right style="thin"><color rgb="FFBFBFBF"/></right><top style="thin"><color rgb="FFBFBFBF"/></top><bottom style="thin"><color rgb="FFBFBFBF"/></bottom></border></borders>
+<cellStyleXfs count="1"><xf/></cellStyleXfs>
+<cellXfs count="12"><xf fontId="0" borderId="0"/><xf fontId="1" fillId="2" borderId="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="164" fontId="0" borderId="1" applyNumberFormat="1" applyBorder="1"/><xf numFmtId="165" fontId="0" borderId="1" applyNumberFormat="1" applyBorder="1"/><xf numFmtId="166" fontId="0" borderId="1" applyNumberFormat="1" applyBorder="1"/><xf fontId="2" fillId="3" borderId="1" applyFont="1" applyFill="1" applyBorder="1"/><xf fontId="3" borderId="0" applyFont="1"/><xf numFmtId="164" fontId="2" fillId="3" borderId="1" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/><xf numFmtId="165" fontId="2" fillId="3" borderId="1" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/><xf fontId="4" borderId="0" applyFont="1"/><xf numFmtId="166" fontId="2" fillId="3" borderId="1" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/><xf fontId="2" borderId="0" applyFont="1"/></cellXfs>
+<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`;
+  const safe = (n) => n.replace(/[:\\\/?*\[\]]/g, "_").slice(0, 31);
+  const files = [
+    { name: "[Content_Types].xml", text: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("")}</Types>` },
+    { name: "_rels/.rels", text: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>` },
+    { name: "xl/workbook.xml", text: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map((s, i) => `<sheet name="${xmlEscape(safe(s.name))}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join("")}</sheets></workbook>` },
+    { name: "xl/_rels/workbook.xml.rels", text: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join("")}<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>` },
+    { name: "xl/styles.xml", text: styles },
+    ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, text: sheetXml(s) })),
+  ];
+  return zipStore(files);
+}
+
+// ============================================================================
+// SALES REPORT — everything sold in a month, from every channel, compared
+// with the month before. Sales $ is what was sold (invoice / report amount,
+// consignment boxes × the store's price, online order totals) — not what was
+// collected, which Sales → Total already shows.
+// ============================================================================
+const SR_CHANNELS = [
+  { key: "consignment", label: "Consignment" },
+  { key: "credit", label: "Credit Term" },
+  { key: "corporate", label: "Corporate" },
+  { key: "online", label: "Online & COD" },
+];
+function weekStart(dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  const day = (d.getDay() + 6) % 7; // Monday = 0
+  d.setDate(d.getDate() - day);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function prevMonthKey(mk) {
+  let [y, m] = mk.split("-").map(Number); m -= 1; if (m < 1) { m = 12; y -= 1; }
+  return `${y}-${String(m).padStart(2, "0")}`;
+}
+const SR_MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const shortDate = (s) => { const [, m, d] = s.split("-").map(Number); return `${d} ${SR_MON[m - 1]}`; };
+
+function SalesReportPage({ authUser, C, sbFetch }) {
+  const [loading, setLoading] = useState(true);
+  const [selectedMonth, setSelectedMonth] = useState(currentMonthKey());
+  const [src, setSrc] = useState({ stores: [], visits: [], credit: [], creditPay: [], creditStores: [], corp: [], corpStores: [], online: [], onlineItems: [], samples: [], costs: [] });
+  const [showAllCustomers, setShowAllCustomers] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const get = async (q) => { try { return (await sbFetch(q)) || []; } catch (e) { return []; } };
+      const [stores, visits, credit, creditPay, creditStores, corp, corpStores, online, onlineItems, samples, costs] = await Promise.all([
+        get("stores?select=*"), get("visits?select=*"), get("credit_invoices?select=*"), get("credit_payments?select=*"),
+        get("credit_stores?select=id,name,phone"), get("bigco_reports?select=*"), get("bigco_stores?select=id,name,phone,parent_id"),
+        get("online_sales?select=*"), get("online_sale_items?select=*"), get("stock_moves?select=*&reason=eq.sample"),
+        get("product_costs?select=*"),
+      ]);
+      setSrc({ stores, visits, credit, creditPay, creditStores, corp, corpStores, online, onlineItems, samples, costs });
+      setLoading(false);
+    })();
+  }, []);
+
+  // Every sale as one row: { date, doc, customer, channel, amount, paid, owedKnown, units: {code: qty}, value: {code: $} }
+  const allSales = useMemo(() => {
+    const out = [];
+    const storeByName = {}; src.stores.forEach((s) => { storeByName[s.name] = s; });
+    const skuByVisit = {}; SKUS.forEach((x) => { skuByVisit[x.visitKey] = x; });
+    // Consignment: each visit line sold N at that store's agreed price. Lines
+    // from the same visit (store + date + invoice) become one sale.
+    const visitGroups = {};
+    src.visits.forEach((v) => {
+      const sold = Number(v.sold || 0); const paid = Number(v.paid || 0);
+      if (!v.date || (sold <= 0 && paid <= 0)) return;
+      const k = `${v.date}|${v.store_name}|${v.invoice_number || ""}`;
+      const g = visitGroups[k] || (visitGroups[k] = { date: v.date, doc: v.invoice_number || "", customer: v.store_name || "Unknown store", channel: "consignment", amount: 0, paid: 0, owedKnown: false, units: {}, value: {}, phone: storeByName[v.store_name]?.phone || "" });
+      const sku = skuByVisit[v.product];
+      if (sku && sold > 0) {
+        // A store with no saved price falls back to the standard price.
+        const price = Number(storeByName[v.store_name]?.[sku.priceCol] || 0) || sku.priceOptions[0];
+        g.units[sku.code] = (g.units[sku.code] || 0) + sold;
+        g.value[sku.code] = (g.value[sku.code] || 0) + sold * price;
+        g.amount += sold * price;
+      }
+      g.paid += paid;
+    });
+    Object.values(visitGroups).forEach((g) => { if (g.amount > 0) out.push(g); });
+    // Credit Term and Corporate bill in boxes; the $ is split across products by box count.
+    const splitByUnits = (row, amount) => {
+      const units = {}; let total = 0;
+      SKUS.forEach((x) => { const q = Number(row[x.soldCol] || 0); if (q > 0) { units[x.code] = q; total += q; } });
+      const value = {}; if (total > 0) Object.keys(units).forEach((c) => { value[c] = amount * units[c] / total; });
+      return { units, value };
+    };
+    const cName = {}; const cPhone = {}; src.creditStores.forEach((s) => { cName[s.id] = s.name; cPhone[s.id] = s.phone || ""; });
+    const payByInv = {}; src.creditPay.forEach((p) => { if (p.invoice_id) payByInv[p.invoice_id] = (payByInv[p.invoice_id] || 0) + Number(p.amount || 0); });
+    src.credit.forEach((i) => {
+      const amount = Number(i.amount || 0); if (!i.invoice_date || amount <= 0) return;
+      out.push({ date: i.invoice_date, doc: String(i.invoice_number || "").trim(), customer: cName[i.store_id] || "Unknown store", channel: "credit", amount,
+        paid: Math.min(amount, Number(i.paid || 0) + (payByInv[i.id] || 0)), owedKnown: true, phone: cPhone[i.store_id] || "", ...splitByUnits(i, amount) });
+    });
+    const bName = {}; const bPhone = {}; src.corpStores.forEach((s) => { bName[s.id] = s.name; bPhone[s.id] = s.phone || ""; });
+    src.corp.forEach((r) => {
+      const amount = Number(r.amount || 0); if (!r.report_date || amount <= 0) return;
+      out.push({ date: r.report_date, doc: String(r.invoice_number || "").trim(), customer: bName[r.store_id] || "Unknown store", channel: "corporate", amount,
+        paid: Math.min(amount, Number(r.paid || 0)), owedKnown: true, phone: bPhone[r.store_id] || "", ...splitByUnits(r, amount) });
+    });
+    const itemsBySale = {}; src.onlineItems.forEach((it) => { (itemsBySale[it.sale_id] = itemsBySale[it.sale_id] || []).push(it); });
+    src.online.forEach((s) => {
+      const amount = Number(s.amount || 0); if (!s.date || amount <= 0) return;
+      const units = {}; const value = {};
+      (itemsBySale[s.id] || []).forEach((it) => { units[it.product] = (units[it.product] || 0) + Number(it.qty || 0); value[it.product] = (value[it.product] || 0) + Number(it.line_total || 0); });
+      const notPaid = /NOT PAID/i.test(s.description || "");
+      out.push({ date: s.date, doc: `OS${String(s.id).padStart(6, "0")}`, customer: (s.customer_name || "Online customer").trim(), channel: "online", amount,
+        paid: notPaid ? 0 : amount, owedKnown: notPaid, phone: "", units, value });
+    });
+    return out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  }, [src]);
+
+  const availableMonths = useMemo(() => monthsThrough(allSales.map((s) => monthKey(s.date))), [allSales]);
+
+  const summarize = (mk) => {
+    const rows = allSales.filter((s) => monthKey(s.date) === mk);
+    const total = rows.reduce((a, s) => a + s.amount, 0);
+    const products = SKUS.map((x) => ({ code: x.code, label: x.label, units: 0, value: 0 }));
+    let unsplit = 0;
+    rows.forEach((s) => {
+      const vs = Object.values(s.value).reduce((a, v) => a + v, 0);
+      products.forEach((p) => { p.units += s.units[p.code] || 0; p.value += s.value[p.code] || 0; });
+      if (s.amount - vs > 0.005) unsplit += s.amount - vs;
+    });
+    const channels = SR_CHANNELS.map((c) => {
+      const r = rows.filter((s) => s.channel === c.key);
+      return { ...c, amount: r.reduce((a, s) => a + s.amount, 0), customers: new Set(r.map((s) => s.customer)).size, sales: r.length };
+    });
+    const custMap = {};
+    rows.forEach((s) => {
+      const k = `${s.channel}|${s.customer}`;
+      const c = custMap[k] || (custMap[k] = { key: k, customer: s.customer, channel: s.channel, phone: s.phone, units: 0, amount: 0, paid: 0, owed: 0, last: s.date });
+      c.units += Object.values(s.units).reduce((a, v) => a + v, 0); c.amount += s.amount; c.paid += s.paid;
+      if (s.owedKnown) c.owed += Math.max(0, s.amount - s.paid);
+      if (s.date > c.last) c.last = s.date;
+    });
+    const customers = Object.values(custMap).sort((a, b) => b.amount - a.amount);
+    const weeks = {};
+    rows.forEach((s) => { const w = weekStart(s.date); weeks[w] = (weeks[w] || 0) + s.amount; });
+    const [yy, mm] = mk.split("-").map(Number);
+    const monthEnd = `${mk}-${String(new Date(yy, mm, 0).getDate()).padStart(2, "0")}`;
+    const weekList = Object.entries(weeks).map(([start, amount]) => {
+      const e = new Date(start + "T00:00:00"); e.setDate(e.getDate() + 6);
+      const end = `${e.getFullYear()}-${String(e.getMonth() + 1).padStart(2, "0")}-${String(e.getDate()).padStart(2, "0")}`;
+      const from = start < `${mk}-01` ? `${mk}-01` : start;
+      const to = end > monthEnd ? monthEnd : end;
+      return { start: from, end: to, amount, label: `${shortDate(from)}–${shortDate(to)}` };
+    }).sort((a, b) => b.amount - a.amount);
+    const owed = rows.filter((s) => s.owedKnown).reduce((a, s) => a + Math.max(0, s.amount - s.paid), 0);
+    return { rows, total, units: products.reduce((a, p) => a + p.units, 0), products, unsplit, channels, customers, weekList, owed };
+  };
+
+  const cur = useMemo(() => summarize(selectedMonth), [allSales, selectedMonth]);
+  const prevKey = prevMonthKey(selectedMonth);
+  const prev = useMemo(() => summarize(prevKey), [allSales, prevKey]);
+
+  const prevByKey = useMemo(() => { const m = {}; prev.customers.forEach((c) => { m[c.key] = c; }); return m; }, [prev]);
+  const curKeys = useMemo(() => new Set(cur.customers.map((c) => c.key)), [cur]);
+  const lapsed = useMemo(() => prev.customers.filter((c) => !curKeys.has(c.key)), [prev, curKeys]);
+
+  // Free gifts: boxes that left as "sample" this month, at cost when costs are visible to this user.
+  const gifts = useMemo(() => {
+    const moves = src.samples.filter((m) => m.move_date && monthKey(m.move_date) === selectedMonth);
+    const costOf = (code) => Number(src.costs.find((c) => c.product === code)?.cost_per_box || 0);
+    const list = SKUS.map((x) => {
+      const qty = moves.filter((m) => m.product === x.code).reduce((a, m) => a + Math.abs(Number(m.qty || 0)), 0);
+      return { code: x.code, label: x.label, qty, cost: qty * costOf(x.code) };
+    }).filter((g) => g.qty > 0);
+    return { list, qty: list.reduce((a, g) => a + g.qty, 0), cost: list.reduce((a, g) => a + g.cost, 0), hasCost: src.costs.length > 0 };
+  }, [src, selectedMonth]);
+
+  const chLabel = (k) => SR_CHANNELS.find((c) => c.key === k)?.label || k;
+  const fm = (n) => `$${Number(n || 0).toLocaleString("en-US", MONEY2)}`;
+  const fi = (n) => Math.round(Number(n || 0)).toLocaleString("en-US");
+  const change = (a, b, asMoney) => {
+    if (!b) return a > 0 ? { text: "new this month", up: true } : { text: "—", up: null };
+    const d = a - b; const pctv = (d / b) * 100;
+    return { text: `${d >= 0 ? "▲" : "▼"} ${Math.abs(pctv).toFixed(0)}% vs ${monthLabel(prevKey).split(" ")[0].slice(0, 3)}${asMoney ? ` (${fm(b)})` : ""}`, up: d >= 0 };
+  };
+  const stepMonth = (dir) => {
+    const i = availableMonths.indexOf(selectedMonth); const j = i - dir; // list is newest first
+    if (j >= 0 && j < availableMonths.length) setSelectedMonth(availableMonths[j]);
+  };
+
+  function downloadExcel() {
+    const M = monthLabel(selectedMonth); const P = monthLabel(prevKey);
+    const head = (cols) => cols.map((c) => ({ v: c, s: XL.head }));
+    const top = (title, note) => [[{ v: title, s: XL.title }], [{ v: `Choumhean Trading Co., Ltd · Mera · ${M}`, s: XL.label }], [{ v: note, s: XL.note }], []];
+    const pctOf = (a, b) => (b ? a / b - 1 : "");
+    const summary = { name: "Summary", widths: [48, 16, 16, 12], rows: [
+      ...top(`Sales Report — ${M}`, "Everything sold in the month from all channels: Consignment, Credit Term, Corporate, Online & COD."),
+      head(["", M, P, "Change"]),
+      ["Total sales $", { v: cur.total, s: XL.money }, { v: prev.total, s: XL.money }, { v: pctOf(cur.total, prev.total), s: XL.pct }],
+      ["Boxes sold", { v: cur.units, s: XL.int }, { v: prev.units, s: XL.int }, { v: pctOf(cur.units, prev.units), s: XL.pct }],
+      ["Customers who bought", { v: cur.customers.length, s: XL.int }, { v: prev.customers.length, s: XL.int }, { v: cur.customers.length - prev.customers.length, s: XL.int }],
+      ["Average sale per customer", { v: cur.customers.length ? cur.total / cur.customers.length : 0, s: XL.money }, { v: prev.customers.length ? prev.total / prev.customers.length : 0, s: XL.money }, ""],
+      ["Not paid yet (Credit Term & Corporate, this month)", { v: cur.owed, s: XL.money }, "", ""],
+      ["Free gifts given (boxes)", { v: gifts.qty, s: XL.int }, "", ""],
+      ...(gifts.hasCost ? [["Free gifts given (cost)", { v: gifts.cost, s: XL.money }, "", ""]] : []),
+      [],
+      [{ v: "Highlights", s: XL.label }],
+      ...highlights().map((h) => [`• ${h}`]),
+    ] };
+    const prodRows = cur.products.filter((p) => p.units > 0 || p.value > 0);
+    const prevProd = Object.fromEntries(prev.products.map((p) => [p.code, p]));
+    const byProduct = { name: "By product", widths: [24, 12, 12, 14, 9, 14, 10], rows: [
+      ...top("Sales by product", "Boxes sold and sales $ per product. Credit Term and Corporate amounts are split across products by box count."),
+      head(["Product", "Boxes sold", "Avg price", "Sales $", "Share", `${P} $`, "Change"]),
+      ...prodRows.map((p) => [p.label, { v: p.units, s: XL.int }, { v: p.units ? p.value / p.units : 0, s: XL.money }, { v: p.value, s: XL.money }, { v: cur.total ? p.value / cur.total : 0, s: XL.pct }, { v: prevProd[p.code]?.value || 0, s: XL.money }, { v: pctOf(p.value, prevProd[p.code]?.value || 0), s: XL.pct }]),
+      ...(cur.unsplit > 0.005 ? [["Not split by product", "", "", { v: cur.unsplit, s: XL.money }, { v: cur.total ? cur.unsplit / cur.total : 0, s: XL.pct }, "", ""]] : []),
+      [{ v: "Total", s: XL.bold }, { v: cur.units, s: XL.bint }, { v: "", s: XL.bold }, { v: cur.total, s: XL.bmoney }, { v: cur.total ? 1 : 0, s: XL.bpct }, { v: prev.total, s: XL.bmoney }, { v: pctOf(cur.total, prev.total), s: XL.bpct }],
+      [], [{ v: "Free gifts given (not sales)", s: XL.label }],
+      head(gifts.hasCost ? ["Product", "Boxes", "Cost $"] : ["Product", "Boxes"]),
+      ...gifts.list.map((g) => [g.label, { v: g.qty, s: XL.int }, ...(gifts.hasCost ? [{ v: g.cost, s: XL.money }] : [])]),
+      [{ v: "Total", s: XL.bold }, { v: gifts.qty, s: XL.bint }, ...(gifts.hasCost ? [{ v: gifts.cost, s: XL.bmoney }] : [])],
+    ] };
+    const prevCh = Object.fromEntries(prev.channels.map((c) => [c.key, c]));
+    const byChannel = { name: "By channel", widths: [22, 14, 9, 14, 10, 11, 9], rows: [
+      ...top("Sales by channel", "Where the money came from."),
+      head(["Channel", "Sales $", "Share", `${P} $`, "Change", "Customers", "Sales"]),
+      ...cur.channels.map((c) => [c.label, { v: c.amount, s: XL.money }, { v: cur.total ? c.amount / cur.total : 0, s: XL.pct }, { v: prevCh[c.key]?.amount || 0, s: XL.money }, { v: pctOf(c.amount, prevCh[c.key]?.amount || 0), s: XL.pct }, { v: c.customers, s: XL.int }, { v: c.sales, s: XL.int }]),
+      [{ v: "Total", s: XL.bold }, { v: cur.total, s: XL.bmoney }, { v: cur.total ? 1 : 0, s: XL.bpct }, { v: prev.total, s: XL.bmoney }, { v: pctOf(cur.total, prev.total), s: XL.bpct }, { v: cur.customers.length, s: XL.bint }, { v: cur.rows.length, s: XL.bint }],
+      [], [{ v: "By week", s: XL.label }], head(["Week", "Sales $"]),
+      ...[...cur.weekList].sort((a, b) => (a.start < b.start ? -1 : 1)).map((w) => [w.label, { v: w.amount, s: XL.money }]),
+    ] };
+    const byCustomer = { name: "By customer", widths: [5, 34, 14, 9, 13, 13, 13, 13, 12], rows: [
+      ...top("Sales by customer — biggest first", "Paid / still owed are shown for Credit Term, Corporate and unpaid online orders; consignment stores pay as they sell."),
+      head(["#", "Customer", "Channel", "Boxes", "Sales $", "Paid $", "Still owed $", `${P} $`, "Change $"]),
+      ...cur.customers.map((c, i) => [i + 1, c.customer, chLabel(c.channel), { v: c.units, s: XL.int }, { v: c.amount, s: XL.money }, { v: c.paid, s: XL.money }, { v: c.owed, s: XL.money }, { v: prevByKey[c.key]?.amount || 0, s: XL.money }, { v: c.amount - (prevByKey[c.key]?.amount || 0), s: XL.money }]),
+      [{ v: "", s: XL.bold }, { v: "Total", s: XL.bold }, { v: "", s: XL.bold }, { v: cur.units, s: XL.bint }, { v: cur.total, s: XL.bmoney }, { v: cur.customers.reduce((a, c) => a + c.paid, 0), s: XL.bmoney }, { v: cur.customers.reduce((a, c) => a + c.owed, 0), s: XL.bmoney }, { v: cur.customers.reduce((a, c) => a + (prevByKey[c.key]?.amount || 0), 0), s: XL.bmoney }, { v: "", s: XL.bold }],
+    ] };
+    const didnt = { name: "Didn't buy", widths: [34, 14, 14, 13, 16], rows: [
+      ...top(`Bought in ${P} but not in ${M}`, "Follow up with these customers — they may need restocking."),
+      head(["Customer", "Channel", `${P} $`, "Last sale", "Phone"]),
+      ...lapsed.map((c) => [c.customer, chLabel(c.channel), { v: c.amount, s: XL.money }, c.last.split("-").reverse().join("/"), c.phone || ""]),
+    ] };
+    const all = { name: "All sales", widths: [11, 16, 30, 13, ...SKUS.map(() => 10), 12, 12], rows: [
+      ...top(`Every sale in ${M}`, "One line per sale — for checking against BizAdvisor."),
+      head(["Date", "Document", "Customer", "Channel", ...SKUS.map((x) => x.label), "Sales $", "Paid $"]),
+      ...cur.rows.map((s) => [s.date.split("-").reverse().join("/"), s.doc, s.customer, chLabel(s.channel), ...SKUS.map((x) => ({ v: s.units[x.code] || "", s: XL.int })), { v: s.amount, s: XL.money }, { v: s.paid, s: XL.money }]),
+      [{ v: "Total", s: XL.bold }, { v: "", s: XL.bold }, { v: "", s: XL.bold }, { v: "", s: XL.bold }, ...SKUS.map((x) => ({ v: cur.products.find((p) => p.code === x.code)?.units || 0, s: XL.bint })), { v: cur.total, s: XL.bmoney }, { v: cur.rows.reduce((a, s) => a + s.paid, 0), s: XL.bmoney }],
+    ] };
+    const blob = buildXlsx([summary, byProduct, byChannel, byCustomer, didnt, all]);
+    const url = URL.createObjectURL(blob); const a = document.createElement("a");
+    a.href = url; a.download = `Mera Sales Report ${selectedMonth}.xlsx`; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function highlights() {
+    const h = [];
+    const bestP = [...cur.products].sort((a, b) => b.value - a.value)[0];
+    if (bestP && bestP.value > 0) h.push(`Best product: ${bestP.label} — ${cur.total ? Math.round((bestP.value / cur.total) * 100) : 0}% of sales`);
+    if (cur.customers[0]) h.push(`Biggest customer: ${cur.customers[0].customer} — ${fm(cur.customers[0].amount)}`);
+    if (lapsed.length) h.push(`${lapsed.length} customer${lapsed.length === 1 ? "" : "s"} who bought in ${monthLabel(prevKey).split(" ")[0]} didn't buy this month`);
+    if (cur.weekList.length > 1) h.push(`Best week: ${cur.weekList[0].label} (${fm(cur.weekList[0].amount)}); slowest: ${cur.weekList[cur.weekList.length - 1].label} (${fm(cur.weekList[cur.weekList.length - 1].amount)})`);
+    return h;
+  }
+
+  const card = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 13, padding: "16px 18px" };
+  const capt = { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.07em", fontWeight: 700, marginBottom: 12, display: "flex", justifyContent: "space-between", gap: 10 };
+  const tileLabel = { fontSize: 10.5, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em" };
+  const tileVal = { fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, margin: "6px 0 3px" };
+  const chg = (c) => <span style={{ fontSize: 11.5, fontWeight: 700, color: c.up === null ? C.textFaint : c.up ? C.emerald : C.rose }}>{c.text}</span>;
+  const chColors = { consignment: C.gold, credit: C.amber, corporate: C.emerald, online: "#7FB2E5" };
+  const maxProd = Math.max(1, ...cur.products.map((p) => p.value));
+  const maxCh = Math.max(1, ...cur.channels.map((c) => c.amount));
+  const shownCustomers = showAllCustomers ? cur.customers : cur.customers.slice(0, 10);
+
+  return (
+    <div>
+      <style>{`
+        .sr-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
+        .sr-two { display: grid; grid-template-columns: 1.15fr 1fr; gap: 14px; margin-bottom: 14px; }
+        .sr-two2 { display: grid; grid-template-columns: 1.6fr 1fr; gap: 14px; }
+        .sr-bar { display: grid; grid-template-columns: 118px minmax(0, 1fr) 54px 84px; gap: 10px; align-items: center; font-size: 13px; margin: 9px 0; }
+        .sr-cbar { display: grid; grid-template-columns: 110px minmax(0, 1fr) 128px; gap: 10px; align-items: center; font-size: 13px; margin: 10px 0; }
+        @media (max-width: 860px) { .sr-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } .sr-two, .sr-two2 { grid-template-columns: 1fr; } }
+        @media (max-width: 480px) { .sr-bar { grid-template-columns: 92px minmax(0, 1fr) 40px 74px; font-size: 12px; } .sr-cbar { grid-template-columns: 92px minmax(0, 1fr) 112px; font-size: 12px; } .sr-hide-sm { display: none; } }
+      `}</style>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginTop: 4, marginBottom: 18, flexWrap: "wrap", gap: 10 }}>
+        <div>
+          <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: 0 }}>Sales report</h2>
+          <div style={{ fontSize: 12, color: C.textFaint, marginTop: 4 }}>Everything sold in the month, from all channels — compared with {monthLabel(prevKey)}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button type="button" onClick={() => stepMonth(-1)} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 9, padding: "10px 12px", fontSize: 13, cursor: "pointer" }}>◀</button>
+          <select value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)}
+            style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 9, padding: "10px 12px", fontSize: 13, fontWeight: 600 }}>
+            {availableMonths.map((mk) => <option key={mk} value={mk}>{monthLabel(mk)}</option>)}
+          </select>
+          <button type="button" onClick={() => stepMonth(1)} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 9, padding: "10px 12px", fontSize: 13, cursor: "pointer" }}>▶</button>
+          <button type="button" onClick={downloadExcel} disabled={loading}
+            style={{ background: `linear-gradient(135deg, ${C.goldBright}, ${C.gold})`, color: "#1A1508", border: "none", borderRadius: 9, padding: "11px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+            ⬇ Download Excel
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <div style={{ textAlign: "center", color: C.textFaint, padding: "40px 0" }}>Loading…</div>
+      ) : (
+        <>
+          <div className="sr-tiles">
+            <div style={card}><div style={tileLabel}>Total sales</div><div style={tileVal}>{fm(cur.total)}</div>{chg(change(cur.total, prev.total, true))}</div>
+            <div style={card}><div style={tileLabel}>Boxes sold</div><div style={tileVal}>{fi(cur.units)}</div>{chg(change(cur.units, prev.units))}</div>
+            <div style={card}><div style={tileLabel}>Customers who bought</div><div style={tileVal}>{cur.customers.length}</div>
+              <span style={{ fontSize: 11.5, fontWeight: 700, color: cur.customers.length >= prev.customers.length ? C.emerald : C.rose }}>
+                {cur.customers.length >= prev.customers.length ? "▲" : "▼"} {Math.abs(cur.customers.length - prev.customers.length)} vs {monthLabel(prevKey).split(" ")[0].slice(0, 3)}
+              </span></div>
+            <div style={card}><div style={tileLabel}>Not paid yet</div><div style={{ ...tileVal, color: cur.owed > 0 ? C.amber : C.emerald }}>{fm(cur.owed)}</div>
+              <span style={{ fontSize: 11.5, color: C.textFaint }}>{cur.total ? `${Math.round((cur.owed / cur.total) * 100)}% of this month's sales` : "—"} · Credit &amp; Corporate</span></div>
+          </div>
+
+          {cur.rows.length === 0 ? (
+            <div style={{ ...card, textAlign: "center", color: C.textFaint, padding: 30 }}>No sales recorded in {monthLabel(selectedMonth)} yet.</div>
+          ) : (
+            <>
+              <div className="sr-two">
+                <div style={card}>
+                  <div style={capt}><span>By product</span><span>Boxes · Sales</span></div>
+                  {cur.products.filter((p) => p.units > 0 || p.value > 0).sort((a, b) => b.value - a.value).map((p) => (
+                    <div key={p.code} className="sr-bar">
+                      <span>{p.label}</span>
+                      <span style={{ height: 10, borderRadius: 6, background: C.bg2, overflow: "hidden" }}><i style={{ display: "block", height: "100%", width: `${(p.value / maxProd) * 100}%`, background: C.gold, borderRadius: 6 }} /></span>
+                      <span style={{ textAlign: "right", color: C.textDim }}>{fi(p.units)}</span>
+                      <span style={{ textAlign: "right", fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace" }}>{fm(p.value)}</span>
+                    </div>
+                  ))}
+                  {cur.unsplit > 0.005 && <div style={{ fontSize: 11.5, color: C.textFaint, marginTop: 4 }}>+ {fm(cur.unsplit)} on invoices without product details</div>}
+                  <div style={{ fontSize: 11.5, color: C.goldBright, marginTop: 10 }}>
+                    🎁 Free gifts given: {gifts.qty ? `${fi(gifts.qty)} boxes${gifts.hasCost ? ` · cost ${fm(gifts.cost)}` : ""} (not counted as sales)` : "none this month"}
+                  </div>
+                </div>
+                <div style={card}>
+                  <div style={capt}><span>By channel</span><span>Sales · share</span></div>
+                  {cur.channels.map((c) => (
+                    <div key={c.key} className="sr-cbar">
+                      <span>{c.label}</span>
+                      <span style={{ height: 10, borderRadius: 6, background: C.bg2, overflow: "hidden" }}><i style={{ display: "block", height: "100%", width: `${(c.amount / maxCh) * 100}%`, background: chColors[c.key], borderRadius: 6 }} /></span>
+                      <span style={{ textAlign: "right", fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5 }}>{fm(c.amount)} · {cur.total ? Math.round((c.amount / cur.total) * 100) : 0}%</span>
+                    </div>
+                  ))}
+                  {cur.weekList.length > 1 && (
+                    <div style={{ fontSize: 11.5, color: C.textDim, marginTop: 12 }}>
+                      Best week: {cur.weekList[0].label} ({fm(cur.weekList[0].amount)}) · Slowest: {cur.weekList[cur.weekList.length - 1].label} ({fm(cur.weekList[cur.weekList.length - 1].amount)})
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="sr-two2">
+                <div style={card}>
+                  <div style={capt}><span>By customer — biggest first</span><span>{cur.customers.length} customers</span></div>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead><tr style={{ color: C.textFaint, fontSize: 10.5, textTransform: "uppercase" }}>
+                      <th style={{ textAlign: "left", padding: "6px 4px" }}>#</th><th style={{ textAlign: "left", padding: "6px 4px" }}>Customer</th>
+                      <th className="sr-hide-sm" style={{ textAlign: "left", padding: "6px 4px" }}>Channel</th><th style={{ textAlign: "right", padding: "6px 4px" }}>Boxes</th>
+                      <th style={{ textAlign: "right", padding: "6px 4px" }}>Sales</th><th style={{ textAlign: "right", padding: "6px 4px" }}>vs {monthLabel(prevKey).split(" ")[0].slice(0, 3)}</th>
+                    </tr></thead>
+                    <tbody>
+                      {shownCustomers.map((c, i) => {
+                        const d = c.amount - (prevByKey[c.key]?.amount || 0); const isNew = !prevByKey[c.key];
+                        return (
+                          <tr key={c.key} style={{ borderTop: `1px solid ${C.border}` }}>
+                            <td style={{ padding: "8px 4px", color: C.textFaint }}>{i + 1}</td>
+                            <td style={{ padding: "8px 4px" }}>{c.customer}{c.owed > 0.005 && <div style={{ fontSize: 10.5, color: C.amber }}>{fm(c.owed)} not paid yet</div>}</td>
+                            <td className="sr-hide-sm" style={{ padding: "8px 4px" }}><span style={{ fontSize: 10.5, padding: "2px 7px", borderRadius: 10, background: C.bg2, color: chColors[c.channel] }}>{chLabel(c.channel)}</span></td>
+                            <td style={{ padding: "8px 4px", textAlign: "right", color: C.textDim }}>{fi(c.units)}</td>
+                            <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace" }}>{fm(c.amount)}</td>
+                            <td style={{ padding: "8px 4px", textAlign: "right", fontSize: 12, fontWeight: 700, color: isNew ? C.emerald : d >= 0 ? C.emerald : C.rose }}>{isNew ? "new" : `${d >= 0 ? "▲" : "▼"} ${fm(Math.abs(d))}`}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  {cur.customers.length > 10 && (
+                    <button type="button" onClick={() => setShowAllCustomers(!showAllCustomers)}
+                      style={{ marginTop: 10, background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer" }}>
+                      {showAllCustomers ? "Show top 10" : `Show all ${cur.customers.length}`}
+                    </button>
+                  )}
+                </div>
+                <div style={card}>
+                  <div style={capt}><span>⚠ Didn't buy this month</span><span>bought in {monthLabel(prevKey).split(" ")[0].slice(0, 3)}</span></div>
+                  {lapsed.length === 0 ? (
+                    <div style={{ fontSize: 12.5, color: C.emerald }}>Everyone who bought last month bought again. 🎉</div>
+                  ) : (
+                    <>
+                      {lapsed.slice(0, 15).map((c) => (
+                        <div key={c.key} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "8px 0", borderTop: `1px solid ${C.border}`, fontSize: 13 }}>
+                          <span>{c.customer}<div style={{ fontSize: 10.5, color: C.textFaint }}>{chLabel(c.channel)} · last {shortDate(c.last)}{c.phone ? ` · ${c.phone}` : ""}</div></span>
+                          <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: C.textDim }}>{fm(c.amount)}</span>
+                        </div>
+                      ))}
+                      {lapsed.length > 15 && <div style={{ fontSize: 11.5, color: C.textFaint, marginTop: 6 }}>+ {lapsed.length - 15} more in the Excel download</div>}
+                      <div style={{ fontSize: 11.5, color: C.amber, marginTop: 10 }}>Call these customers — they may need restocking.</div>
+                    </>
+                  )}
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: C.textFaint, marginTop: 12, lineHeight: 1.5 }}>
+                Sales = what was sold: Credit Term and Corporate invoice amounts, consignment boxes sold × each store's price (standard price if the store has none saved), and online order totals.
+                For money actually received, see Sales → Total.
+              </div>
+            </>
           )}
         </>
       )}
