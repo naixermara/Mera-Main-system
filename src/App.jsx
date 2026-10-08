@@ -33,7 +33,31 @@ function setAccessToken(token, refreshToken) {
   }
 }
 
+// Supabase hands back at most 1000 rows per request. Plain reads ("GET" with
+// no limit of their own) keep asking for the next 1000 until everything has
+// arrived — the ledger alone has 6,000+ lines, and May/June were being cut off.
+const SB_PAGE = 1000;
 async function sbFetch(path, options = {}, retries = 2) {
+  const isRead = !options.method || options.method === "GET";
+  if (!isRead || /[?&](limit|offset)=/.test(path)) return sbFetchOnce(path, options, retries);
+  const first = await sbFetchOnce(path, options, retries);
+  if (!Array.isArray(first) || first.length < SB_PAGE) return first;
+  // More than one page: re-read in a fixed order so no row is skipped or repeated.
+  const sep = path.includes("?") ? "&" : "?";
+  const ordered = /[?&]order=/.test(path)
+    ? path.replace(/([?&]order=)([^&]*)/, (m, k, v) => (/(^|,)id\./.test(v) ? m : `${k}${v},id.asc`))
+    : `${path}${sep}order=id.asc`;
+  const all = [];
+  for (let offset = 0; ; offset += SB_PAGE) {
+    const page = await sbFetchOnce(`${ordered}${ordered.includes("?") ? "&" : "?"}limit=${SB_PAGE}&offset=${offset}`, options, retries);
+    if (!Array.isArray(page)) break;
+    all.push(...page);
+    if (page.length < SB_PAGE) break;
+  }
+  return all;
+}
+
+async function sbFetchOnce(path, options = {}, retries = 2) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
