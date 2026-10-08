@@ -34,27 +34,38 @@ function setAccessToken(token, refreshToken) {
 }
 
 // Supabase hands back at most 1000 rows per request. Plain reads ("GET" with
-// no limit of their own) keep asking for the next 1000 until everything has
-// arrived — the ledger alone has 6,000+ lines, and May/June were being cut off.
+// no limit of their own) ask how many rows there are in total, and if there
+// are more than 1000 they fetch all the remaining pages at the same time
+// (not one after another), so big tables like the ledger load quickly.
 const SB_PAGE = 1000;
 async function sbFetch(path, options = {}, retries = 2) {
   const isRead = !options.method || options.method === "GET";
   if (!isRead || /[?&](limit|offset)=/.test(path)) return sbFetchOnce(path, options, retries);
-  const first = await sbFetchOnce(path, options, retries);
-  if (!Array.isArray(first) || first.length < SB_PAGE) return first;
-  // More than one page: re-read in a fixed order so no row is skipped or repeated.
+  const first = await sbFetchOnce(path, { ...options, headers: { ...(options.headers || {}), Prefer: "count=exact" }, wantTotal: true }, retries);
+  const rows = first?.rows;
+  const total = first?.total;
+  if (!Array.isArray(rows) || rows.length < SB_PAGE || (total != null && total <= rows.length)) return rows ?? null;
+  // Several pages: read them all in one fixed order so no row is skipped or repeated.
   const sep = path.includes("?") ? "&" : "?";
   const ordered = /[?&]order=/.test(path)
     ? path.replace(/([?&]order=)([^&]*)/, (m, k, v) => (/(^|,)id\./.test(v) ? m : `${k}${v},id.asc`))
     : `${path}${sep}order=id.asc`;
-  const all = [];
-  for (let offset = 0; ; offset += SB_PAGE) {
-    const page = await sbFetchOnce(`${ordered}${ordered.includes("?") ? "&" : "?"}limit=${SB_PAGE}&offset=${offset}`, options, retries);
-    if (!Array.isArray(page)) break;
-    all.push(...page);
-    if (page.length < SB_PAGE) break;
+  const pageAt = (o) => sbFetchOnce(`${ordered}${ordered.includes("?") ? "&" : "?"}limit=${SB_PAGE}&offset=${o}`, options, retries);
+  if (total == null) {
+    // Total unknown: fall back to asking page by page until a short page comes back.
+    const all = [];
+    for (let o = 0; ; o += SB_PAGE) {
+      const pg = await pageAt(o);
+      if (!Array.isArray(pg)) break;
+      all.push(...pg);
+      if (pg.length < SB_PAGE) break;
+    }
+    return all;
   }
-  return all;
+  const offsets = [];
+  for (let o = 0; o < total; o += SB_PAGE) offsets.push(o);
+  const pages = await Promise.all(offsets.map(pageAt));
+  return pages.flatMap((pg) => (Array.isArray(pg) ? pg : []));
 }
 
 async function sbFetchOnce(path, options = {}, retries = 2) {
@@ -94,8 +105,12 @@ async function sbFetchOnce(path, options = {}, retries = 2) {
         throw new Error(`Supabase error ${res.status}: ${text}`);
       }
       const text = await res.text();
-      if (!text) return null;
-      return JSON.parse(text);
+      const data = text ? JSON.parse(text) : null;
+      if (options.wantTotal) {
+        const m = /\/(\d+)$/.exec(res.headers.get("content-range") || "");
+        return { rows: data, total: m ? Number(m[1]) : null };
+      }
+      return data;
     } catch (e) {
       // Only retry genuine network failures (fetch throwing before even reaching the server) —
       // not real errors like 400/403 from the database, which would just fail again identically.
@@ -297,7 +312,7 @@ function isThisMonth(dateStr) {
   return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
 }
 function monthKey(dateStr) {
-  return dateStr.slice(0, 7); // "YYYY-MM"
+  return String(dateStr || "").slice(0, 7); // "YYYY-MM" ("" when a row has no date, instead of crashing the page)
 }
 function monthLabel(key) {
   const [y, m] = key.split("-").map(Number);
@@ -6588,7 +6603,12 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
     () => entries.filter((e) => monthKey(e.entry_date) === month),
     [entries, month]
   );
-  const linesOf = (entryId) => lines.filter((l) => l.entry_id === entryId);
+  const linesByEntry = useMemo(() => {
+    const m = new Map();
+    lines.forEach((l) => { const arr = m.get(l.entry_id); if (arr) arr.push(l); else m.set(l.entry_id, [l]); });
+    return m;
+  }, [lines]);
+  const linesOf = (entryId) => linesByEntry.get(entryId) || [];
 
   const availableMonths = useMemo(
     () => monthsThrough(entries.map((e) => monthKey(e.entry_date))),
@@ -7011,7 +7031,13 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
       {(tab === "reports" || tab === "finance") && (() => {
         const ids = new Set(monthEntries.map((e) => e.id));
         const periodLines = lines.filter((l) => ids.has(l.entry_id));
-        const entryById = (id) => entries.find((e) => e.id === id);
+        // Look-ups by id/account built once (the ledger has 6,000+ lines;
+        // searching the whole list again for every line made these reports slow).
+        const entryMap = new Map(entries.map((e) => [e.id, e]));
+        const entryById = (id) => entryMap.get(id);
+        const linesByAcc = new Map();
+        lines.forEach((l) => { const arr = linesByAcc.get(l.account_id); if (arr) arr.push(l); else linesByAcc.set(l.account_id, [l]); });
+        const accLines = (id) => linesByAcc.get(id) || [];
 
         // Journal: every entry in date order, with its lines under it.
         const journal = [...monthEntries].sort((a, b) =>
@@ -7021,9 +7047,9 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
         // General ledger: per account, opening balance then each movement.
         const ledgerAccounts = accounts
           .map((a) => {
-            const before = lines.filter((l) => {
+            const before = accLines(a.id).filter((l) => {
               const e = entryById(l.entry_id);
-              return l.account_id === a.id && e && e.entry_date < `${month}-01`;
+              return e && e.entry_date < `${month}-01`;
             });
             const opening = before.reduce((x, l) => x + Number(l.debit || 0) - Number(l.credit || 0), 0);
             const rows = periodLines
@@ -7080,7 +7106,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
         // profit, which is what actually makes Assets = Liabilities + Equity.
         const asOf = `${month}-31`;
         const cumulativeBalance = (a) => {
-          const rows = lines.filter((l) => l.account_id === a.id).filter((l) => {
+          const rows = accLines(a.id).filter((l) => {
             const e = entryById(l.entry_id);
             return e && e.entry_date <= asOf;
           });
@@ -7091,11 +7117,11 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
         const bsLiabilities = accounts.filter((a) => a.type === "liability").map((a) => ({ ...a, amount: cumulativeBalance(a) })).filter((a) => Math.abs(a.amount) > 0.005);
         const bsEquityAccounts = accounts.filter((a) => a.type === "equity").map((a) => ({ ...a, amount: cumulativeBalance(a) })).filter((a) => Math.abs(a.amount) > 0.005);
         const allTimeIncome = accounts.filter((a) => a.type === "income").reduce((sum, a) => {
-          const rows = lines.filter((l) => l.account_id === a.id).filter((l) => { const e = entryById(l.entry_id); return e && e.entry_date <= asOf; });
+          const rows = accLines(a.id).filter((l) => { const e = entryById(l.entry_id); return e && e.entry_date <= asOf; });
           return sum - rows.reduce((x, l) => x + Number(l.debit || 0) - Number(l.credit || 0), 0);
         }, 0);
         const allTimeExpense = accounts.filter((a) => a.type === "expense").reduce((sum, a) => {
-          const rows = lines.filter((l) => l.account_id === a.id).filter((l) => { const e = entryById(l.entry_id); return e && e.entry_date <= asOf; });
+          const rows = accLines(a.id).filter((l) => { const e = entryById(l.entry_id); return e && e.entry_date <= asOf; });
           return sum + rows.reduce((x, l) => x + Number(l.debit || 0) - Number(l.credit || 0), 0);
         }, 0);
         const currentEarnings = allTimeIncome - allTimeExpense;
@@ -7111,7 +7137,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
         // $0 until there's actual data for fixed-asset purchases or
         // borrowings to categorize there.
         const balanceAsOf = (a, dateStr) => {
-          const rows = lines.filter((l) => l.account_id === a.id).filter((l) => { const e = entryById(l.entry_id); return e && e.entry_date <= dateStr; });
+          const rows = accLines(a.id).filter((l) => { const e = entryById(l.entry_id); return e && e.entry_date <= dateStr; });
           const net = rows.reduce((x, l) => x + Number(l.debit || 0) - Number(l.credit || 0), 0);
           return (a.type === "liability" || a.type === "equity") ? -net : net;
         };
