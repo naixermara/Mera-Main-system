@@ -13972,9 +13972,13 @@ function PayrollPage({ authUser, C, sbFetch, logActivity }) {
 
   // Staff who are active but have no payslip in this month's run — e.g.
   // someone added to the Staff list after the month's payroll was started.
-  // (Only people working during this month: not starting after it, not left before it.)
+  // Only people added to the Staff list AFTER the run was started — someone
+  // who was on the list already and was taken out of this month on purpose
+  // (the bin icon on their row) is never offered again. Also only people
+  // working during this month: not starting after it, not left before it.
   const missingStaff = run ? staff.filter((s) => s.active
     && !rows.some((r) => r.staff_id === s.id)
+    && s.created_at && run.created_at && s.created_at > run.created_at
     && !(s.start_date && s.start_date.slice(0, 7) > month)
     && !(s.end_date && s.end_date.slice(0, 7) < month)) : [];
 
