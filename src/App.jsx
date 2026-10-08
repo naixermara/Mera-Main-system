@@ -13956,8 +13956,51 @@ function PayrollPage({ authUser, C, sbFetch, logActivity }) {
         method: "POST",
         body: JSON.stringify({ month, status: "draft", total: 0, created_by: authUser?.email || "unknown" }),
       });
-      const payload = active.map((s) => ({
-        run_id: newRun.id,
+      const payload = active.map((s) => slipFor(s, newRun.id));
+      const inserted = await sbFetch("payslips", { method: "POST", body: JSON.stringify(payload) });
+      setRun(newRun);
+      setRows(inserted || []);
+      setDirty(false);
+      setError("");
+      logActivity?.("Started payroll", monthLabel(month), `${active.length} staff`);
+    } catch (e) {
+      setError("Couldn't start payroll for this month.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Staff who are active but have no payslip in this month's run — e.g.
+  // someone added to the Staff list after the month's payroll was started.
+  // (Only people working during this month: not starting after it, not left before it.)
+  const missingStaff = run ? staff.filter((s) => s.active
+    && !rows.some((r) => r.staff_id === s.id)
+    && !(s.start_date && s.start_date.slice(0, 7) > month)
+    && !(s.end_date && s.end_date.slice(0, 7) < month)) : [];
+
+  async function addToRun(list) {
+    if (!run || !list.length) return;
+    if (dirty) { setError("Save your changes first."); return; }
+    setBusy(true);
+    try {
+      const inserted = await sbFetch("payslips", { method: "POST", body: JSON.stringify(list.map((s) => slipFor(s, run.id))) });
+      const next = [...rows, ...(inserted || [])];
+      setRows(next);
+      const newTotal = next.reduce((a, r) => a + netOf(r), 0);
+      await sbFetch(`payroll_runs?id=eq.${run.id}`, { method: "PATCH", body: JSON.stringify({ total: newTotal }) });
+      setRun((p) => ({ ...p, total: newTotal }));
+      setError("");
+      logActivity?.("Added to payroll", list.map((s) => s.name).join(", "), monthLabel(month));
+    } catch (e) {
+      setError("Couldn't add to this month's payroll: " + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function slipFor(s, runId) {
+    return ({
+        run_id: runId,
         staff_id: s.id,
         staff_name: s.name,
         staff_name_kh: s.name_kh || null,
@@ -13977,18 +14020,7 @@ function PayrollPage({ authUser, C, sbFetch, logActivity }) {
         advance: 0,
         other_deduction: 0,
         net_pay: Number(s.monthly_salary) || 0,
-      }));
-      const inserted = await sbFetch("payslips", { method: "POST", body: JSON.stringify(payload) });
-      setRun(newRun);
-      setRows(inserted || []);
-      setDirty(false);
-      setError("");
-      logActivity?.("Started payroll", monthLabel(month), `${active.length} staff`);
-    } catch (e) {
-      setError("Couldn't start payroll for this month.");
-    } finally {
-      setBusy(false);
-    }
+      });
   }
 
   function editRow(id, field, value) {
@@ -14383,6 +14415,27 @@ function PayrollPage({ authUser, C, sbFetch, logActivity }) {
                   )}
                 </div>
               </div>
+
+              {!locked && missingStaff.length > 0 && (
+                <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, borderRadius: 12, padding: "12px 16px", marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                  <div>
+                    <div style={{ color: C.amber, fontSize: 13, fontWeight: 700 }}>
+                      {missingStaff.length === 1 ? "1 staff member isn't" : `${missingStaff.length} staff aren't`} in {monthLabel(month)}'s payroll yet
+                    </div>
+                    <div style={{ color: C.textDim, fontSize: 12, marginTop: 3 }}>
+                      Added after this month's payroll was started: {missingStaff.map((s) => `${s.name}${s.start_date ? ` (started ${fmtDate(s.start_date)})` : ""}`).join(", ")}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {missingStaff.length > 1 && missingStaff.map((s) => (
+                      <button key={s.id} onClick={() => addToRun([s])} disabled={busy} style={{ background: "none", border: `1px solid ${C.amber}66`, color: C.amber, borderRadius: 9, padding: "8px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Add {s.name}</button>
+                    ))}
+                    <button onClick={() => addToRun(missingStaff)} disabled={busy} style={{ background: C.amber, border: "none", color: "#1A1508", borderRadius: 9, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>
+                      {missingStaff.length === 1 ? `Add ${missingStaff[0].name} to ${monthLabel(month).split(" ")[0]}` : "Add all"}
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div style={{ overflowX: "auto", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12 }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 900 }}>
