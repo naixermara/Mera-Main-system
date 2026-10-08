@@ -1460,7 +1460,7 @@ export default function MeraConsignmentApp() {
             <div style={{ height: 2, width: 46, background: `linear-gradient(90deg, ${C.gold}, transparent)`, marginTop: 10 }} />
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            {page === "sales" && salesSubPage === "consignment" && (
+            {page === "sales" && salesSubPage === "consignment" && consignmentSubView !== "bigco" && (
               <>
                 <select
                   value={selectedMonth}
@@ -10373,8 +10373,12 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
                       {s.reportedThisMonth ? "Reported" : "Not yet"}
                     </span>
                   )}
+                  <div style={{ textAlign: "right", minWidth: 78 }}>
+                    <div style={{ fontSize: 10, color: C.textFaint }}>Billed {monthLabel(selectedMonth).split(" ")[0].slice(0, 3)}</div>
+                    <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, fontSize: 15, color: s.monthBilled > 0 ? C.text : C.textFaint }}>${s.monthBilled.toLocaleString("en-US", MONEY2)}</div>
+                  </div>
                   <div style={{ textAlign: "right" }}>
-                    <div style={{ fontSize: 10, color: C.textFaint }}>Outstanding</div>
+                    <div style={{ fontSize: 10, color: C.textFaint }}>Outstanding (all-time)</div>
                     <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, fontSize: 15, color: s.outstanding > 0 ? C.rose : C.emerald }}>${s.outstanding.toLocaleString("en-US", MONEY2)}</div>
                   </div>
                 </div>
