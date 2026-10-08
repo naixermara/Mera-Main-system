@@ -14002,6 +14002,48 @@ function PayrollPage({ authUser, C, sbFetch, logActivity }) {
     }
   }
 
+  // Rows still open (not confirmed, not paid) whose salary or full-month days
+  // no longer match the Staff list — e.g. a raise entered after the month's
+  // payroll was started. Payslips keep a copy taken at the start, so they
+  // don't change by themselves.
+  const staleRows = run && run.status !== "paid" ? rows.filter((r) => {
+    if (r.confirmed_at || r.paid_at) return false;
+    const s = staff.find((x) => x.id === r.staff_id);
+    if (!s) return false;
+    const std = pnum(s.working_days) || STANDARD_DAYS;
+    return pnum(s.monthly_salary) !== pnum(r.base_salary) || std !== (pnum(r.standard_days) || STANDARD_DAYS);
+  }) : [];
+
+  async function applyStaffChanges() {
+    if (dirty) { setError("Save your changes first."); return; }
+    setBusy(true);
+    try {
+      const updated = [];
+      for (const r of staleRows) {
+        const s = staff.find((x) => x.id === r.staff_id);
+        const std = pnum(s.working_days) || STANDARD_DAYS;
+        const oldStd = pnum(r.standard_days) || STANDARD_DAYS;
+        // A full month stays a full month; days already reduced for absences are kept.
+        const days = pnum(r.days_worked) === oldStd ? std : pnum(r.days_worked);
+        const next = { ...r, base_salary: pnum(s.monthly_salary), standard_days: std, days_worked: days };
+        next.net_pay = netOf(next);
+        await sbFetch(`payslips?id=eq.${r.id}`, { method: "PATCH", body: JSON.stringify({ base_salary: next.base_salary, standard_days: std, days_worked: days, net_pay: next.net_pay }) });
+        updated.push(next);
+      }
+      const merged = rows.map((r) => updated.find((u) => u.id === r.id) || r);
+      setRows(merged);
+      const newTotal = merged.reduce((a, r) => a + netOf(r), 0);
+      await sbFetch(`payroll_runs?id=eq.${run.id}`, { method: "PATCH", body: JSON.stringify({ total: newTotal }) });
+      setRun((p) => ({ ...p, total: newTotal }));
+      setError("");
+      logActivity?.("Payroll updated from Staff list", updated.map((u) => u.staff_name).join(", "), monthLabel(month));
+    } catch (e) {
+      setError("Couldn't update: " + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function slipFor(s, runId) {
     return ({
         run_id: runId,
@@ -14419,6 +14461,22 @@ function PayrollPage({ authUser, C, sbFetch, logActivity }) {
                   )}
                 </div>
               </div>
+
+              {!locked && staleRows.length > 0 && (
+                <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, borderRadius: 12, padding: "12px 16px", marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                  <div>
+                    <div style={{ color: C.amber, fontSize: 13, fontWeight: 700 }}>
+                      Salary changed in the Staff list for {staleRows.length === 1 ? "1 person" : `${staleRows.length} people`}
+                    </div>
+                    <div style={{ color: C.textDim, fontSize: 12, marginTop: 3 }}>
+                      {staleRows.map((r) => { const st = staff.find((x) => x.id === r.staff_id); return `${r.staff_name}: ${money(r.base_salary)} → ${money(st?.monthly_salary)}`; }).join(" · ")}
+                    </div>
+                  </div>
+                  <button onClick={applyStaffChanges} disabled={busy} style={{ background: C.amber, border: "none", color: "#1A1508", borderRadius: 9, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>
+                    Use new salary for {monthLabel(month).split(" ")[0]}
+                  </button>
+                </div>
+              )}
 
               {!locked && missingStaff.length > 0 && (
                 <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, borderRadius: 12, padding: "12px 16px", marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
