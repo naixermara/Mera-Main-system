@@ -342,9 +342,11 @@ function currentMonthKey() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
+const DATE_FMT = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" });
 function fmtDate(d) {
   if (!d) return "";
-  return new Date(d + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  const dt = new Date(d + "T00:00:00");
+  return isNaN(dt) ? "" : DATE_FMT.format(dt);
 }
 
 const emptyLogForm = {
@@ -5999,6 +6001,12 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
     if (tab === "reports" && financeKeys.includes(reportKind)) setReportKind("trial");
   }, [tab]);
   const [printingReport, setPrintingReport] = useState(false);
+  // The Journal on screen shows the first 25 entries of a month (a busy month
+  // has ~2,000 lines, which made switching months slow); "Show more" adds the
+  // rest. Print / PDF always prints every entry.
+  const JR_STEP = 25;
+  const [jrLimit, setJrLimit] = useState(JR_STEP);
+  useEffect(() => { setJrLimit(JR_STEP); }, [month]);
 
   // quick post form
   const [kind, setKind] = useState("expense");
@@ -7218,7 +7226,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
                   <th style={t.thL}>Description</th><th style={t.th}>Debit</th><th style={t.th}>Credit</th>
                 </tr></thead>
                 <tbody>
-                  {journal.map((e) => [
+                  {(forPrint ? journal : journal.slice(0, jrLimit)).map((e) => [
                     ...linesOf(e.id).map((l, idx) => (
                       <tr key={l.id}>
                         <td style={t.tdL}>{idx === 0 ? fmtDate(e.entry_date) : ""}</td>
@@ -7240,6 +7248,15 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
                       <td style={{ ...t.td, fontWeight: 700, borderTop: forPrint ? "1px solid #000" : `1px solid ${C.border}`, borderBottom: forPrint ? "1px solid #000" : `1px solid ${C.border}` }}>{money(linesOf(e.id).reduce((x, l) => x + Number(l.credit || 0), 0))}</td>
                     </tr>,
                   ])}
+                  {!forPrint && journal.length > jrLimit && (
+                    <tr>
+                      <td colSpan={6} style={{ padding: "14px 12px", textAlign: "center", borderBottom: `1px solid ${C.border}` }}>
+                        <span style={{ color: C.textFaint, fontSize: 12.5, marginRight: 12 }}>Showing {jrLimit} of {journal.length} entries</span>
+                        <button onClick={() => setJrLimit((n) => n + JR_STEP)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "7px 14px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", marginRight: 8 }}>Show {Math.min(JR_STEP, journal.length - jrLimit)} more</button>
+                        <button onClick={() => setJrLimit(journal.length)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textFaint, borderRadius: 8, padding: "7px 14px", fontSize: 12.5, cursor: "pointer" }}>Show all</button>
+                      </td>
+                    </tr>
+                  )}
                   <tr style={t.tot}>
                     <td style={t.tdL} colSpan={4}>Grand total — {journal.length} entr{journal.length === 1 ? "y" : "ies"}</td>
                     <td style={t.td}>{money(trial.totalDr)}</td>
@@ -13682,10 +13699,13 @@ const miniInputStyle = {
 
 const STANDARD_DAYS = 26;
 
+// One formatter, made once — building a new one for every number (thousands
+// per report) was a big part of why reports felt slow.
+const MONEY_FMT = new Intl.NumberFormat("en-US", MONEY2);
 function money(n) {
   const v = Number(n) || 0;
   // Accountants read "-$438.00", never "$-438.00".
-  return (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString("en-US", MONEY2);
+  return (v < 0 ? "-$" : "$") + MONEY_FMT.format(Math.abs(v));
 }
 // A store's everyday name. Stores can carry a nickname (e.g. "Emart" for
 // សៃហាន ផាតនើរ ឯ.ក); the legal name stays on printed invoices.
