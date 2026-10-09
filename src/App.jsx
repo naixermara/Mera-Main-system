@@ -16,8 +16,8 @@ const OWNER_EMAIL = "rosamaramfi@gmail.com";
 const PAYROLL_EMAILS = ["rosamaramfi@gmail.com", "kimlychea116@gmail.com"];
 // Accounting is its own list so the accountant can be added here without
 // also giving them payroll. Keep it in step with is_accounting_user() in SQL.
-// The Sales Report (all sales, customers, channels) is for the owner only.
-const SALES_REPORT_EMAILS = ["rosamaramfi@gmail.com"];
+// The Sales Report (all sales, customers, channels) is for the owner and Kimly only.
+const SALES_REPORT_EMAILS = ["rosamaramfi@gmail.com", "kimlychea116@gmail.com"];
 const ACCOUNTING_EMAILS = ["rosamaramfi@gmail.com", "kimlychea116@gmail.com", "acc@rolyamfi.com.kh"];
 
 let currentAccessToken = null;
