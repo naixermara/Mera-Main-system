@@ -621,6 +621,24 @@ export default function MeraConsignmentApp() {
   const [showActivityLog, setShowActivityLog] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
   const [pendingPaymentCount, setPendingPaymentCount] = useState(0);
+  const [newPaymentCount, setNewPaymentCount] = useState(0);
+
+  // "Payments received" badge: how many ABA payments the bot saved since this
+  // person last opened that page (remembered per browser).
+  useEffect(() => {
+    let cancelled = false;
+    async function checkNew() {
+      try {
+        let seen = 0;
+        try { seen = Number(localStorage.getItem(PR_LAST_SEEN_KEY) || 0); } catch (e) { /* private mode */ }
+        const rows = await sbFetch(`pending_payments?select=id&status=neq.ignored&id=gt.${seen}`);
+        if (!cancelled) setNewPaymentCount(seen ? (rows || []).length : 0);
+      } catch (e) { /* table may be missing — no badge */ }
+    }
+    checkNew();
+    const interval = setInterval(checkNew, 60000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
 
   // Polled independently of whichever page is open, so the sidebar badge
   // stays current even if the person never visits Pending Payments directly.
@@ -1473,7 +1491,7 @@ export default function MeraConsignmentApp() {
         mobileOpen={navMobile}
         onCloseMobile={() => setNavMobile(false)}
         pendingCount={PENDING_PAYMENTS_ENABLED ? pendingPaymentCount : 0}
-        badges={{ "Pending Payments": PENDING_PAYMENTS_ENABLED ? pendingPaymentCount : 0, "Corporate Accounts": corpPaymentDueCount }}
+        badges={{ "Pending Payments": PENDING_PAYMENTS_ENABLED ? pendingPaymentCount : 0, "Corporate Accounts": corpPaymentDueCount, "Payments received": newPaymentCount }}
       />
 
       <div className="mera-shell" style={{ maxWidth: 920, margin: "0 auto", padding: "40px 20px 0" }}>
@@ -1646,6 +1664,16 @@ export default function MeraConsignmentApp() {
               >
                 Online &amp; COD
               </button>
+              <button
+                onClick={() => setSalesSubPage("payments")}
+                style={{
+                  background: "none", border: "none", padding: "6px 2px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginLeft: 14,
+                  color: salesSubPage === "payments" ? C.gold : C.textFaint,
+                  borderBottom: `2px solid ${salesSubPage === "payments" ? C.gold : "transparent"}`,
+                }}
+              >
+                Payments{newPaymentCount > 0 ? ` (${newPaymentCount})` : ""}
+              </button>
               {PENDING_PAYMENTS_ENABLED && <button
                 onClick={() => setSalesSubPage("pending")}
                 style={{
@@ -1683,6 +1711,8 @@ export default function MeraConsignmentApp() {
               <CreditTermPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} focus={storeFocus?.type === "credit" ? storeFocus : null} />
             ) : salesSubPage === "online" ? (
               <OnlineSalesPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
+            ) : salesSubPage === "payments" ? (
+              <PaymentsReceivedPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} onSeen={() => setNewPaymentCount(0)} />
             ) : salesSubPage === "pending" && PENDING_PAYMENTS_ENABLED ? (
               <PendingPaymentsPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} onCountChange={setPendingPaymentCount} />
             ) : salesSubPage === "coverage" ? (
@@ -4154,6 +4184,267 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
   );
 }
 
+// Payments received — a read-only feed of every ABA payment the Telegram bot
+// saves. Nothing to confirm or assign: each payment just shows a hint of whose
+// money it is, worked out from (in order) a bill number in the remark, a name
+// someone tagged before, an earlier assignment, a customer with the same name,
+// or an open invoice for the exact same amount. Tagging a payer once makes
+// every later payment from that person show the same customer.
+const PR_LAST_SEEN_KEY = "mera_payments_last_seen";
+const prNorm = (s) => String(s || "").toLowerCase().replace(/[\s​‌‍().,&\-_/]/g, "").replace(/ឪ|ឳ/g, "ឱ");
+const prTail = (raw) => { const m = String(raw || "").match(/\(\*(\d{2,4})\)/); return m ? m[1] : ""; };
+const prBills = (txt) => Array.from(new Set((String(txt || "").toUpperCase().match(/\b(?:INV|B)\s?\d{7}\b/g) || []).map((x) => x.replace(/\s/g, ""))));
+const PR_CHANNEL_LABEL = { consignment: "Consignment", corporate: "Corporate", credit: "Credit Term", online: "Online & COD", cod: "Online & COD", other: "Other" };
+
+function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
+  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState([]);
+  const [links, setLinks] = useState([]);
+  const [ctx, setCtx] = useState({ credit: [], creditStores: [], corp: [], corpStores: [], visits: [], online: [], stores: [] });
+  const [month, setMonth] = useState(currentMonthKey());
+  const [filter, setFilter] = useState("all"); // all | unknown
+  const [tagging, setTagging] = useState(null); // { payer, customer, channel }
+  const [ask, setAsk] = useState({}); // payer key -> typed name, for the inline "Who is …?" question
+  const [error, setError] = useState("");
+  const [lastSeen] = useState(() => { try { return Number(localStorage.getItem(PR_LAST_SEEN_KEY) || 0); } catch (e) { return 0; } });
+
+  async function reload() {
+    try {
+      const get = async (q) => { try { return (await sbFetch(q)) || []; } catch (e) { return []; } };
+      const [p, l, ci, cs, br, bs, v, os, st] = await Promise.all([
+        sbFetch("pending_payments?select=*&order=paid_at.desc"),
+        get("payer_links?select=*"),
+        get("credit_invoices?select=id,store_id,invoice_number,amount,paid,invoice_date"),
+        get("credit_stores?select=id,name,nickname"),
+        get("bigco_reports?select=id,store_id,invoice_number,amount,paid,report_date"),
+        get("bigco_stores?select=id,name"),
+        get("visits?select=store_name,date,invoice_number&invoice_number=not.is.null"),
+        get("online_sales?select=id,date,customer_name,amount,description"),
+        get("stores?select=name"),
+      ]);
+      setRows(p || []); setLinks(l);
+      setCtx({ credit: ci, creditStores: cs, corp: br, corpStores: bs, visits: v, online: os, stores: st });
+      const maxId = Math.max(0, ...(p || []).map((r) => Number(r.id) || 0));
+      try { localStorage.setItem(PR_LAST_SEEN_KEY, String(maxId)); } catch (e) { /* private mode */ }
+      onSeen?.();
+    } catch (e) {
+      setError("Couldn't load payments: " + e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => { reload(); }, []);
+
+  // Everything we can look a payment up against, built once per load.
+  const lookup = useMemo(() => {
+    const byBill = {};
+    const add = (no, who, channel) => { const k = String(no || "").replace(/\s/g, "").toUpperCase(); if (k && !byBill[k]) byBill[k] = { who, channel }; };
+    const cName = {}; ctx.creditStores.forEach((s) => { cName[s.id] = s.nickname || s.name; });
+    const bName = {}; ctx.corpStores.forEach((s) => { bName[s.id] = s.name; });
+    ctx.credit.forEach((i) => add(i.invoice_number, cName[i.store_id] || "Credit Term store", "credit"));
+    ctx.corp.forEach((r) => add(r.invoice_number, bName[r.store_id] || "Corporate store", "corporate"));
+    ctx.visits.forEach((v) => add(v.invoice_number, v.store_name, "consignment"));
+    ctx.online.forEach((s) => prBills(s.description).forEach((b) => add(b, s.customer_name, "online")));
+    const byName = {};
+    const addName = (n, channel) => { const k = prNorm(n); if (k.length >= 4 && !byName[k]) byName[k] = { who: n, channel }; };
+    ctx.stores.forEach((s) => addName(s.name, "consignment"));
+    ctx.creditStores.forEach((s) => addName(s.name, "credit"));
+    ctx.corpStores.forEach((s) => addName(s.name, "corporate"));
+    ctx.online.forEach((s) => addName(s.customer_name, "online"));
+    const linkBy = {}; links.forEach((l) => { linkBy[prNorm(l.payer_name)] = l; });
+    const assignedBy = {};
+    rows.forEach((r) => { if (r.status === "assigned" && r.assigned_note && !assignedBy[prNorm(r.payer_name)]) assignedBy[prNorm(r.payer_name)] = r; });
+    const open = [
+      ...ctx.credit.map((i) => ({ owed: Number(i.amount || 0) - Number(i.paid || 0), date: i.invoice_date, no: i.invoice_number, who: cName[i.store_id], channel: "credit" })),
+      ...ctx.corp.map((r) => ({ owed: Number(r.amount || 0) - Number(r.paid || 0), date: r.report_date, no: r.invoice_number, who: bName[r.store_id], channel: "corporate" })),
+    ].filter((x) => x.owed > 0.005 && x.who);
+    return { byBill, byName, linkBy, assignedBy, open };
+  }, [ctx, links, rows]);
+
+  function hintFor(r) {
+    const key = prNorm(r.payer_name);
+    for (const b of prBills(`${r.remark || ""} ${r.raw_message || ""}`)) {
+      const hit = lookup.byBill[b];
+      if (hit) return { who: hit.who, channel: hit.channel, why: `Remark says ${b}`, sure: true };
+    }
+    const link = lookup.linkBy[key];
+    if (link) return { who: link.customer, channel: link.channel, why: link.note ? link.note : "You tagged this person", sure: true, tagged: true };
+    const prev = lookup.assignedBy[key];
+    if (prev) return { who: prev.assigned_note, channel: prev.assigned_type, why: "Same person was assigned here before", sure: false };
+    const name = lookup.byName[key];
+    if (name) return { who: name.who, channel: name.channel, why: "Same name as a customer in the app", sure: false };
+    const paidDay = String(r.paid_at || "").slice(0, 10);
+    const same = lookup.open.filter((x) => Math.abs(x.owed - Number(r.amount || 0)) < 0.01 && (!x.date || x.date <= paidDay));
+    if (same.length === 1) return { who: same[0].who, channel: same[0].channel, why: `Same amount as unpaid ${same[0].no || "invoice"}`, sure: false };
+    return null;
+  }
+
+  async function saveTag(given) {
+    const t = given || tagging;
+    if (!t?.customer?.trim()) return;
+    setError("");
+    try {
+      const body = { payer_name: t.payer, customer: t.customer.trim(), channel: t.channel || "", note: t.note || "", created_by: authUser?.email || "unknown" };
+      const existing = links.find((l) => prNorm(l.payer_name) === prNorm(t.payer));
+      if (existing) {
+        await sbFetch(`payer_links?id=eq.${existing.id}`, { method: "PATCH", body: JSON.stringify(body) });
+      } else {
+        await sbFetch("payer_links", { method: "POST", body: JSON.stringify(body) });
+      }
+      logActivity?.("Tagged payer", t.payer, `→ ${body.customer}`);
+      setTagging(null);
+      setAsk((a) => { const n = { ...a }; delete n[prNorm(t.payer)]; return n; });
+      const l = await sbFetch("payer_links?select=*");
+      setLinks(l || []);
+    } catch (e) {
+      setError("Couldn't save: " + e.message);
+    }
+  }
+
+  async function removeTag(payer) {
+    const existing = links.find((l) => prNorm(l.payer_name) === prNorm(payer));
+    if (!existing) return;
+    try {
+      await sbFetch(`payer_links?id=eq.${existing.id}`, { method: "DELETE" });
+      setLinks(links.filter((l) => l.id !== existing.id));
+      setTagging(null);
+    } catch (e) { setError("Couldn't remove: " + e.message); }
+  }
+
+  if (loading) return <div style={{ padding: 40, color: C.textFaint }}>Loading…</div>;
+
+  const months = Array.from(new Set([currentMonthKey(), ...rows.map((r) => String(r.paid_at || "").slice(0, 7))])).filter(Boolean).sort().reverse();
+  const inMonth = rows.filter((r) => String(r.paid_at || "").slice(0, 7) === month && r.status !== "ignored");
+  const withHints = inMonth.map((r) => ({ r, h: hintFor(r) }));
+  const shown = filter === "unknown" ? withHints.filter((x) => !x.h) : withHints;
+  const total = inMonth.reduce((a, r) => a + Number(r.amount || 0), 0);
+  const today = todayStr();
+  const todayRows = rows.filter((r) => new Date(r.paid_at).toLocaleDateString("en-CA") === today);
+  const todayTotal = todayRows.reduce((a, r) => a + Number(r.amount || 0), 0);
+  const unknownCount = withHints.filter((x) => !x.h).length;
+  const fm = (n) => `$${Number(n || 0).toLocaleString("en-US", MONEY2)}`;
+  const byDay = [];
+  shown.forEach((x) => {
+    const d = new Date(x.r.paid_at).toLocaleDateString("en-CA");
+    const g = byDay[byDay.length - 1];
+    if (g && g.day === d) { g.items.push(x); g.total += Number(x.r.amount || 0); }
+    else byDay.push({ day: d, items: [x], total: Number(x.r.amount || 0) });
+  });
+  const tile = (label, value, sub) => (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px", minWidth: 140, flex: "1 1 140px" }}>
+      <div style={{ fontSize: 10.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", color: C.goldBright, marginTop: 4 }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: C.textFaint, marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ marginBottom: 14 }}>
+        <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: 0 }}>Payments received</h2>
+        <div style={{ fontSize: 12, color: C.textFaint, marginTop: 4 }}>Every ABA payment from the Telegram bot, with a hint of who it belongs to. Nothing to confirm — tag a person once and the app remembers.</div>
+      </div>
+
+      {error && <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, color: C.amber, borderRadius: 9, padding: "10px 14px", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        {tile("Today", fm(todayTotal), `${todayRows.length} payment${todayRows.length === 1 ? "" : "s"}`)}
+        {tile(monthLabel(month), fm(total), `${inMonth.length} payment${inMonth.length === 1 ? "" : "s"}`)}
+        {tile("New people", String(unknownCount), unknownCount ? "Type who they are once" : "The app knows everyone")}
+      </div>
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+        <select value={month} onChange={(e) => setMonth(e.target.value)} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "7px 10px", fontSize: 13 }}>
+          {months.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
+        </select>
+        {[["all", "All"], ["unknown", `New people (${unknownCount})`]].map(([k, l]) => (
+          <button key={k} type="button" onClick={() => setFilter(k)} style={{ padding: "7px 12px", fontSize: 12, fontWeight: 700, borderRadius: 8, cursor: "pointer", background: filter === k ? C.gold : "none", color: filter === k ? "#1A1508" : C.textDim, border: `1px solid ${filter === k ? C.gold : C.border}` }}>{l}</button>
+        ))}
+      </div>
+
+      {byDay.length === 0 ? (
+        <div style={{ background: C.surface, border: `1px dashed ${C.border}`, borderRadius: 12, padding: 40, textAlign: "center", color: C.textFaint, fontSize: 14 }}>
+          {filter === "unknown" ? "Every payment this month has a hint." : "No payments received this month yet."}
+        </div>
+      ) : byDay.map((g) => (
+        <div key={g.day} style={{ marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, fontWeight: 700, color: C.textDim, margin: "0 2px 6px" }}>
+            <span>{fmtDate(g.day)}</span><span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{fm(g.total)}</span>
+          </div>
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+            {g.items.map(({ r, h }, i) => {
+              const isNew = Number(r.id) > lastSeen && lastSeen > 0;
+              const tail = prTail(r.raw_message);
+              const editing = tagging && prNorm(tagging.payer) === prNorm(r.payer_name) && tagging.rowId === r.id;
+              return (
+                <div key={r.id} style={{ padding: "11px 14px", borderTop: i ? `1px solid ${C.border}` : "none" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 13.5, fontWeight: 700, color: C.text, overflowWrap: "anywhere" }}>
+                        {r.payer_name || "Unknown payer"}{tail && <span style={{ color: C.textFaint, fontWeight: 400 }}> ·*{tail}</span>}
+                        {isNew && <span style={{ marginLeft: 6, fontSize: 9.5, fontWeight: 800, color: "#1A1508", background: C.gold, borderRadius: 5, padding: "1px 5px", verticalAlign: "middle" }}>NEW</span>}
+                      </div>
+                      <div style={{ fontSize: 11.5, marginTop: 3, color: h ? (h.sure ? C.emerald : C.amber) : C.textFaint, overflowWrap: "anywhere" }}>
+                        {h ? <>→ <b>{h.who}</b>{h.channel && PR_CHANNEL_LABEL[h.channel] ? ` · ${PR_CHANNEL_LABEL[h.channel]}` : ""}{!h.sure && " (probably)"}</> : "→ First time — who is this?"}
+                      </div>
+                      <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 2, overflowWrap: "anywhere" }}>
+                        {new Date(r.paid_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        {h ? ` · ${h.why}` : ""}
+                        {r.remark ? ` · Remark: ${r.remark}` : ""}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right", flexShrink: 0 }}>
+                      <div style={{ fontSize: 15, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", color: C.goldBright }}>{fm(r.amount)}</div>
+                      {h && <button type="button" onClick={() => setTagging(editing ? null : { rowId: r.id, payer: r.payer_name, customer: h?.tagged ? h.who : "", channel: h?.tagged ? h.channel : (h?.channel || ""), note: "" })}
+                        style={{ marginTop: 4, background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 7, padding: "3px 9px", fontSize: 11, cursor: "pointer" }}>
+                        {h?.tagged ? "Change" : "Not right?"}
+                      </button>}
+                    </div>
+                  </div>
+                  {!h && !editing && (() => {
+                    const k = prNorm(r.payer_name); const v = ask[k] || "";
+                    return (
+                      <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
+                        <span style={{ fontSize: 11.5, color: C.textDim }}>Who is {r.payer_name || "this"}?</span>
+                        <input list="pr-customers" value={v} onChange={(e) => setAsk({ ...ask, [k]: e.target.value })}
+                          onKeyDown={(e) => { if (e.key === "Enter" && v.trim()) saveTag({ payer: r.payer_name, customer: v, channel: "" }); }}
+                          placeholder="Type the store or customer"
+                          style={{ flex: "1 1 160px", minWidth: 0, background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 7, padding: "6px 9px", fontSize: 12.5 }} />
+                        <button type="button" disabled={!v.trim()} onClick={() => saveTag({ payer: r.payer_name, customer: v, channel: "" })}
+                          style={{ background: C.gold, border: "none", borderRadius: 7, padding: "6px 12px", fontSize: 12, fontWeight: 700, color: "#1A1508", cursor: "pointer", opacity: v.trim() ? 1 : 0.5 }}>Save</button>
+                      </div>
+                    );
+                  })()}
+                  {editing && (
+                    <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 12, marginTop: 10 }}>
+                      <div style={{ fontSize: 11.5, color: C.textDim, marginBottom: 8 }}>Every payment from <b>{r.payer_name}</b> will show this customer.</div>
+                      <input list="pr-customers" value={tagging.customer} onChange={(e) => setTagging({ ...tagging, customer: e.target.value })} placeholder="Store or customer name"
+                        style={{ width: "100%", boxSizing: "border-box", background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, marginBottom: 8 }} />
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                        {[["consignment", "Consignment"], ["corporate", "Corporate"], ["credit", "Credit Term"], ["online", "Online & COD"], ["other", "Other"]].map(([k, l]) => (
+                          <button key={k} type="button" onClick={() => setTagging({ ...tagging, channel: k })} style={{ padding: "5px 10px", fontSize: 11, fontWeight: 700, borderRadius: 7, cursor: "pointer", background: tagging.channel === k ? C.gold : "none", color: tagging.channel === k ? "#1A1508" : C.textDim, border: `1px solid ${tagging.channel === k ? C.gold : C.border}` }}>{l}</button>
+                        ))}
+                      </div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <button type="button" onClick={() => saveTag()} disabled={!tagging.customer.trim()} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 700, color: "#1A1508", cursor: "pointer", opacity: tagging.customer.trim() ? 1 : 0.5 }}>Save</button>
+                        <button type="button" onClick={() => setTagging(null)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textFaint, borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer" }}>Cancel</button>
+                        {h?.tagged && <button type="button" onClick={() => removeTag(r.payer_name)} style={{ background: "none", border: "none", color: C.textFaint, fontSize: 11.5, cursor: "pointer", textDecoration: "underline" }}>Forget this person</button>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+      <datalist id="pr-customers">
+        {Array.from(new Set([...ctx.stores.map((s) => s.name), ...ctx.creditStores.map((s) => s.name), ...ctx.corpStores.map((s) => s.name), ...ctx.online.map((s) => s.customer_name)].filter(Boolean))).sort().map((n) => <option key={n} value={n} />)}
+      </datalist>
+    </div>
+  );
+}
+
 // Pending Payments — every ABA payment notification a Telegram bot detects
 // lands here first, unmatched. A human then assigns each one to whichever
 // channel it actually belongs to (a specific consignment store's partial
@@ -5901,6 +6192,7 @@ const NAV = [
     { label: "Corporate Accounts", page: "sales", sub: "consignment", view: "bigco" },
     { label: "Credit Term",        page: "sales", sub: "credit" },
     { label: "Online & COD",       page: "sales", sub: "online" },
+    { label: "Payments received",  page: "sales", sub: "payments" },
     ...(PENDING_PAYMENTS_ENABLED ? [{ label: "Pending Payments",   page: "sales", sub: "pending" }] : []),
     { label: "Province Coverage",  page: "sales", sub: "coverage" },
     { label: "Stores",             page: "stores" },
