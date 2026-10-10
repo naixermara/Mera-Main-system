@@ -1421,6 +1421,18 @@ export default function MeraConsignmentApp() {
     window.scrollTo?.(0, 0);
   }
 
+  // The sidebar highlights whatever is actually on screen. On Sales the top
+  // tabs (Total / Report / Consignment / Payments …) can change the page
+  // too, so the highlight is worked out from the current page rather than
+  // from the last sidebar click — the two can never disagree.
+  const activeNav = (() => {
+    if (page === "sales") {
+      const it = NAV.flatMap((g) => g.items).find((i) => i.page === "sales" && i.sub === salesSubPage && (salesSubPage !== "consignment" || i.view === consignmentSubView));
+      if (it) return it.label;
+    }
+    return navPick;
+  })();
+
   function goTo(item) {
     setStoreFocus(null);
     setNavPick(item.label);
@@ -1482,7 +1494,7 @@ export default function MeraConsignmentApp() {
       <SideNav
         C={C}
         nav={visibleNav}
-        active={navPick}
+        active={activeNav}
         openGroup={navGroup}
         onOpenGroup={setNavGroup}
         onPick={goTo}
