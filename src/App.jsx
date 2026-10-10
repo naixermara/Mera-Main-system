@@ -9688,6 +9688,27 @@ function SalesReportPage({ authUser, C, sbFetch }) {
   const tileLabel = { fontSize: 10.5, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em" };
   const tileVal = { fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, margin: "6px 0 3px" };
   const chg = (c) => <span style={{ fontSize: 11.5, fontWeight: 700, color: c.up === null ? C.textFaint : c.up ? C.emerald : C.rose }}>{c.text}</span>;
+  // While the selected month is still running, compare with the SAME days of
+  // last month (e.g. 1–10 Oct vs 1–10 Sep) so the arrows are a fair race.
+  const cmp = (() => {
+    const now = new Date(); const nowKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const P = monthLabel(prevKey).split(" ")[0].slice(0, 3);
+    if (selectedMonth !== nowKey) return { total: prev.total, units: prev.units, customers: prev.customers.length, label: P };
+    const upto = now.getDate();
+    const rows = allSales.filter((x) => monthKey(x.date) === prevKey && Number(String(x.date).slice(8, 10)) <= upto);
+    return {
+      total: rows.reduce((t, x) => t + x.amount, 0),
+      units: rows.reduce((t, x) => t + Object.values(x.units).reduce((u, v) => u + v, 0), 0),
+      customers: new Set(rows.map((x) => `${x.channel}|${x.customer}`)).size,
+      label: `1–${upto} ${P}`,
+    };
+  })();
+  const vs = (a, b, word, asMoney) => {
+    if (!b) return a > 0 ? { text: "new this month", up: true } : { text: "—", up: null };
+    const d = a - b; const up = d >= 0;
+    const amt = asMoney ? fm(Math.abs(d)) : `${fi(Math.abs(d))} ${up ? "more" : "fewer"} ${word}`;
+    return { text: `${up ? "▲" : "▼"} ${amt}${asMoney ? (up ? " more" : " less") : ""} than ${cmp.label} (${asMoney ? fm(b) : fi(b)})`, up };
+  };
   const chColors = { consignment: C.gold, credit: C.amber, corporate: C.emerald, online: "#7FB2E5" };
   const maxProd = Math.max(1, ...cur.products.map((p) => p.value));
   const maxCh = Math.max(1, ...cur.channels.map((c) => c.amount));
@@ -9732,17 +9753,15 @@ function SalesReportPage({ authUser, C, sbFetch }) {
             if (selectedMonth !== nowKey) return null;
             return (
               <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 10 }}>
-                {monthLabel(selectedMonth).split(" ")[0]} so far (1–{now.getDate()}): the month isn't finished, so it will look lower than {monthLabel(prevKey).split(" ")[0]} until it ends.
+                {monthLabel(selectedMonth).split(" ")[0]} so far (1–{now.getDate()}). The arrows compare with the same days of {monthLabel(prevKey).split(" ")[0]} (1–{now.getDate()}), so it's a fair comparison.
               </div>
             );
           })()}
           <div className="sr-tiles">
-            <div style={card}><div style={tileLabel}>Total sales</div><div style={tileVal}>{fm(cur.total)}</div>{chg(change(cur.total, prev.total, true))}</div>
-            <div style={card}><div style={tileLabel}>Boxes sold</div><div style={tileVal}>{fi(cur.units)}</div>{chg(change(cur.units, prev.units))}</div>
-            <div style={card}><div style={tileLabel}>Customers who bought</div><div style={tileVal}>{cur.customers.length}</div>
-              <span style={{ fontSize: 11.5, fontWeight: 700, color: cur.customers.length >= prev.customers.length ? C.emerald : C.rose }}>
-                {cur.customers.length >= prev.customers.length ? "▲" : "▼"} {Math.abs(cur.customers.length - prev.customers.length)} {cur.customers.length >= prev.customers.length ? "more" : "fewer"} than {monthLabel(prevKey).split(" ")[0].slice(0, 3)} ({prev.customers.length})
-              </span></div>
+            <div style={card}><div style={tileLabel}>Total sales</div><div style={tileVal}>{fm(cur.total)}</div>{chg(vs(cur.total, cmp.total, "", true))}</div>
+            <div style={card}><div style={tileLabel}>Boxes sold</div><div style={tileVal}>{fi(cur.units)}</div>{chg(vs(cur.units, cmp.units, "boxes"))}</div>
+            <div style={card}><div style={tileLabel}>Stores/customers who bought</div><div style={tileVal}>{cur.customers.length}</div>
+              {chg(vs(cur.customers.length, cmp.customers, "stores/customers"))}</div>
             <div style={card}><div style={tileLabel}>Not paid yet</div><div style={{ ...tileVal, color: cur.owed > 0 ? C.amber : C.emerald }}>{fm(cur.owed)}</div>
               <span style={{ fontSize: 11.5, color: C.textFaint }}>{cur.total ? `${Math.round((cur.owed / cur.total) * 100)}% of this month's sales` : "—"} · Credit &amp; Corporate</span></div>
           </div>
