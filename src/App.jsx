@@ -150,6 +150,25 @@ async function claimNextNumber(seriesKey) {
   return typeof result === "number" ? result : Array.isArray(result) ? result[0] : Number(result);
 }
 
+// Issues the next B / INV bill number, continuing BizAdvisor's own sequence
+// (B0000611, INV0000314 …). The database hands numbers out one at a time, never
+// skips or repeats one, and keeps every number in bill_numbers (a removed bill
+// stays listed as VOID). Returns null until billing has been switched on —
+// then the app simply works as before and nothing gets a number by mistake.
+async function issueBillNumber(series, source, customer, amount) {
+  try {
+    const r = await sbFetch("rpc/issue_bill_number", {
+      method: "POST",
+      body: JSON.stringify({ p_series: series, p_source: source || null, p_customer: customer || null, p_amount: amount == null ? null : Number(amount) }),
+    });
+    const v = Array.isArray(r) ? r[0] : r;
+    return typeof v === "string" && v ? v : null;
+  } catch (e) {
+    if (String(e?.message || e).includes("BILLING_NOT_STARTED")) return null;
+    throw e;
+  }
+}
+
 // Actually revokes the session server-side, not just forgetting it locally.
 // Without this, a token copied off the device (e.g. through an XSS attack
 // or physical access) would keep working even after the real user signs
@@ -1185,6 +1204,22 @@ export default function MeraConsignmentApp() {
     rows[rows.length - 1].notes = logForm.notes;
     rows[rows.length - 1].invoiceNumber = logForm.invoiceNumber;
 
+    // A collection with boxes sold gets its B bill number here — the same
+    // moment BizAdvisor used to issue it. Skipped if a number was typed in.
+    if (!String(logForm.invoiceNumber || "").trim() && rows.some((r) => r.sold > 0)) {
+      try {
+        const amount = rows.reduce((a, r) => {
+          const p = PRODUCTS.find((x) => x.key === r.product);
+          return a + r.sold * (Number(p ? store[p.priceKey] : 0) || 0);
+        }, 0);
+        const no = await issueBillNumber("B", "consignment visit", store.name, amount);
+        if (no) rows[rows.length - 1].invoiceNumber = no;
+      } catch (err) {
+        setLogFormError("Couldn't get a bill number — check the connection and try again.");
+        return;
+      }
+    }
+
     await addVisits(rows);
     setLogForm({ ...emptyLogForm, storeId: logForm.storeId, date: logForm.date });
     setStoreQuery(store.name);
@@ -1394,7 +1429,7 @@ export default function MeraConsignmentApp() {
 
   const visibleNav = NAV.filter((g) =>
     g.needs === "payroll" ? canSeePayroll : g.needs === "accounting" ? canSeeAccounting : true
-  ).map((g) => ({ ...g, items: g.items.filter((it) => it.needs !== "owner" || canSeeSalesReport) }));
+  ).map((g) => ({ ...g, items: g.items.filter((it) => (it.needs !== "owner" || canSeeSalesReport) && (it.needs !== "accounting" || canSeeAccounting)) }));
 
   // One place that moves the app, so the sidebar, the overview cards and any
   // future shortcut all land in the same state.
@@ -1526,7 +1561,7 @@ export default function MeraConsignmentApp() {
               </span>
             </div>
             <h1 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 34, margin: "6px 0 0", letterSpacing: "-0.01em" }}>
-              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? "Delivery & Invoices" : page === "stores" ? "Stores" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "sales" ? (salesSubPage === "total" ? "Sales Total" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online & COD Sales" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : "Consignment Operations") : "Consignment Operations"}
+              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? "Delivery & Invoices" : page === "stores" ? "Stores" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "bills" ? "Documents" : page === "sales" ? (salesSubPage === "total" ? "Sales Total" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online & COD Sales" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : "Consignment Operations") : "Consignment Operations"}
             </h1>
             <div style={{ height: 2, width: 46, background: `linear-gradient(90deg, ${C.gold}, transparent)`, marginTop: 10 }} />
           </div>
@@ -1619,6 +1654,10 @@ export default function MeraConsignmentApp() {
           canSeePayroll
             ? <ProfitPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to profit figures.</div>
+        ) : page === "bills" ? (
+          canSeeAccounting
+            ? <BillNumbersPage C={C} sbFetch={sbFetch} />
+            : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to this page.</div>
         ) : page === "payroll" ? (
           canSeePayroll
             ? <PayrollPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
@@ -3941,9 +3980,11 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
     setError("");
     setBusy(true);
     try {
+      const billNo = await issueBillNumber("B", "online sale", form.customer_name.trim(), draftTotal);
       const [inserted] = await sbFetch("online_sales", {
         method: "POST",
         body: JSON.stringify({
+          ...(billNo ? { bill_no: billNo } : {}),
           date: form.date,
           customer_name: form.customer_name.trim(),
           channel: form.channel || "online",
@@ -4026,7 +4067,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
     });
     return {
       ...fields,
-      invoice_number: `OS${String(sale.id).padStart(6, "0")}`,
+      invoice_number: sale.bill_no || `OS${String(sale.id).padStart(6, "0")}`,
       invoice_date: sale.date,
       customer_name: sale.customer_name,
       send_to: sale.description || "",
@@ -4128,6 +4169,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
                 >
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 700 }}>
+                      {s.bill_no && <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, fontWeight: 600, color: C.gold, marginRight: 8 }}>{s.bill_no}</span>}
                       {s.customer_name}
                       {s.channel === "cod" && <span style={{ marginLeft: 8, fontSize: 9.5, fontWeight: 700, color: C.goldBright, background: `${C.gold}22`, borderRadius: 999, padding: "2px 8px" }}>COD</span>}
                     </div>
@@ -4196,6 +4238,76 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
   );
 }
 
+// Bill numbers — every B / INV number the app has issued, in order, with
+// cancelled ones kept as VOID. This is the list the accountant checks for
+// gaps; nothing here can be edited or deleted.
+function BillNumbersPage({ C, sbFetch }) {
+  const [rows, setRows] = useState(null);
+  const [counters, setCounters] = useState([]);
+  const [month, setMonth] = useState(currentMonthKey());
+  useEffect(() => {
+    (async () => {
+      try {
+        const [r, c] = await Promise.all([
+          sbFetch("bill_numbers?select=*&order=series.asc,seq.desc"),
+          sbFetch("document_counters?select=*&series_key=in.(bill-B,bill-INV)"),
+        ]);
+        setRows(r || []); setCounters(c || []);
+      } catch (e) { setRows([]); }
+    })();
+  }, []);
+  if (!rows) return <div style={{ padding: 40, color: C.textFaint }}>Loading…</div>;
+  const started = counters.length > 0;
+  const next = (k) => { const c = counters.find((x) => x.series_key === `bill-${k}`); return c ? `${k}${String(c.next_number).padStart(7, "0")}` : "—"; };
+  const months = Array.from(new Set([currentMonthKey(), ...rows.map((r) => String(r.issued_at).slice(0, 7))])).sort().reverse();
+  const shown = rows.filter((r) => String(r.issued_at).slice(0, 7) === month);
+  const cell = { padding: "8px 10px", borderTop: `1px solid ${C.border}`, fontSize: 12.5 };
+  return (
+    <div>
+      <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: "0 0 4px" }}>Bill numbers</h2>
+      <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>Every B and INV number the app has given out, continuing BizAdvisor's sequence. Cancelled bills stay listed as VOID, so there are never gaps.</div>
+      {!started ? (
+        <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, color: C.amber, borderRadius: 10, padding: "12px 14px", fontSize: 13, marginBottom: 14 }}>
+          Billing in the app is <b>not switched on yet</b>. Bills are still made in BizAdvisor. On switch day the starting numbers are set and the app takes over.
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+          {["B", "INV"].map((k) => (
+            <div key={k} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 16px", minWidth: 160 }}>
+              <div style={{ fontSize: 10.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase" }}>Next {k === "B" ? "bill" : "tax invoice"}</div>
+              <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", color: C.goldBright }}>{next(k)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      <select value={month} onChange={(e) => setMonth(e.target.value)} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "7px 10px", fontSize: 13, marginBottom: 10 }}>
+        {months.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
+      </select>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
+          <thead><tr style={{ textAlign: "left", fontSize: 11, color: C.textFaint }}>
+            <th style={{ padding: "8px 10px" }}>Number</th><th style={{ padding: "8px 10px" }}>Date</th><th style={{ padding: "8px 10px" }}>Customer</th><th style={{ padding: "8px 10px" }}>From</th><th style={{ padding: "8px 10px", textAlign: "right" }}>Amount</th><th style={{ padding: "8px 10px" }}>Status</th>
+          </tr></thead>
+          <tbody>
+            {shown.length === 0 ? (
+              <tr><td colSpan={6} style={{ ...cell, textAlign: "center", color: C.textFaint, padding: 24 }}>No bill numbers issued in {monthLabel(month)}.</td></tr>
+            ) : shown.map((r) => (
+              <tr key={r.number} style={{ opacity: r.status === "void" ? 0.55 : 1 }}>
+                <td style={{ ...cell, fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 }}>{r.number}</td>
+                <td style={cell}>{fmtDate(String(r.issued_at).slice(0, 10))}</td>
+                <td style={cell}>{r.customer || "—"}</td>
+                <td style={{ ...cell, color: C.textFaint }}>{r.source || "—"}</td>
+                <td style={{ ...cell, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" }}>{r.amount == null ? "—" : `$${Number(r.amount).toLocaleString("en-US", MONEY2)}`}</td>
+                <td style={{ ...cell, fontWeight: 700, color: r.status === "void" ? C.rose : C.emerald }}>{r.status === "void" ? "VOID" : "Issued"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // Payments received — a read-only feed of every ABA payment the Telegram bot
 // saves. Nothing to confirm or assign: each payment just shows a hint of whose
 // money it is, worked out from (in order) a bill number in the remark, a name
@@ -4231,7 +4343,7 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
         get("bigco_reports?select=id,store_id,invoice_number,amount,paid,report_date"),
         get("bigco_stores?select=id,name"),
         get("visits?select=store_name,date,invoice_number&invoice_number=not.is.null"),
-        get("online_sales?select=id,date,customer_name,amount,description"),
+        get("online_sales?select=id,date,customer_name,amount,description,bill_no"),
         get("stores?select=name"),
       ]);
       setRows(p || []); setLinks(l);
@@ -4256,7 +4368,7 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
     ctx.credit.forEach((i) => add(i.invoice_number, cName[i.store_id] || "Credit Term store", "credit"));
     ctx.corp.forEach((r) => add(r.invoice_number, bName[r.store_id] || "Corporate store", "corporate"));
     ctx.visits.forEach((v) => add(v.invoice_number, v.store_name, "consignment"));
-    ctx.online.forEach((s) => prBills(s.description).forEach((b) => add(b, s.customer_name, "online")));
+    ctx.online.forEach((s) => { if (s.bill_no) add(s.bill_no, s.customer_name, "online"); prBills(s.description).forEach((b) => add(b, s.customer_name, "online")); });
     const byName = {};
     const addName = (n, channel) => { const k = prNorm(n); if (k.length >= 4 && !byName[k]) byName[k] = { who: n, channel }; };
     ctx.stores.forEach((s) => addName(s.name, "consignment"));
@@ -6216,6 +6328,7 @@ const NAV = [
   { name: "Documents", items: [
     { label: "Delivery notes", page: "delivery", tab: "notes" },
     { label: "Invoices",       page: "delivery", tab: "invoices" },
+    { label: "Bill numbers",   page: "bills", needs: "accounting" },
   ]},
   { name: "Marketing", items: [
     { label: "KOL & Content", page: "kol" },
@@ -9543,7 +9656,7 @@ function SalesReportPage({ authUser, C, sbFetch }) {
       const units = {}; const value = {};
       (itemsBySale[s.id] || []).forEach((it) => { units[it.product] = (units[it.product] || 0) + Number(it.qty || 0); value[it.product] = (value[it.product] || 0) + Number(it.line_total || 0); });
       const notPaid = /NOT PAID/i.test(s.description || "");
-      out.push({ date: s.date, doc: `OS${String(s.id).padStart(6, "0")}`, customer: (s.customer_name || "Online customer").trim(), channel: "online", amount,
+      out.push({ date: s.date, doc: s.bill_no || `OS${String(s.id).padStart(6, "0")}`, customer: (s.customer_name || "Online customer").trim(), channel: "online", amount,
         paid: notPaid ? 0 : amount, owedKnown: notPaid, phone: "", units, value });
     });
     return out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
@@ -12467,8 +12580,19 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
         : invoiceType === "tax" ? `invoice-tax-${year}`
         : `invoice-commercial-${year}`;
       const prefix = invoiceType === "consignment" ? "CH" : invoiceType === "tax" ? "INV" : "B";
-      const n = await claimNextNumber(seriesKey);
-      const invoiceNumber = `${prefix}${year}-${String(n).padStart(4, "0")}`;
+      // What the customer pays — the same sum the printed invoice shows.
+      const sub = SKUS.reduce((t, x) => t + (Number(dn[x.qtyCol]) || 0) * (parseFloat(form[x.formPrice]) || 0), 0);
+      const afterDisc = sub * (1 - (parseFloat(form.discountPercent) || 0) / 100);
+      const grand = Math.round((afterDisc + (invoiceType === "tax" ? afterDisc * ((parseFloat(form.vatPercent) || 0) / 100) : 0)) * 100) / 100;
+      // Once billing is switched on, Commercial and Tax invoices continue
+      // BizAdvisor's B / INV numbers. Before that, the old numbering is used.
+      let invoiceNumber = null;
+      if (invoiceType !== "consignment") invoiceNumber = await issueBillNumber(invoiceType === "tax" ? "INV" : "B", `invoice from ${dn.dn_number}`, dn.customer_name, grand);
+      const billed = !!invoiceNumber;
+      if (!invoiceNumber) {
+        const n = await claimNextNumber(seriesKey);
+        invoiceNumber = `${prefix}${year}-${String(n).padStart(4, "0")}`;
+      }
 
       const [inserted] = await sbFetch("sales_invoices", {
         method: "POST",
@@ -12499,6 +12623,19 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
           created_by: authUser?.email || "unknown",
         }),
       });
+      // With billing on, the invoice is also the Credit Term / Corporate
+      // record, so it shows in the Sales Report, in what the customer owes,
+      // and gets matched when their ABA payment arrives. One entry, not two.
+      if (billed && (dn.business_type === "credit" || dn.business_type === "corporate") && dn.store_id) {
+        const qty = Object.fromEntries(SKUS.map((x) => [x.soldCol, Number(dn[x.qtyCol]) || 0]));
+        const common = { store_id: dn.store_id, invoice_number: invoiceNumber, amount: grand, paid: 0, notes: `From ${dn.dn_number}`, created_by: authUser?.email || "unknown", ...qty };
+        try {
+          if (dn.business_type === "credit") await sbFetch("credit_invoices", { method: "POST", body: JSON.stringify({ ...common, invoice_date: dn.sale_date }) });
+          else await sbFetch("bigco_reports", { method: "POST", body: JSON.stringify({ ...common, report_date: dn.sale_date }) });
+        } catch (e) {
+          alert(`Invoice ${invoiceNumber} was created, but it couldn't be added to ${dn.business_type === "credit" ? "Credit Term" : "Corporate Accounts"}. Add it there by hand with number ${invoiceNumber}.`);
+        }
+      }
       logActivity?.("Generated invoice", dn.customer_name, `${inserted.invoice_number} (${invoiceType}) from ${dn.dn_number}`);
       onCreated(inserted);
     } catch (e) {
