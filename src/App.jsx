@@ -616,6 +616,9 @@ export default function MeraConsignmentApp() {
   const [childTab, setChildTab] = useState(() => loadSavedNav()?.childTab || null);
   const [navMobile, setNavMobile] = useState(false);
   const [consignmentSubView, setConsignmentSubView] = useState(() => loadSavedNav()?.consignmentSubView || "regular");
+  // One title for both the page header and the browser tab.
+  const pageTitle = page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : childTab === "invoices" ? "Invoices" : childTab === "notes" ? "Delivery Notes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "close" ? "Month Close" : page === "stockplan" ? "Stock Forecast" : page === "cashflow" ? "Cash Forecast" : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Term" : salesSubPage === "online" ? "Online & COD" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : (consignmentSubView === "bigco" ? "Corporate Accounts" : "Consignment")) : "Operations";
+  useEffect(() => { document.title = `Mèra — ${pageTitle}`; }, [pageTitle]);
 
   // Remembers which page/tab was open, purely so a browser refresh lands
   // back where you were instead of resetting to the default view. This is
@@ -1579,7 +1582,7 @@ export default function MeraConsignmentApp() {
               </span>
             </div>
             <h1 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 34, margin: "6px 0 0", letterSpacing: "-0.01em" }}>
-              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "close" ? "Month Close" : page === "cashflow" ? "Cash Forecast" : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online & COD Sales" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : "Consignment Operations") : "Consignment Operations"}
+              {pageTitle}
             </h1>
             <div style={{ height: 2, width: 46, background: `linear-gradient(90deg, ${C.gold}, transparent)`, marginTop: 10 }} />
           </div>
@@ -1672,6 +1675,8 @@ export default function MeraConsignmentApp() {
           canSeePayroll
             ? <ProfitPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to profit figures.</div>
+        ) : page === "stockplan" ? (
+          <StockForecastPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} canEdit={canSeeAccounting} />
         ) : page === "cashflow" ? (
           canSeeAccounting
             ? <CashForecastPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
@@ -5432,6 +5437,253 @@ function CashForecastPage({ authUser, C, sbFetch, logActivity }) {
   );
 }
 
+// ============================================================================
+// STOCK FORECAST — when each product runs out and when to order from the
+// factory. Demand = boxes sold per month (all channels + free boxes), averaged
+// over the last 3 complete months, grown by the planned growth %. Stock =
+// warehouse stock (stock_moves) plus orders already placed and not yet
+// received. With a ~3.5-month factory lead time, the "order by" date is the
+// run-out date minus the lead time minus the safety buffer.
+// ============================================================================
+const sfIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const sfAddDays = (s, n) => { const d = new Date(s + "T00:00:00"); d.setDate(d.getDate() + Math.round(n)); return sfIso(d); };
+const sfN = (n) => Math.round(Number(n || 0)).toLocaleString("en-US");
+
+function StockForecastPage({ authUser, C, sbFetch, logActivity, canEdit }) {
+  const [src, setSrc] = useState(null);
+  const [edit, setEdit] = useState(null);
+  const [inc, setInc] = useState(null);
+  const [err, setErr] = useState("");
+  const today = sfIso(new Date());
+
+  async function load() {
+    const get = async (q) => { try { return (await sbFetch(q)) || []; } catch (e) { return []; } };
+    const since = (() => { const d = new Date(); d.setMonth(d.getMonth() - 7, 1); return sfIso(d); })();
+    const [ci, br, oi, os, vi, mv, st, incoming] = await Promise.all([
+      get(`credit_invoices?select=invoice_date,pl_sold,night_sold,day_sold,pant_sold,short_sold&invoice_date=gte.${since}`),
+      get(`bigco_reports?select=report_date,pl_sold,night_sold,day_sold,pant_sold,short_sold&report_date=gte.${since}`),
+      get("online_sale_items?select=sale_id,product,qty"),
+      get(`online_sales?select=id,date&date=gte.${since}`),
+      get(`visits?select=date,product,sold&date=gte.${since}`),
+      get("stock_moves?select=product,qty,reason,move_date"),
+      get("stock_plan_settings?select=*&id=eq.1"),
+      get("stock_incoming?select=*&received=eq.false&order=expected_on.asc"),
+    ]);
+    setSrc({ ci, br, oi, os, vi, mv, settings: st[0] || { lead_days: 105, safety_months: 1, cover_months: 4, growth_pct: 0, container_cartons: 700, boxes_per_carton: {} }, incoming });
+  }
+  useEffect(() => { load(); }, []);
+
+  const model = useMemo(() => {
+    if (!src) return null;
+    const s = src.settings; const cur = currentMonthKey();
+    const months = {}; // month -> code -> boxes
+    const add = (date, code, q) => { if (!date || !q) return; const m = monthKey(date); if (m >= cur) return; ((months[m] = months[m] || {})[code] = (months[m][code] || 0) + Number(q)); };
+    [[src.ci, "invoice_date"], [src.br, "report_date"]].forEach(([rows, col]) => rows.forEach((r) => SKUS.forEach((x) => add(r[col], x.code, Number(r[x.soldCol] || 0)))));
+    const saleDate = {}; src.os.forEach((o) => { saleDate[o.id] = o.date; });
+    src.oi.forEach((i) => add(saleDate[i.sale_id], i.product, Number(i.qty || 0)));
+    const byVisit = {}; SKUS.forEach((x) => { byVisit[x.visitKey] = x.code; });
+    src.vi.forEach((v) => add(v.date, byVisit[v.product], Number(v.sold || 0)));
+    src.mv.filter((m) => m.reason === "sample").forEach((m) => add(m.move_date, m.product, Math.abs(Number(m.qty || 0))));
+    const monthList = Object.keys(months).sort().slice(-6);
+    const onHand = {}; src.mv.forEach((m) => { onHand[m.product] = (onHand[m.product] || 0) + Number(m.qty || 0); });
+    const incoming = {}; src.incoming.forEach((i) => { incoming[i.product] = (incoming[i.product] || 0) + Number(i.qty || 0); });
+    const g = Number(s.growth_pct || 0) / 100; const lead = Number(s.lead_days || 105);
+    const safety = Number(s.safety_months || 1); const cover = Number(s.cover_months || 4);
+    const bpc = s.boxes_per_carton || {};
+    const rows = SKUS.map((x) => {
+      const hist = monthList.map((m) => months[m]?.[x.code] || 0);
+      const recent = hist.slice(-3).filter((v) => v > 0);
+      const avg = recent.length ? recent.reduce((a, v) => a + v, 0) / recent.length : 0;
+      // Demand over the next n months with growth compounding monthly.
+      const demandOver = (monthsAhead) => { let t = 0, m = 0; while (m < monthsAhead) { const part = Math.min(1, monthsAhead - m); t += avg * Math.pow(1 + g, m + 1) * part; m += 1; } return t; };
+      const stock = Math.max(0, onHand[x.code] || 0); const inc = incoming[x.code] || 0;
+      // Walk forward day by day (in month steps) to find the run-out date.
+      let left = stock + inc, days = 0;
+      if (avg > 0) { for (let m = 0; m < 36 && left > 0; m++) { const need = avg * Math.pow(1 + g, m + 1); if (left >= need) { left -= need; days += 30.4; } else { days += 30.4 * (left / need); left = 0; } } }
+      const runOut = avg > 0 ? sfAddDays(today, days) : null;
+      const orderBy = runOut ? sfAddDays(runOut, -(lead + safety * 30.4)) : null;
+      const daysToOrder = orderBy ? Math.round((new Date(orderBy + "T00:00:00") - new Date(today + "T00:00:00")) / 86400000) : null;
+      // If ordered today: what is left when the container lands (negative = shortfall before it arrives).
+      const leadM = lead / 30.4;
+      const atArrival = stock + inc - demandOver(leadM);
+      // Demand for T months starting at arrival.
+      const demandAfter = (T) => { let t = 0; for (let m = 0; m < Math.ceil(T); m++) { const part = Math.min(1, T - m); t += avg * Math.pow(1 + g, leadM + m + 1) * part; } return t; };
+      const per = Number(bpc[x.code] || 0) || 48;
+      return { ...x, hist, avg, stock, inc, runOut, orderBy, daysToOrder, per, atArrival, demandAfter, monthsLeft: avg > 0 ? days / 30.4 : null };
+    });
+    // One mixed order of N cartons, split so every product lasts the same number of months after arrival.
+    const target = Number(s.container_cartons || 1400);
+    const cartonsFor = (T) => rows.map((r) => (r.avg > 0 ? Math.max(0, (r.demandAfter(T) - Math.max(0, r.atArrival)) / r.per) : 0));
+    let lo = 0, hi = 60;
+    for (let k = 0; k < 60; k++) { const mid = (lo + hi) / 2; const tot = cartonsFor(mid).reduce((a, v) => a + v, 0); if (tot > target) hi = mid; else lo = mid; }
+    const T = lo; const raw = cartonsFor(T);
+    const alloc = raw.map(Math.floor); let rem = target - alloc.reduce((a, v) => a + v, 0);
+    raw.map((v, i) => [v - Math.floor(v), i]).sort((a, b) => b[0] - a[0]).forEach(([, i]) => { if (rem > 0 && rows[i].avg > 0) { alloc[i] += 1; rem -= 1; } });
+    rows.forEach((r, i) => { r.orderCartons = alloc[i]; r.orderBoxes = alloc[i] * r.per; });
+    const arrival = sfAddDays(today, lead);
+    const lastsUntil = sfAddDays(arrival, T * 30.4);
+    const nextOrderBy = sfAddDays(lastsUntil, -(lead + safety * 30.4));
+    const firstOrderBy = rows.filter((r) => r.orderBy).map((r) => r.orderBy).sort()[0] || null;
+    return { rows, monthList, lead, safety, cover, g, target, minCartons: Number(s.min_cartons || 700), T, arrival, lastsUntil, nextOrderBy, firstOrderBy };
+  }, [src, today]);
+
+  async function saveSettings() {
+    try {
+      const body = { lead_days: parseInt(edit.lead_days, 10) || 105, safety_months: parseFloat(edit.safety_months) || 0, cover_months: parseFloat(edit.cover_months) || 3,
+        growth_pct: parseFloat(edit.growth_pct) || 0, container_cartons: Math.max(parseInt(edit.container_cartons, 10) || 1400, parseInt(edit.min_cartons, 10) || 700), min_cartons: parseInt(edit.min_cartons, 10) || 700,
+        boxes_per_carton: Object.fromEntries(SKUS.map((x) => [x.code, parseInt(edit.bpc[x.code], 10) || 0])), updated_by: authUser?.email || null, updated_at: new Date().toISOString() };
+      await sbFetch("stock_plan_settings?id=eq.1", { method: "PATCH", body: JSON.stringify(body) });
+      setEdit(null); setErr(""); await load();
+    } catch (e) { setErr("Settings could not be saved."); }
+  }
+  async function saveIncoming() {
+    const rows = SKUS.map((x) => ({ product: x.code, qty: parseInt(inc.qty[x.code], 10) || 0 })).filter((r) => r.qty > 0);
+    if (!rows.length || !inc.expected) { setErr("Enter at least one quantity and the expected arrival date."); return; }
+    try {
+      await sbFetch("stock_incoming", { method: "POST", body: JSON.stringify(rows.map((r) => ({ ...r, ordered_on: inc.ordered || today, expected_on: inc.expected, note: (inc.note || "").trim() || null }))) });
+      logActivity?.("Factory order recorded", "", rows.map((r) => `${r.qty} ${r.product}`).join(", "));
+      setInc(null); setErr(""); await load();
+    } catch (e) { setErr("The order could not be saved."); }
+  }
+  async function markReceived(id) {
+    try { await sbFetch(`stock_incoming?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ received: true }) }); await load(); } catch (e) { setErr("Could not update."); }
+  }
+
+  if (!src || !model) return <div style={{ padding: 40, color: C.textFaint }}>Loading…</div>;
+  const s = src.settings;
+  const inp = { background: C.bg, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "7px 9px", fontSize: 13, minWidth: 0 };
+  const th = { padding: "8px 10px", fontSize: 10.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", textAlign: "right", whiteSpace: "nowrap" };
+  const td = { padding: "10px", borderTop: `1px solid ${C.border}`, fontSize: 12.5, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", whiteSpace: "nowrap" };
+  const status = (r) => {
+    if (!r.avg) return [C.textFaint, "No sales yet"];
+    if (r.stock + r.inc <= 0) return [C.rose, "No stock recorded"];
+    if (r.daysToOrder <= 0) return [C.rose, "Order now"];
+    if (r.daysToOrder <= 30) return [C.amber, `Order within ${r.daysToOrder} days`];
+    return [C.emerald, `Order by ${fmtDate(r.orderBy)}`];
+  };
+  const urgent = model.rows.filter((r) => r.avg && (r.daysToOrder <= 0 || r.stock + r.inc <= 0));
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 12, lineHeight: 1.6 }}>
+        When each product runs out and when to order from the factory. Factory lead time <b>{Math.round(model.lead / 30.4 * 10) / 10} months</b> · safety buffer <b>{model.safety} month{model.safety === 1 ? "" : "s"}</b> · order size <b>{sfN(model.target)} cartons</b> mixed (factory minimum {sfN(model.minCartons)}) · planned growth <b>{(model.g * 100).toFixed(1)}%/month</b>.
+        {canEdit && !edit && <button onClick={() => setEdit({ lead_days: s.lead_days, safety_months: s.safety_months, cover_months: s.cover_months, growth_pct: s.growth_pct, container_cartons: s.container_cartons, min_cartons: s.min_cartons || 700, bpc: Object.fromEntries(SKUS.map((x) => [x.code, (s.boxes_per_carton || {})[x.code] || ""])) })} style={{ marginLeft: 8, background: "none", border: "none", color: C.goldBright, textDecoration: "underline", cursor: "pointer", fontSize: 12 }}>Change</button>}
+      </div>
+
+      {edit && (
+        <div style={{ background: C.surface, border: `1px solid ${C.gold}`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+            {[["lead_days", "Factory lead time (days)"], ["safety_months", "Safety buffer (months)"], ["growth_pct", "Planned growth % / month"], ["container_cartons", "Order size (cartons)"], ["min_cartons", "Factory minimum (cartons)"]].map(([k, l]) => (
+              <label key={k} style={{ fontSize: 10.5, color: C.textFaint }}>{l}<input type="number" step="any" value={edit[k]} onChange={(e) => setEdit({ ...edit, [k]: e.target.value })} style={{ ...inp, display: "block", width: 130, marginTop: 3 }} /></label>
+            ))}
+          </div>
+          <div style={{ fontSize: 10.5, color: C.textFaint, marginBottom: 4 }}>Boxes per carton</div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+            {SKUS.map((x) => (
+              <label key={x.code} style={{ fontSize: 10.5, color: C.textFaint }}>{x.label}<input type="number" value={edit.bpc[x.code]} onChange={(e) => setEdit({ ...edit, bpc: { ...edit.bpc, [x.code]: e.target.value } })} style={{ ...inp, display: "block", width: 110, marginTop: 3 }} /></label>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={saveSettings} style={{ background: C.gold, border: "none", color: "#1A1508", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>Save</button>
+            <button onClick={() => setEdit(null)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {urgent.length > 0 && (
+        <div style={{ background: C.roseBg, border: `1px solid ${C.rose}55`, color: C.rose, borderRadius: 10, padding: "10px 14px", fontSize: 12.5, marginBottom: 14 }}>
+          <b>{urgent.map((r) => r.label.split(" (")[0]).join(", ")}</b> — {urgent.some((r) => r.stock + r.inc <= 0) ? "no warehouse stock is recorded. If that is wrong, enter the stock count first; if it is right, order now." : `should be ordered now to arrive before stock runs out (lead time ${Math.round(model.lead / 30.4 * 10) / 10} months).`}
+        </div>
+      )}
+
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflowX: "auto", marginBottom: 14 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
+          <thead><tr>
+            <th style={{ ...th, textAlign: "left" }}>Product</th>
+            {model.monthList.slice(-3).map((m) => <th key={m} style={th}>{monthLabel(m).split(" ")[0].slice(0, 3)}</th>)}
+            <th style={th}>Avg / month</th><th style={th}>In stock</th><th style={th}>On order</th><th style={th}>Months left</th><th style={th}>Runs out</th><th style={{ ...th, textAlign: "left" }}>Action</th><th style={th}>Left if order lands {fmtDate(model.arrival)}</th>
+          </tr></thead>
+          <tbody>
+            {model.rows.map((r) => { const [col, lbl] = status(r); return (
+              <tr key={r.code}>
+                <td style={{ ...td, textAlign: "left", fontFamily: "inherit", fontWeight: 700 }}>{r.label}</td>
+                {r.hist.slice(-3).map((v, i) => <td key={i} style={{ ...td, color: C.textDim }}>{v ? sfN(v) : "—"}</td>)}
+                <td style={{ ...td, fontWeight: 700 }}>{sfN(r.avg)}</td>
+                <td style={td}>{sfN(r.stock)}</td>
+                <td style={{ ...td, color: r.inc ? C.goldBright : C.textFaint }}>{r.inc ? sfN(r.inc) : "—"}</td>
+                <td style={{ ...td, color: r.monthsLeft != null && r.monthsLeft < (model.lead / 30.4 + model.safety) ? C.rose : C.text }}>{r.monthsLeft != null ? r.monthsLeft.toFixed(1) : "—"}</td>
+                <td style={td}>{r.runOut ? fmtDate(r.runOut) : "—"}</td>
+                <td style={{ ...td, textAlign: "left", fontFamily: "inherit", fontWeight: 700, color: col }}>{lbl}</td>
+                <td style={{ ...td, fontWeight: 700, color: r.avg && r.atArrival <= 0 ? C.rose : C.text }}>{!r.avg ? "—" : r.atArrival <= 0 ? `short ${sfN(-r.atArrival)}` : sfN(r.atArrival)}</td>
+              </tr>
+            ); })}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ background: C.surface, border: `1px solid ${C.gold}66`, borderRadius: 12, padding: "12px 14px", marginBottom: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>Next order — {sfN(model.target)} cartons, mixed</div>
+          <div style={{ fontSize: 12, color: C.textDim }}>Place by <b style={{ color: model.firstOrderBy && model.firstOrderBy <= today ? C.rose : C.text }}>{model.firstOrderBy ? (model.firstOrderBy <= today ? "now" : fmtDate(model.firstOrderBy)) : "—"}</b></div>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 480 }}>
+            <thead><tr><th style={{ ...th, textAlign: "left" }}>Product</th><th style={th}>Cartons</th><th style={th}>Boxes</th><th style={th}>Per carton</th><th style={th}>Share</th></tr></thead>
+            <tbody>
+              {model.rows.map((r) => (
+                <tr key={r.code}>
+                  <td style={{ ...td, textAlign: "left", fontFamily: "inherit", fontWeight: 700 }}>{r.label}</td>
+                  <td style={{ ...td, fontWeight: 700 }}>{sfN(r.orderCartons)}</td>
+                  <td style={td}>{sfN(r.orderBoxes)}</td>
+                  <td style={{ ...td, color: C.textDim }}>{r.per}</td>
+                  <td style={{ ...td, color: C.textDim }}>{Math.round((r.orderCartons / Math.max(1, model.target)) * 100)}%</td>
+                </tr>
+              ))}
+              <tr><td style={{ ...td, textAlign: "left", fontFamily: "inherit", fontWeight: 700 }}>Total</td><td style={{ ...td, fontWeight: 700 }}>{sfN(model.rows.reduce((a, r) => a + r.orderCartons, 0))}</td><td style={{ ...td, fontWeight: 700 }}>{sfN(model.rows.reduce((a, r) => a + r.orderBoxes, 0))}</td><td style={td}></td><td style={td}></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div style={{ fontSize: 12, color: C.textDim, marginTop: 10, lineHeight: 1.6 }}>
+          If ordered today it lands about <b>{fmtDate(model.arrival)}</b> and the mix is balanced so every product lasts until about <b>{fmtDate(model.lastsUntil)}</b> (~{model.T.toFixed(1)} months after arrival). The following order would then be due around <b>{fmtDate(model.nextOrderBy)}</b>.
+          {model.target < model.minCartons && <span style={{ color: C.rose }}> Below the factory minimum of {sfN(model.minCartons)} cartons.</span>}
+        </div>
+        <div style={{ fontSize: 11, color: C.textFaint, marginTop: 6 }}>Demand = boxes sold per month across all channels plus free boxes, averaged over the last 3 complete months. Stock at consignment stores is not counted as warehouse stock. Change the order size (e.g. 700 vs 1,400 cartons) to compare how long each lasts.</div>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>Factory orders on the way</div>
+        {canEdit && !inc && <button onClick={() => setInc({ qty: {}, ordered: today, expected: sfAddDays(today, model.lead), note: "" })} style={{ background: "none", border: `1px solid ${C.gold}`, color: C.goldBright, borderRadius: 8, padding: "5px 11px", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>+ Record factory order</button>}
+      </div>
+      {inc && (
+        <div style={{ background: C.surface, border: `1px solid ${C.gold}`, borderRadius: 12, padding: 12, marginBottom: 10 }}>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+            {SKUS.map((x) => <label key={x.code} style={{ fontSize: 10.5, color: C.textFaint }}>{x.label} (boxes)<input type="number" value={inc.qty[x.code] || ""} onChange={(e) => setInc({ ...inc, qty: { ...inc.qty, [x.code]: e.target.value } })} style={{ ...inp, display: "block", width: 120, marginTop: 3 }} /></label>)}
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <label style={{ fontSize: 10.5, color: C.textFaint }}>Ordered on<input type="date" value={inc.ordered} onChange={(e) => setInc({ ...inc, ordered: e.target.value })} style={{ ...inp, display: "block", marginTop: 3 }} /></label>
+            <label style={{ fontSize: 10.5, color: C.textFaint }}>Expected arrival<input type="date" value={inc.expected} onChange={(e) => setInc({ ...inc, expected: e.target.value })} style={{ ...inp, display: "block", marginTop: 3 }} /></label>
+            <label style={{ fontSize: 10.5, color: C.textFaint, flex: "1 1 180px" }}>Note<input value={inc.note} onChange={(e) => setInc({ ...inc, note: e.target.value })} placeholder="e.g. PO-2026-11, container 1" style={{ ...inp, display: "block", width: "100%", boxSizing: "border-box", marginTop: 3 }} /></label>
+            <button onClick={saveIncoming} style={{ background: C.gold, border: "none", color: "#1A1508", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>Save</button>
+            <button onClick={() => setInc(null)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {err && <div style={{ color: C.rose, fontSize: 12, marginBottom: 8 }}>{err}</div>}
+      {src.incoming.length === 0 ? <div style={{ fontSize: 12, color: C.textFaint }}>No factory orders on the way. Record an order when you place it, so the forecast stops asking you to order the same stock again.</div> : (
+        <div style={{ display: "grid", gap: 6 }}>
+          {src.incoming.map((i) => (
+            <div key={i.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, fontSize: 12.5, padding: "8px 12px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10 }}>
+              <span>{SKUS.find((x) => x.code === i.product)?.label || i.product} · <b style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{sfN(i.qty)}</b> boxes <span style={{ color: C.textFaint }}>· arriving {fmtDate(i.expected_on)}{i.note ? ` · ${i.note}` : ""}</span></span>
+              {canEdit && <button onClick={() => markReceived(i.id)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "4px 10px", fontSize: 11.5, cursor: "pointer" }}>Arrived</button>}
+            </div>
+          ))}
+          <div style={{ fontSize: 11, color: C.textFaint }}>When a container arrives, also add the boxes to the warehouse (Stock on Hand → + Add stock) and then press "Arrived" here.</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Payments received — a read-only feed of every ABA payment the Telegram bot
 // saves. Nothing to confirm or assign: each payment just shows a hint of whose
 // money it is, worked out from (in order) a bill number in the remark, a name
@@ -7451,6 +7703,7 @@ const NAV = [
   { name: "Warehouse", items: [
     { label: "Stock on Hand",       page: "delivery", tab: "stock" },
     { label: "Products & Barcodes", page: "delivery", tab: "products" },
+    { label: "Stock Forecast",      page: "stockplan" },
   ]},
   { name: "Orders & Billing", items: [
     { label: "Delivery Notes", page: "delivery", tab: "notes" },
