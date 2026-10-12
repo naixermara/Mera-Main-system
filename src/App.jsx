@@ -1579,7 +1579,7 @@ export default function MeraConsignmentApp() {
               </span>
             </div>
             <h1 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 34, margin: "6px 0 0", letterSpacing: "-0.01em" }}>
-              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "close" ? "Month Close" : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online & COD Sales" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : "Consignment Operations") : "Consignment Operations"}
+              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "close" ? "Month Close" : page === "cashflow" ? "Cash Forecast" : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online & COD Sales" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : "Consignment Operations") : "Consignment Operations"}
             </h1>
             <div style={{ height: 2, width: 46, background: `linear-gradient(90deg, ${C.gold}, transparent)`, marginTop: 10 }} />
           </div>
@@ -1672,6 +1672,10 @@ export default function MeraConsignmentApp() {
           canSeePayroll
             ? <ProfitPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to profit figures.</div>
+        ) : page === "cashflow" ? (
+          canSeeAccounting
+            ? <CashForecastPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
+            : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>Only the owner or accountant can see the cash forecast.</div>
         ) : page === "close" ? (
           canSeeAccounting
             ? <MonthClosePage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
@@ -5164,6 +5168,270 @@ function MonthClosePage({ authUser, C, sbFetch, logActivity }) {
   );
 }
 
+// ============================================================================
+// CASH FORECAST — the next 8 weeks of cash, week by week. Money in comes from
+// open customer invoices on their due dates (same rules as Accounts
+// Receivable). Money out is payroll (from the latest payroll run, paid at
+// month end) plus any planned payments entered here (rent, suppliers, ads…),
+// one-off or monthly. The starting point is today's actual cash, entered by
+// hand because the books are only updated when the accountant posts.
+// ============================================================================
+const cfIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const cfAdd = (s, n) => { const d = new Date(s + "T00:00:00"); d.setDate(d.getDate() + n); return cfIso(d); };
+const cfMoney = (n) => `${n < 0 ? "−" : ""}$${Math.abs(Math.round(Number(n || 0))).toLocaleString("en-US")}`;
+
+function CashForecastPage({ authUser, C, sbFetch, logActivity }) {
+  const [src, setSrc] = useState(null);
+  const [openWeek, setOpenWeek] = useState(null);
+  const [withOverdue, setWithOverdue] = useState(true);
+  const [withNew, setWithNew] = useState(true);
+  const [balForm, setBalForm] = useState(null);
+  const [itemForm, setItemForm] = useState(null);
+  const [err, setErr] = useState("");
+  const today = cfIso(new Date());
+
+  async function load() {
+    const get = async (q) => { try { return (await sbFetch(q)) || []; } catch (e) { return []; } };
+    const since = cfAdd(today, -56);
+    const [cs, ci, cp, bs, br, os, pr, items, opens, recentOnline, recentVisits] = await Promise.all([
+      get("credit_stores?select=id,name,credit_days"),
+      get("credit_invoices?select=id,store_id,invoice_date,invoice_number,amount,paid"),
+      get("credit_payments?select=store_id,amount"),
+      get("bigco_stores?select=id,name,parent_id,payment_day"),
+      get("bigco_reports?select=store_id,report_date,invoice_number,amount,paid"),
+      get("online_sales?select=id,date,customer_name,amount,bill_no&payment_status=eq.unpaid"),
+      get("payroll_runs?select=id,month,total&order=month.desc&limit=1"),
+      get("cash_plan_items?select=*&active=eq.true&order=due_date.asc"),
+      get("cash_openings?select=*&order=as_of.desc,created_at.desc&limit=1"),
+      get(`online_sales?select=amount&date=gte.${since}&date=lt.${today}`),
+      get(`visits?select=paid&date=gte.${since}&date=lt.${today}`),
+    ]);
+    // Recent pace, used to estimate cash from sales not made yet.
+    const sumIn = (rows, col, dateCol) => rows.filter((r) => r[dateCol] >= since && r[dateCol] < today).reduce((a, r) => a + Number(r[col] || 0), 0);
+    const pace = {
+      cash: (recentOnline.reduce((a, r) => a + Number(r.amount || 0), 0) + recentVisits.reduce((a, r) => a + Number(r.paid || 0), 0)) / 8,
+      credit: (sumIn(ci, "amount", "invoice_date") + sumIn(br, "amount", "report_date")) / 8,
+    };
+    let payroll = null;
+    if (pr[0]) {
+      let total = Number(pr[0].total || 0);
+      if (!total) { try { const ps = await sbFetch(`payslips?select=net_pay&run_id=eq.${pr[0].id}`); total = (ps || []).reduce((a, p) => a + Number(p.net_pay || 0), 0); } catch (e) { /* none */ } }
+      if (total > 0) payroll = { month: pr[0].month, total };
+    }
+    setSrc({ cs, ci, cp, bs, br, os, items, opening: opens[0] || null, payroll, pace });
+  }
+  useEffect(() => { load(); }, []);
+
+  const plan = useMemo(() => {
+    if (!src) return null;
+    const start = (() => { const d = new Date(today + "T00:00:00"); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return cfIso(d); })();
+    const weeks = Array.from({ length: 8 }, (_, i) => ({ from: cfAdd(start, i * 7), to: cfAdd(start, i * 7 + 6), lines: [] }));
+    const end = weeks[7].to;
+    const place = (date, line) => {
+      let d = date < today ? (withOverdue ? today : null) : date;
+      if (!d || d > end) return;
+      const w = weeks.find((x) => d >= x.from && d <= x.to); if (w) w.lines.push({ ...line, date: d, overdue: date < today });
+    };
+    // Customers — Credit Term (unlinked payments settle the oldest bills first).
+    src.cs.forEach((s) => {
+      let pool = src.cp.filter((p) => p.store_id === s.id).reduce((a, p) => a + Number(p.amount || 0), 0);
+      src.ci.filter((i) => i.store_id === s.id && i.invoice_date).sort((a, b) => a.invoice_date.localeCompare(b.invoice_date)).forEach((i) => {
+        let left = Number(i.amount || 0) - Number(i.paid || 0);
+        if (left > 0 && pool > 0) { const u = Math.min(left, pool); left -= u; pool -= u; }
+        if (left > 0.009) place(cfAdd(i.invoice_date, Number(s.credit_days || 30)), { kind: "customer", label: `${s.name} · ${i.invoice_number || "invoice"}`, amount: left });
+      });
+    });
+    // Customers — Corporate (monthly pay day if set, otherwise 30 days).
+    const byId = {}; src.bs.forEach((s) => { byId[s.id] = s; });
+    src.br.forEach((r) => {
+      const left = Number(r.amount || 0) - Number(r.paid || 0); if (!r.report_date || left <= 0.009) return;
+      const b = byId[r.store_id]; if (!b) return; const top = b.parent_id && byId[b.parent_id] ? byId[b.parent_id] : b;
+      let due = cfAdd(r.report_date, 30);
+      if (top.payment_day) { const d = new Date(r.report_date + "T00:00:00"); const y = d.getMonth() === 11 ? d.getFullYear() + 1 : d.getFullYear(); const m = (d.getMonth() + 1) % 12; due = cfIso(new Date(y, m, Math.min(top.payment_day, new Date(y, m + 1, 0).getDate()))); }
+      place(due, { kind: "customer", label: `${top.name} · ${r.invoice_number || "invoice"}`, amount: left });
+    });
+    // Customers — COD orders awaiting payment.
+    src.os.forEach((s) => place(cfAdd(s.date, typeof COD_GRACE_DAYS === "number" ? COD_GRACE_DAYS : 3), { kind: "customer", label: `${s.customer_name || "COD order"} · ${s.bill_no || "COD"}`, amount: Number(s.amount || 0) }));
+    // Payroll — paid at the end of each month, same total as the latest run.
+    if (src.payroll) {
+      for (let k = 0; k < 3; k++) {
+        const d = new Date(today + "T00:00:00"); const me = new Date(d.getFullYear(), d.getMonth() + 1 + k, 0);
+        const iso = cfIso(me); if (iso >= today) place(iso, { kind: "out", label: `Payroll (based on ${monthLabel(src.payroll.month)} run)`, amount: src.payroll.total });
+      }
+    }
+    // Planned items — one-off or repeating monthly on the same day.
+    src.items.forEach((it) => {
+      const amt = Number(it.amount || 0); const kind = it.direction === "in" ? "in" : "out";
+      if (!it.repeat_monthly) { if (it.due_date >= today || withOverdue) place(it.due_date, { kind, label: it.label, amount: amt, id: it.id }); return; }
+      const base = new Date(it.due_date + "T00:00:00"); const day = base.getDate();
+      for (let k = 0; k < 6; k++) {
+        const y = base.getFullYear(), m = base.getMonth() + k;
+        const iso = cfIso(new Date(y, m, Math.min(day, new Date(y, m + 1, 0).getDate())));
+        if (iso >= today && iso <= end) place(iso, { kind, label: `${it.label} (monthly)`, amount: amt, id: it.id });
+      }
+    });
+    // New sales: online/COD and consignment collections arrive the following week;
+    // new Credit Term / Corporate bills are paid about 30 days later.
+    if (withNew && src.pace) {
+      weeks.forEach((w, i) => {
+        if (i >= 1 && src.pace.cash > 0) w.lines.push({ kind: "est", label: "Estimated new Online/COD + consignment collections (8-week average)", amount: src.pace.cash, date: w.from });
+        if (i >= 5 && src.pace.credit > 0) w.lines.push({ kind: "est", label: "Estimated payments on new Credit Term + Corporate bills (8-week average)", amount: src.pace.credit, date: w.from });
+      });
+    }
+    let bal = src.opening ? Number(src.opening.amount) : 0;
+    weeks.forEach((w) => {
+      w.open = bal;
+      w.customers = w.lines.filter((l) => l.kind === "customer").reduce((a, l) => a + l.amount, 0);
+      w.otherIn = w.lines.filter((l) => l.kind === "in").reduce((a, l) => a + l.amount, 0);
+      w.est = w.lines.filter((l) => l.kind === "est").reduce((a, l) => a + l.amount, 0);
+      w.out = w.lines.filter((l) => l.kind === "out").reduce((a, l) => a + l.amount, 0);
+      bal = bal + w.customers + w.otherIn + w.est - w.out; w.close = bal;
+      w.lines.sort((a, b) => a.date.localeCompare(b.date) || b.amount - a.amount);
+    });
+    const low = weeks.reduce((m, w) => (w.close < m.close ? w : m), weeks[0]);
+    return { weeks, low };
+  }, [src, withOverdue, withNew, today]);
+
+  async function saveBalance() {
+    const amt = parseFloat(balForm.amount); if (isNaN(amt)) { setErr("Enter the amount."); return; }
+    try {
+      await sbFetch("cash_openings", { method: "POST", body: JSON.stringify({ as_of: balForm.date || today, amount: amt, note: (balForm.note || "").trim() || null }) });
+      logActivity?.("Cash balance updated", "", `$${amt} as of ${balForm.date || today}`);
+      setBalForm(null); setErr(""); await load();
+    } catch (e) { setErr("The balance could not be saved."); }
+  }
+  async function saveItem() {
+    const amt = parseFloat(itemForm.amount);
+    if (!itemForm.label.trim() || !(amt > 0) || !itemForm.date) { setErr("Enter a description, an amount and a date."); return; }
+    try {
+      await sbFetch("cash_plan_items", { method: "POST", body: JSON.stringify({ label: itemForm.label.trim(), direction: itemForm.direction, amount: amt, due_date: itemForm.date, repeat_monthly: !!itemForm.monthly }) });
+      setItemForm(null); setErr(""); await load();
+    } catch (e) { setErr("The item could not be saved."); }
+  }
+  async function removeItem(id) {
+    try { await sbFetch(`cash_plan_items?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ active: false }) }); await load(); } catch (e) { setErr("Could not remove it."); }
+  }
+
+  if (!src || !plan) return <div style={{ padding: 40, color: C.textFaint }}>Loading…</div>;
+  const inp = { background: C.bg, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, minWidth: 0 };
+  const th = { padding: "8px 10px", fontSize: 10.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", textAlign: "right", whiteSpace: "nowrap" };
+  const td = { padding: "10px", borderTop: `1px solid ${C.border}`, fontSize: 12.5, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", whiteSpace: "nowrap" };
+  const short = (s) => { const d = new Date(s + "T00:00:00"); return `${d.getDate()} ${["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][d.getMonth()]}`; };
+  const op = src.opening;
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>Expected cash for the next 8 weeks. Money in = open invoices on their due dates plus estimated new sales; money out = payroll plus the planned payments below.</div>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <div style={{ background: C.surface, border: `1px solid ${op ? C.border : C.amber}`, borderRadius: 12, padding: "12px 14px", flex: "1 1 220px" }}>
+          <div style={{ fontSize: 10.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase" }}>Cash today (all banks + cash)</div>
+          <div style={{ fontSize: 22, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", marginTop: 2 }}>{op ? cfMoney(op.amount) : "Not entered"}</div>
+          <div style={{ fontSize: 11, color: op ? C.textFaint : C.amber }}>{op ? `as of ${fmtDate(op.as_of)}${op.note ? ` · ${op.note}` : ""}` : "Enter today's total to start the forecast"}</div>
+          {!balForm && <button onClick={() => setBalForm({ amount: "", date: today, note: "" })} style={{ marginTop: 8, background: "none", border: `1px solid ${C.gold}`, color: C.goldBright, borderRadius: 8, padding: "5px 11px", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>Update balance</button>}
+        </div>
+        <div style={{ background: C.surface, border: `1px solid ${plan.low.close < 0 ? C.rose : C.border}`, borderRadius: 12, padding: "12px 14px", flex: "1 1 220px" }}>
+          <div style={{ fontSize: 10.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase" }}>Lowest point</div>
+          <div style={{ fontSize: 22, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", marginTop: 2, color: plan.low.close < 0 ? C.rose : C.emerald }}>{cfMoney(plan.low.close)}</div>
+          <div style={{ fontSize: 11, color: C.textFaint }}>end of week {short(plan.low.from)}–{short(plan.low.to)}{plan.low.close < 0 ? " · cash runs short" : ""}</div>
+        </div>
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", flex: "1 1 220px" }}>
+          <div style={{ fontSize: 10.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase" }}>In 8 weeks</div>
+          <div style={{ fontSize: 22, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", marginTop: 2 }}>{cfMoney(plan.weeks[7].close)}</div>
+          <div style={{ fontSize: 11, color: C.textFaint }}>expected cash on {fmtDate(plan.weeks[7].to)}</div>
+        </div>
+      </div>
+
+      {balForm && (
+        <div style={{ background: C.surface, border: `1px solid ${C.gold}`, borderRadius: 12, padding: 12, marginBottom: 14, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <label style={{ fontSize: 10.5, color: C.textFaint }}>Total cash + bank ($)<input type="number" step="0.01" value={balForm.amount} onChange={(e) => setBalForm({ ...balForm, amount: e.target.value })} style={{ ...inp, display: "block", width: 160, marginTop: 3 }} /></label>
+          <label style={{ fontSize: 10.5, color: C.textFaint }}>As of<input type="date" value={balForm.date} onChange={(e) => setBalForm({ ...balForm, date: e.target.value })} style={{ ...inp, display: "block", marginTop: 3 }} /></label>
+          <label style={{ fontSize: 10.5, color: C.textFaint, flex: "1 1 200px" }}>Note (optional)<input value={balForm.note} onChange={(e) => setBalForm({ ...balForm, note: e.target.value })} placeholder="e.g. ABA 555 + ABA 099 + Chip Mong + cash" style={{ ...inp, display: "block", width: "100%", boxSizing: "border-box", marginTop: 3 }} /></label>
+          <button onClick={saveBalance} style={{ background: C.gold, border: "none", color: "#1A1508", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>Save</button>
+          <button onClick={() => { setBalForm(null); setErr(""); }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
+        </div>
+      )}
+
+      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.textDim, marginBottom: 10, cursor: "pointer" }}>
+        <input type="checkbox" checked={withOverdue} onChange={(e) => setWithOverdue(e.target.checked)} />
+        Count overdue customer invoices as arriving this week (untick for a cautious forecast)
+      </label>
+      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.textDim, marginBottom: 10, cursor: "pointer" }}>
+        <input type="checkbox" checked={withNew} onChange={(e) => setWithNew(e.target.checked)} />
+        Include estimated new sales (~{cfMoney(src.pace?.cash || 0)}/week cash collections, ~{cfMoney(src.pace?.credit || 0)}/week credit bills paid after 30 days, based on the last 8 weeks)
+      </label>
+
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflowX: "auto", marginBottom: 18 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
+          <thead><tr><th style={{ ...th, textAlign: "left" }}>Week</th><th style={th}>Start</th><th style={th}>+ Open invoices</th><th style={th}>+ New sales (est.)</th><th style={th}>+ Other in</th><th style={th}>− Payments out</th><th style={th}>End</th></tr></thead>
+          <tbody>
+            {plan.weeks.map((w, i) => (
+              <React.Fragment key={w.from}>
+                <tr onClick={() => setOpenWeek(openWeek === i ? null : i)} style={{ cursor: "pointer", background: w === plan.low ? `${C.rose}10` : "none" }}>
+                  <td style={{ ...td, textAlign: "left", fontFamily: "inherit", fontWeight: 700 }}>{short(w.from)} – {short(w.to)}{i === 0 ? <span style={{ color: C.textFaint, fontWeight: 400 }}> · this week</span> : ""}</td>
+                  <td style={{ ...td, color: C.textDim }}>{cfMoney(w.open)}</td>
+                  <td style={{ ...td, color: w.customers ? C.emerald : C.textFaint }}>{w.customers ? `+${cfMoney(w.customers)}` : "—"}</td>
+                  <td style={{ ...td, color: w.est ? C.goldBright : C.textFaint }}>{w.est ? `+${cfMoney(w.est)}` : "—"}</td>
+                  <td style={{ ...td, color: w.otherIn ? C.emerald : C.textFaint }}>{w.otherIn ? `+${cfMoney(w.otherIn)}` : "—"}</td>
+                  <td style={{ ...td, color: w.out ? C.rose : C.textFaint }}>{w.out ? `−${cfMoney(w.out)}` : "—"}</td>
+                  <td style={{ ...td, fontWeight: 700, color: w.close < 0 ? C.rose : C.text }}>{cfMoney(w.close)}</td>
+                </tr>
+                {openWeek === i && (
+                  <tr><td colSpan={7} style={{ padding: "4px 10px 12px" }}>
+                    <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 12px" }}>
+                      {w.lines.length === 0 ? <div style={{ fontSize: 12, color: C.textFaint }}>Nothing expected this week.</div> : w.lines.map((l, k) => (
+                        <div key={k} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, padding: "3px 0" }}>
+                          <span style={{ minWidth: 0, wordBreak: "break-word" }}><span style={{ color: C.textFaint }}>{short(l.date)} · </span>{l.label}{l.overdue ? <span style={{ color: C.amber }}> · overdue</span> : ""}</span>
+                          <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: l.kind === "out" ? C.rose : l.kind === "est" ? C.goldBright : C.emerald, whiteSpace: "nowrap" }}>{l.kind === "out" ? "−" : "+"}{cfMoney(l.amount)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </td></tr>
+                )}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>Planned payments &amp; other money in</div>
+        {!itemForm && <button onClick={() => setItemForm({ label: "", direction: "out", amount: "", date: today, monthly: false })} style={{ background: "none", border: `1px solid ${C.gold}`, color: C.goldBright, borderRadius: 8, padding: "5px 11px", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>+ Add</button>}
+      </div>
+      {itemForm && (
+        <div style={{ background: C.surface, border: `1px solid ${C.gold}`, borderRadius: 12, padding: 12, marginBottom: 10, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <label style={{ fontSize: 10.5, color: C.textFaint, flex: "2 1 200px" }}>Description<input value={itemForm.label} onChange={(e) => setItemForm({ ...itemForm, label: e.target.value })} placeholder="e.g. Warehouse rent / Factory payment / Facebook ads" style={{ ...inp, display: "block", width: "100%", boxSizing: "border-box", marginTop: 3 }} /></label>
+          <label style={{ fontSize: 10.5, color: C.textFaint }}>Type<select value={itemForm.direction} onChange={(e) => setItemForm({ ...itemForm, direction: e.target.value })} style={{ ...inp, display: "block", marginTop: 3 }}><option value="out">Payment out</option><option value="in">Money in</option></select></label>
+          <label style={{ fontSize: 10.5, color: C.textFaint }}>Amount ($)<input type="number" step="0.01" value={itemForm.amount} onChange={(e) => setItemForm({ ...itemForm, amount: e.target.value })} style={{ ...inp, display: "block", width: 110, marginTop: 3 }} /></label>
+          <label style={{ fontSize: 10.5, color: C.textFaint }}>Date<input type="date" value={itemForm.date} onChange={(e) => setItemForm({ ...itemForm, date: e.target.value })} style={{ ...inp, display: "block", marginTop: 3 }} /></label>
+          <label style={{ fontSize: 12, color: C.textDim, display: "flex", alignItems: "center", gap: 5, paddingBottom: 8 }}><input type="checkbox" checked={itemForm.monthly} onChange={(e) => setItemForm({ ...itemForm, monthly: e.target.checked })} />Every month</label>
+          <button onClick={saveItem} style={{ background: C.gold, border: "none", color: "#1A1508", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>Save</button>
+          <button onClick={() => { setItemForm(null); setErr(""); }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
+        </div>
+      )}
+      {err && <div style={{ color: C.rose, fontSize: 12, marginBottom: 8 }}>{err}</div>}
+      <div style={{ display: "grid", gap: 6 }}>
+        {src.payroll && (
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12.5, padding: "8px 12px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10 }}>
+            <span>Payroll <span style={{ color: C.textFaint }}>· automatic, last day of each month, from the {monthLabel(src.payroll.month)} run</span></span>
+            <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: C.rose }}>−{cfMoney(src.payroll.total)}</span>
+          </div>
+        )}
+        {src.items.map((it) => (
+          <div key={it.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, fontSize: 12.5, padding: "8px 12px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10 }}>
+            <span style={{ minWidth: 0, wordBreak: "break-word" }}>{it.label} <span style={{ color: C.textFaint }}>· {it.repeat_monthly ? `every month from ${fmtDate(it.due_date)}` : fmtDate(it.due_date)}</span></span>
+            <span style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+              <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: it.direction === "out" ? C.rose : C.emerald }}>{it.direction === "out" ? "−" : "+"}{cfMoney(it.amount)}</span>
+              <button onClick={() => removeItem(it.id)} title="Remove" style={{ background: "none", border: "none", color: C.textFaint, cursor: "pointer", fontSize: 13 }}>✕</button>
+            </span>
+          </div>
+        ))}
+        {src.items.length === 0 && <div style={{ fontSize: 12, color: C.textFaint }}>Add rent, supplier/factory payments, ad spend and other regular payments so the forecast is complete.</div>}
+      </div>
+    </div>
+  );
+}
+
 // Payments received — a read-only feed of every ABA payment the Telegram bot
 // saves. Nothing to confirm or assign: each payment just shows a hint of whose
 // money it is, worked out from (in order) a bill number in the remark, a name
@@ -7201,6 +7469,7 @@ const NAV = [
     { label: "Reports",       page: "accounting", tab: "reports" },
     { label: "Finance",       page: "accounting", tab: "finance" },
     { label: "Chart of Accounts",      page: "accounting", tab: "accounts" },
+    { label: "Cash Forecast",          page: "cashflow" },
     { label: "Month Close",            page: "close" },
   ]},
   { name: "People", needs: "payroll", items: [
