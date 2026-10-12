@@ -9749,8 +9749,297 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
               Gross profit is before salaries, KOL and ad spend.
             </div>
           </div>
+          <CustomerProfitSection C={C} sbFetch={sbFetch} month={selectedMonth} canEdit={canDeclare} />
         </>
       )}
+    </div>
+  );
+}
+
+// ============================================================================
+// CUSTOMER PROFITABILITY — gross profit per customer for one month, with a
+// price check. Each product line is compared with the price the customer is
+// supposed to pay: their agreed special price (customer_prices) if they have
+// one, otherwise the standard list price. Anything billed below that shows as
+// "below agreed price". Credit Term and Corporate bills only carry a total and
+// box counts, so for them the check compares the bill total with what the
+// boxes should have cost. VAT on tax invoices only ever pushes a bill above,
+// never below, so it cannot cause a false flag.
+// ============================================================================
+const CP_CHANNEL = { online: "Online & COD", credit: "Credit Term", corporate: "Corporate", consignment: "Consignment" };
+const CP_LIST = Object.fromEntries(SKUS.map((x) => [x.code, x.priceOptions[0]]));
+const cpMoney = (n) => `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const cpKey = (s) => String(s || "").trim().toLowerCase();
+
+function CustomerProfitSection({ C, sbFetch, month, canEdit }) {
+  const [src, setSrc] = useState(null);
+  const [sort, setSort] = useState("gp");
+  const [channel, setChannel] = useState("all");
+  const [open, setOpen] = useState(null);
+  const [priceEdit, setPriceEdit] = useState(null); // { customer, prices: {code: str} }
+  const [msg, setMsg] = useState("");
+  const [showAll, setShowAll] = useState(false);
+
+  async function load() {
+    const get = async (q) => { try { return (await sbFetch(q)) || []; } catch (e) { return []; } };
+    const [ci, cs, br, bs, os, oi, vi, st, pc, cp, sm] = await Promise.all([
+      get("credit_invoices?select=store_id,invoice_date,invoice_number,amount,pl_sold,night_sold,day_sold,pant_sold,short_sold"),
+      get("credit_stores?select=id,name,nickname"),
+      get("bigco_reports?select=store_id,report_date,invoice_number,amount,pl_sold,night_sold,day_sold,pant_sold,short_sold"),
+      get("bigco_stores?select=id,name,nickname,parent_id"),
+      get("online_sales?select=id,date,customer_name,amount,bill_no"),
+      get("online_sale_items?select=sale_id,product,qty,price,line_total"),
+      get("visits?select=store_name,date,product,sold"),
+      get("stores?select=name,pl_price,night_price,day_price,pant_price,short_price"),
+      get("product_costs?select=product,cost_per_box"),
+      get("customer_prices?select=*"),
+      get("stock_moves?select=product,qty,reference,move_date&reason=eq.sample"),
+    ]);
+    setSrc({ ci, cs, br, bs, os, oi, vi, st, pc, cp, sm });
+  }
+  useEffect(() => { load(); }, []);
+
+  const data = useMemo(() => {
+    if (!src) return null;
+    const inMonth = (d) => d && monthKey(d) === month;
+    const cost = Object.fromEntries(src.pc.map((p) => [p.product, Number(p.cost_per_box || 0)]));
+    const special = {};
+    src.cp.forEach((p) => { (special[cpKey(p.customer_name)] = special[cpKey(p.customer_name)] || {})[p.product] = Number(p.price); });
+    const expected = (cust, code) => special[cpKey(cust)]?.[code] ?? CP_LIST[code] ?? 0;
+    const rows = {};
+    const row = (channel, name) => {
+      const k = `${channel}|${name}`;
+      return rows[k] || (rows[k] = { key: k, channel, name, special: !!special[cpKey(name)], sales: 0, cogs: 0, boxes: 0, free: 0, freeCost: 0, below: 0, belowBills: new Set(), noPrice: false, products: {} });
+    };
+    const addLine = (r, code, qty, revenue, unitPrice, doc) => {
+      if (!qty) return;
+      const p = r.products[code] || (r.products[code] = { code, qty: 0, revenue: 0, prices: new Set(), expected: expected(r.name, code) });
+      p.qty += qty; p.revenue += revenue; if (unitPrice != null) p.prices.add(Number(unitPrice).toFixed(2));
+      r.boxes += qty; r.sales += revenue; r.cogs += qty * (cost[code] || 0);
+      if (unitPrice != null) {
+        const gap = expected(r.name, code) - Number(unitPrice);
+        if (gap > 0.004) { r.below += gap * qty; if (doc) r.belowBills.add(doc); }
+      }
+    };
+    // Online & COD — real per-line prices.
+    const itemsBy = {}; src.oi.forEach((i) => { (itemsBy[i.sale_id] = itemsBy[i.sale_id] || []).push(i); });
+    const saleById = {};
+    src.os.forEach((s) => {
+      saleById[s.id] = s;
+      if (!inMonth(s.date)) return;
+      const r = row("online", (s.customer_name || "Online customer").trim());
+      const items = itemsBy[s.id] || [];
+      if (!items.length) { r.sales += Number(s.amount || 0); return; }
+      items.forEach((i) => addLine(r, i.product, Number(i.qty || 0), Number(i.line_total || 0), Number(i.price || 0), s.bill_no || `OS${String(s.id).padStart(6, "0")}`));
+    });
+    // Free boxes given with an online order (stock move "sample", ref OS000123).
+    src.sm.forEach((m) => {
+      const id = parseInt(String(m.reference || "").replace(/^OS/, ""), 10);
+      const s = saleById[id]; if (!s || !inMonth(s.date)) return;
+      const r = row("online", (s.customer_name || "Online customer").trim());
+      const q = Math.abs(Number(m.qty || 0)); r.free += q; r.freeCost += q * (cost[m.product] || 0);
+    });
+    // Credit Term & Corporate — total vs what the boxes should cost.
+    const billRows = (bills, stores, channel, dateCol) => {
+      const byId = {}; stores.forEach((s) => { byId[s.id] = s; });
+      bills.forEach((b) => {
+        if (!inMonth(b[dateCol])) return;
+        const st = byId[b.store_id]; if (!st) return;
+        const top = st.parent_id && byId[st.parent_id] ? byId[st.parent_id] : st;
+        const r = row(channel, top.name);
+        const lines = SKUS.map((x) => ({ code: x.code, qty: Number(b[x.soldCol] || 0) })).filter((l) => l.qty > 0);
+        const boxes = lines.reduce((a, l) => a + l.qty, 0);
+        const amount = Number(b.amount || 0);
+        lines.forEach((l) => addLine(r, l.code, l.qty, boxes ? amount * l.qty / boxes : 0, null, null));
+        const should = lines.reduce((a, l) => a + l.qty * expected(top.name, l.code), 0);
+        if (should - amount > 0.5) { r.below += should - amount; r.belowBills.add(String(b.invoice_number || "").trim() || "(no number)"); }
+      });
+    };
+    billRows(src.ci, src.cs, "credit", "invoice_date");
+    billRows(src.br, src.bs, "corporate", "report_date");
+    // Consignment — boxes sold at the store's agreed price.
+    const stByName = {}; src.st.forEach((s) => { stByName[s.name] = s; });
+    const skuByVisit = {}; SKUS.forEach((x) => { skuByVisit[x.visitKey] = x; });
+    src.vi.forEach((v) => {
+      const sold = Number(v.sold || 0); if (!inMonth(v.date) || sold <= 0) return;
+      const sku = skuByVisit[v.product]; if (!sku) return;
+      const r = row("consignment", v.store_name || "Unknown store");
+      const price = Number(stByName[v.store_name]?.[sku.priceCol] || 0);
+      if (!price) r.noPrice = true;
+      addLine(r, sku.code, sold, sold * price, price || null, null);
+    });
+    const list = Object.values(rows).map((r) => ({ ...r, gp: r.sales - r.cogs - r.freeCost, margin: r.sales > 0 ? (r.sales - r.cogs - r.freeCost) / r.sales : 0, belowBills: Array.from(r.belowBills) }));
+    return { list };
+  }, [src, month]);
+
+  if (!data) return <div style={{ padding: 20, color: C.textFaint, fontSize: 13 }}>Loading customer profitability…</div>;
+  const shown = data.list.filter((r) => channel === "all" || r.channel === channel)
+    .sort((a, b) => sort === "name" ? a.name.localeCompare(b.name) : (b[sort] || 0) - (a[sort] || 0));
+  const tot = shown.reduce((a, r) => ({ sales: a.sales + r.sales, gp: a.gp + r.gp, boxes: a.boxes + r.boxes, below: a.below + r.below, free: a.free + r.free }), { sales: 0, gp: 0, boxes: 0, below: 0, free: 0 });
+  // Red only where an agreed price is on file; otherwise it is a to-do to
+  // record that customer's negotiated price, not a finding.
+  const breach = shown.filter((r) => r.special && r.below > 0.5);
+  const unpriced = shown.filter((r) => !r.special && r.below > 0.5);
+  const breachTotal = breach.reduce((a, r) => a + r.below, 0);
+  const noPriceCount = shown.filter((r) => r.noPrice).length;
+  const specialCustomers = Object.entries((src.cp || []).reduce((a, p) => { (a[p.customer_name] = a[p.customer_name] || {})[p.product] = Number(p.price); return a; }, {}));
+
+  async function savePrices() {
+    const cust = priceEdit.customer.trim(); if (!cust) return;
+    const rowsToSave = SKUS.map((x) => ({ customer_name: cust, product: x.code, price: parseFloat(priceEdit.prices[x.code]) }))
+      .filter((r) => !isNaN(r.price) && r.price > 0);
+    if (!rowsToSave.length) { setMsg("Enter at least one price."); return; }
+    try {
+      await sbFetch("customer_prices", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify(rowsToSave.map((r) => ({ ...r, note: "Special price agreed", updated_at: new Date().toISOString() }))) });
+      setPriceEdit(null); setMsg(""); await load();
+    } catch (e) { setMsg("The special price could not be saved."); }
+  }
+
+  const th = { padding: "8px 10px", fontSize: 10.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", cursor: "pointer", whiteSpace: "nowrap", textAlign: "right" };
+  const td = { padding: "9px 10px", borderTop: `1px solid ${C.border}`, fontSize: 12.5, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", whiteSpace: "nowrap" };
+  const sortTh = (k, label, left) => <th onClick={() => setSort(k)} style={{ ...th, textAlign: left ? "left" : "right", color: sort === k ? C.goldBright : C.textFaint }}>{label}{sort === k ? " ▾" : ""}</th>;
+
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px", marginTop: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>Customer profitability — {monthLabel(month)}</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[["all", "All"], ["online", "Online & COD"], ["credit", "Credit Term"], ["corporate", "Corporate"], ["consignment", "Consignment"]].map(([k, l]) => (
+            <button key={k} type="button" onClick={() => setChannel(k)} style={{ background: channel === k ? C.gold : "none", color: channel === k ? "#1A1508" : C.textDim, border: `1px solid ${channel === k ? C.gold : C.border}`, borderRadius: 999, padding: "4px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, marginBottom: 12 }}>
+        {[["Customers", String(shown.length), C.text], ["Gross profit", cpMoney(tot.gp), C.emerald], ["Below agreed price", cpMoney(breachTotal), breachTotal > 0.5 ? C.rose : C.emerald], ["No agreed price on file", String(unpriced.length), unpriced.length ? C.amber : C.emerald]].map(([l, v, col]) => (
+          <div key={l} style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 10, padding: "9px 12px" }}>
+            <div style={{ fontSize: 10, color: C.textFaint, fontWeight: 700, textTransform: "uppercase" }}>{l}</div>
+            <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 16, color: col, marginTop: 2 }}>{v}</div>
+          </div>
+        ))}
+      </div>
+      {breach.length > 0 && (
+        <div style={{ background: C.roseBg, border: `1px solid ${C.rose}55`, color: C.rose, borderRadius: 9, padding: "9px 12px", fontSize: 12, marginBottom: 8, lineHeight: 1.5 }}>
+          <b>{breach.length} customer{breach.length === 1 ? "" : "s"}</b> billed below their agreed price this month ({cpMoney(breachTotal)} in total). Select a customer to see which bills.
+        </div>
+      )}
+      {(unpriced.length > 0 || noPriceCount > 0) && (
+        <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, color: C.amber, borderRadius: 9, padding: "9px 12px", fontSize: 12, marginBottom: 12, lineHeight: 1.5 }}>
+          {unpriced.length > 0 && <div><b>{unpriced.length} customer{unpriced.length === 1 ? "" : "s"}</b> billed below list price with no agreed price on file. If the price was negotiated, record it under Special prices below so future bills are checked against it.</div>}
+          {noPriceCount > 0 && <div><b>{noPriceCount} consignment store{noPriceCount === 1 ? "" : "s"}</b> without a price set — their sales count as $0 until prices are entered in Store Directory.</div>}
+        </div>
+      )}
+
+      <div style={{ overflowX: "auto", margin: "0 -4px" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
+          <thead><tr>
+            {sortTh("name", "Customer", true)}{sortTh("boxes", "Boxes")}{sortTh("sales", "Sales")}{sortTh("gp", "Gross profit")}{sortTh("margin", "Margin")}{sortTh("below", "Below list / agreed")}
+          </tr></thead>
+          <tbody>
+            {shown.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", fontFamily: "inherit", color: C.textFaint, padding: 20 }}>No sales in {monthLabel(month)}.</td></tr>}
+            {(showAll ? shown : shown.slice(0, 15)).map((r) => (
+              <React.Fragment key={r.key}>
+                <tr onClick={() => setOpen(open === r.key ? null : r.key)} style={{ cursor: "pointer" }}>
+                  <td style={{ ...td, textAlign: "left", fontFamily: "inherit", whiteSpace: "normal", minWidth: 180 }}>
+                    <div style={{ fontWeight: 700 }}>{r.name}</div>
+                    <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 2 }}>
+                      {CP_CHANNEL[r.channel]}
+                      {r.special && <span style={{ marginLeft: 6, color: C.goldBright, border: `1px solid ${C.gold}66`, borderRadius: 999, padding: "0 6px" }}>Special price</span>}
+                      {!r.special && r.below > 0.5 && <span style={{ marginLeft: 6, color: C.amber, border: `1px solid ${C.amber}66`, borderRadius: 999, padding: "0 6px" }}>No agreed price on file</span>}
+                      {r.noPrice && <span style={{ marginLeft: 6, color: C.rose, border: `1px solid ${C.rose}66`, borderRadius: 999, padding: "0 6px" }}>No price set</span>}
+                      {r.free > 0 && <span style={{ marginLeft: 6 }}>· {r.free} free</span>}
+                    </div>
+                  </td>
+                  <td style={td}>{r.boxes.toLocaleString()}</td>
+                  <td style={td}>{cpMoney(r.sales)}</td>
+                  <td style={{ ...td, color: r.gp >= 0 ? C.emerald : C.rose, fontWeight: 700 }}>{cpMoney(r.gp)}</td>
+                  <td style={td}>{(r.margin * 100).toFixed(1)}%</td>
+                  <td style={{ ...td, color: r.below > 0.5 ? (r.special ? C.rose : C.amber) : C.textFaint, fontWeight: r.below > 0.5 ? 700 : 400 }}>{r.below > 0.5 ? cpMoney(r.below) : "—"}</td>
+                </tr>
+                {open === r.key && (
+                  <tr><td colSpan={6} style={{ padding: "4px 10px 12px", borderTop: "none" }}>
+                    <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px", fontSize: 12 }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.6fr 1fr 1fr", gap: "4px 10px", color: C.textFaint, fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>
+                        <span>Product</span><span style={{ textAlign: "right" }}>Boxes</span><span style={{ textAlign: "right" }}>Price billed</span><span style={{ textAlign: "right" }}>{r.special ? "Agreed price" : "List price"}</span>
+                      </div>
+                      {Object.values(r.products).map((p) => {
+                        const prices = Array.from(p.prices).map(Number).sort((a, b) => a - b);
+                        const billed = prices.length ? prices.map((x) => `$${x.toFixed(2)}`).join(" / ") : `≈ $${(p.qty ? p.revenue / p.qty : 0).toFixed(2)} avg`;
+                        const low = prices.length ? prices[0] < p.expected - 0.004 : false;
+                        return (
+                          <div key={p.code} style={{ display: "grid", gridTemplateColumns: "1.4fr 0.6fr 1fr 1fr", gap: "4px 10px", padding: "3px 0", fontFamily: "'IBM Plex Mono', monospace" }}>
+                            <span style={{ fontFamily: "inherit" }}>{SKUS.find((x) => x.code === p.code)?.label || p.code}</span>
+                            <span style={{ textAlign: "right" }}>{p.qty}</span>
+                            <span style={{ textAlign: "right", color: low ? C.rose : C.text }}>{billed}</span>
+                            <span style={{ textAlign: "right", color: C.textDim }}>${p.expected.toFixed(2)}</span>
+                          </div>
+                        );
+                      })}
+                      {r.belowBills.length > 0 && <div style={{ marginTop: 8, color: r.special ? C.rose : C.amber }}>{r.special ? "Below agreed price on" : "Below list price on"}: {r.belowBills.join(", ")}</div>}
+                      {!r.special && r.below > 0.5 && canEdit && <button type="button" onClick={(e) => { e.stopPropagation(); setPriceEdit({ customer: r.name, prices: {} }); }} style={{ marginTop: 8, background: "none", border: `1px solid ${C.gold}`, color: C.goldBright, borderRadius: 8, padding: "5px 11px", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>Record agreed price for {r.name}</button>}
+                      {(r.channel === "credit" || r.channel === "corporate") && <div style={{ marginTop: 6, color: C.textFaint, fontSize: 11 }}>Credit Term and Corporate bills record a total, not a price per product, so the check compares each bill total with its boxes at the agreed price.</div>}
+                      {r.free > 0 && <div style={{ marginTop: 6, color: C.textDim }}>{r.free} free boxes given (cost {cpMoney(r.freeCost)}, included in gross profit).</div>}
+                    </div>
+                  </td></tr>
+                )}
+              </React.Fragment>
+            ))}
+          </tbody>
+          {shown.length > 0 && (
+            <tfoot><tr>
+              <td style={{ ...td, textAlign: "left", fontFamily: "inherit", fontWeight: 700 }}>Total</td>
+              <td style={{ ...td, fontWeight: 700 }}>{tot.boxes.toLocaleString()}</td>
+              <td style={{ ...td, fontWeight: 700 }}>{cpMoney(tot.sales)}</td>
+              <td style={{ ...td, fontWeight: 700, color: C.emerald }}>{cpMoney(tot.gp)}</td>
+              <td style={{ ...td, fontWeight: 700 }}>{tot.sales ? ((tot.gp / tot.sales) * 100).toFixed(1) : "0.0"}%</td>
+              <td style={{ ...td, fontWeight: 700, color: C.textFaint }}>{tot.below > 0.5 ? cpMoney(tot.below) : "—"}</td>
+            </tr></tfoot>
+          )}
+        </table>
+      </div>
+      {shown.length > 15 && (
+        <button type="button" onClick={() => setShowAll(!showAll)} style={{ marginTop: 8, background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>
+          {showAll ? "Show top 15" : `Show all ${shown.length} customers`}
+        </button>
+      )}
+      <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 10, lineHeight: 1.5 }}>
+        Gross profit = sales − product cost − cost of free boxes. Delivery, commission, salaries and marketing are not allocated per customer. Consignment is valued at boxes sold × the store's agreed price.
+      </div>
+
+      <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 14, paddingTop: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>Special prices</div>
+          {canEdit && !priceEdit && <button type="button" onClick={() => setPriceEdit({ customer: "", prices: {} })} style={{ background: "none", border: `1px solid ${C.gold}`, color: C.goldBright, borderRadius: 8, padding: "5px 11px", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>+ Add customer</button>}
+        </div>
+        {specialCustomers.length === 0 && <div style={{ fontSize: 12, color: C.textFaint }}>No special prices. Every customer is checked against the list price.</div>}
+        {specialCustomers.map(([cust, prices]) => (
+          <div key={cust} style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "6px 0", borderBottom: `1px solid ${C.border}`, fontSize: 12.5 }}>
+            <b>{cust}</b>
+            <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: C.textDim }}>{SKUS.filter((x) => prices[x.code] != null).map((x) => `${x.label.split(" (")[0]} $${prices[x.code].toFixed(2)}`).join(" · ")}</span>
+            {canEdit && <button type="button" onClick={() => setPriceEdit({ customer: cust, prices: Object.fromEntries(Object.entries(prices).map(([k, v]) => [k, String(v)])) })} style={{ background: "none", border: "none", color: C.goldBright, fontSize: 11.5, cursor: "pointer", textDecoration: "underline" }}>Edit</button>}
+          </div>
+        ))}
+        {priceEdit && (
+          <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 12, marginTop: 10 }}>
+            <input value={priceEdit.customer} onChange={(e) => setPriceEdit({ ...priceEdit, customer: e.target.value })} list="cp-customers" placeholder="Customer name exactly as on bills"
+              style={{ width: "100%", boxSizing: "border-box", background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, marginBottom: 8 }} />
+            <datalist id="cp-customers">{Array.from(new Set(data.list.map((r) => r.name))).sort().map((n) => <option key={n} value={n} />)}</datalist>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8, marginBottom: 8 }}>
+              {SKUS.map((x) => (
+                <label key={x.code} style={{ fontSize: 10.5, color: C.textFaint }}>{x.label} <span style={{ color: C.textFaint }}>(list ${CP_LIST[x.code].toFixed(2)})</span>
+                  <input type="number" step="0.01" value={priceEdit.prices[x.code] || ""} onChange={(e) => setPriceEdit({ ...priceEdit, prices: { ...priceEdit.prices, [x.code]: e.target.value } })}
+                    style={{ width: "100%", boxSizing: "border-box", background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "7px 9px", fontSize: 13, marginTop: 3 }} />
+                </label>
+              ))}
+            </div>
+            {msg && <div style={{ color: C.rose, fontSize: 12, marginBottom: 6 }}>{msg}</div>}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button type="button" onClick={savePrices} style={{ background: C.gold, border: "none", color: "#1A1508", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Save special price</button>
+              <button type="button" onClick={() => { setPriceEdit(null); setMsg(""); }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer" }}>Cancel</button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
