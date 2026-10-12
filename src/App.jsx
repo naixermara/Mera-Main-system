@@ -4878,17 +4878,17 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
     const key = prNorm(r.payer_name);
     for (const b of prBills(`${r.remark || ""} ${r.raw_message || ""}`)) {
       const hit = lookup.byBill[b];
-      if (hit) return { who: hit.who, channel: hit.channel, why: `Remark says ${b}`, sure: true };
+      if (hit) return { who: hit.who, channel: hit.channel, why: `Bill ${b} in payment remark`, sure: true };
     }
     const link = lookup.linkBy[key];
-    if (link) return { who: link.customer, channel: link.channel, why: link.note ? link.note : "You tagged this person", sure: true, tagged: true };
+    if (link) return { who: link.customer, channel: link.channel, why: link.note ? link.note : "Identified payer", sure: true, tagged: true };
     const prev = lookup.assignedBy[key];
-    if (prev) return { who: prev.assigned_note, channel: prev.assigned_type, why: "Same person was assigned here before", sure: false };
+    if (prev) return { who: prev.assigned_note, channel: prev.assigned_type, why: "Matched to previous assignment", sure: false };
     const name = lookup.byName[key];
-    if (name) return { who: name.who, channel: name.channel, why: "Same name as a customer in the app", sure: false };
+    if (name) return { who: name.who, channel: name.channel, why: "Payer name matches customer", sure: false };
     const paidDay = String(r.paid_at || "").slice(0, 10);
     const same = lookup.open.filter((x) => Math.abs(x.owed - Number(r.amount || 0)) < 0.01 && (!x.date || x.date <= paidDay));
-    if (same.length === 1) return { who: same[0].who, channel: same[0].channel, why: `Same amount as unpaid ${same[0].no || "invoice"}`, sure: false };
+    if (same.length === 1) return { who: same[0].who, channel: same[0].channel, why: `Amount matches open invoice ${same[0].no || ""}`.trim(), sure: false };
     return null;
   }
 
@@ -4904,7 +4904,7 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
       } else {
         await sbFetch("payer_links", { method: "POST", body: JSON.stringify(body) });
       }
-      logActivity?.("Tagged payer", t.payer, `→ ${body.customer}`);
+      logActivity?.("Payer identified", t.payer, `→ ${body.customer}`);
       setTagging(null);
       setAsk((a) => { const n = { ...a }; delete n[prNorm(t.payer)]; return n; });
       const l = await sbFetch("payer_links?select=*");
@@ -4954,8 +4954,7 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
   return (
     <div>
       <div style={{ marginBottom: 14 }}>
-        <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: 0 }}>Payments received</h2>
-        <div style={{ fontSize: 12, color: C.textFaint, marginTop: 4 }}>Every ABA payment from the Telegram bot, with a hint of who it belongs to. Nothing to confirm — tag a person once and the app remembers.</div>
+        <div style={{ fontSize: 12, color: C.textFaint }}>All ABA payments received via the Telegram feed, shown by customer. Identify a new payer once; the system applies it to all future payments from that payer.</div>
       </div>
 
       {error && <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, color: C.amber, borderRadius: 9, padding: "10px 14px", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
@@ -4963,21 +4962,21 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
         {tile("Today", fm(todayTotal), `${todayRows.length} payment${todayRows.length === 1 ? "" : "s"}`)}
         {tile(monthLabel(month), fm(total), `${inMonth.length} payment${inMonth.length === 1 ? "" : "s"}`)}
-        {tile("New people", String(unknownCount), unknownCount ? "Type who they are once" : "The app knows everyone")}
+        {tile("Unidentified payers", String(unknownCount), unknownCount ? "Identify once — remembered thereafter" : "All payers identified")}
       </div>
 
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
         <select value={month} onChange={(e) => setMonth(e.target.value)} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "7px 10px", fontSize: 13 }}>
           {months.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
         </select>
-        {[["all", "All"], ["unknown", `New people (${unknownCount})`]].map(([k, l]) => (
+        {[["all", "All"], ["unknown", `Unidentified (${unknownCount})`]].map(([k, l]) => (
           <button key={k} type="button" onClick={() => setFilter(k)} style={{ padding: "7px 12px", fontSize: 12, fontWeight: 700, borderRadius: 8, cursor: "pointer", background: filter === k ? C.gold : "none", color: filter === k ? "#1A1508" : C.textDim, border: `1px solid ${filter === k ? C.gold : C.border}` }}>{l}</button>
         ))}
       </div>
 
       {byDay.length === 0 ? (
         <div style={{ background: C.surface, border: `1px dashed ${C.border}`, borderRadius: 12, padding: 40, textAlign: "center", color: C.textFaint, fontSize: 14 }}>
-          {filter === "unknown" ? "Every payment this month has a hint." : "No payments received this month yet."}
+          {filter === "unknown" ? "All payments this month are identified." : "No payments received this month."}
         </div>
       ) : byDay.map((g) => (
         <div key={g.day} style={{ marginBottom: 16 }}>
@@ -4993,12 +4992,14 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
                 <div key={r.id} style={{ padding: "11px 14px", borderTop: i ? `1px solid ${C.border}` : "none" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
                     <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 13.5, fontWeight: 700, color: C.text, overflowWrap: "anywhere" }}>
-                        {r.payer_name || "Unknown payer"}{tail && <span style={{ color: C.textFaint, fontWeight: 400 }}> ·*{tail}</span>}
+                      <div style={{ fontSize: 13.5, fontWeight: 700, color: h ? C.text : C.amber, overflowWrap: "anywhere" }}>
+                        {h ? h.who : "Unidentified payer"}
+                        {h && h.channel && PR_CHANNEL_LABEL[h.channel] && <span style={{ marginLeft: 6, fontSize: 9.5, fontWeight: 700, color: C.goldBright, background: `${C.gold}22`, borderRadius: 999, padding: "2px 7px", verticalAlign: "middle" }}>{PR_CHANNEL_LABEL[h.channel]}</span>}
+                        {h && !h.sure && <span style={{ marginLeft: 6, fontSize: 9.5, fontWeight: 700, color: C.amber, border: `1px solid ${C.amber}55`, borderRadius: 999, padding: "1px 7px", verticalAlign: "middle" }}>Suggested</span>}
                         {isNew && <span style={{ marginLeft: 6, fontSize: 9.5, fontWeight: 800, color: "#1A1508", background: C.gold, borderRadius: 5, padding: "1px 5px", verticalAlign: "middle" }}>NEW</span>}
                       </div>
-                      <div style={{ fontSize: 11.5, marginTop: 3, color: h ? (h.sure ? C.emerald : C.amber) : C.textFaint, overflowWrap: "anywhere" }}>
-                        {h ? <>→ <b>{h.who}</b>{h.channel && PR_CHANNEL_LABEL[h.channel] ? ` · ${PR_CHANNEL_LABEL[h.channel]}` : ""}{!h.sure && " (probably)"}</> : "→ First time — who is this?"}
+                      <div style={{ fontSize: 11.5, marginTop: 3, color: C.textDim, overflowWrap: "anywhere" }}>
+                        Paid by {r.payer_name || "unknown payer"}{tail && <span style={{ color: C.textFaint }}> ·*{tail}</span>}
                       </div>
                       <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 2, overflowWrap: "anywhere" }}>
                         {new Date(r.paid_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -5010,7 +5011,7 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
                       <div style={{ fontSize: 15, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", color: C.goldBright }}>{fm(r.amount)}</div>
                       {h && <button type="button" onClick={() => setTagging(editing ? null : { rowId: r.id, payer: r.payer_name, customer: h?.tagged ? h.who : "", channel: h?.tagged ? h.channel : (h?.channel || ""), note: "" })}
                         style={{ marginTop: 4, background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 7, padding: "3px 9px", fontSize: 11, cursor: "pointer" }}>
-                        {h?.tagged ? "Change" : "Not right?"}
+                        {h?.tagged ? "Change" : "Correct"}
                       </button>}
                     </div>
                   </div>
@@ -5018,10 +5019,10 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
                     const k = prNorm(r.payer_name); const v = ask[k] || "";
                     return (
                       <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
-                        <span style={{ fontSize: 11.5, color: C.textDim }}>Who is {r.payer_name || "this"}?</span>
+                        <span style={{ fontSize: 11.5, color: C.textDim }}>Which customer is {r.payer_name || "this payer"}?</span>
                         <input list="pr-customers" value={v} onChange={(e) => setAsk({ ...ask, [k]: e.target.value })}
                           onKeyDown={(e) => { if (e.key === "Enter" && v.trim()) saveTag({ payer: r.payer_name, customer: v, channel: "" }); }}
-                          placeholder="Type the store or customer"
+                          placeholder="Store or customer name"
                           style={{ flex: "1 1 160px", minWidth: 0, background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 7, padding: "6px 9px", fontSize: 12.5 }} />
                         <button type="button" disabled={!v.trim()} onClick={() => saveTag({ payer: r.payer_name, customer: v, channel: "" })}
                           style={{ background: C.gold, border: "none", borderRadius: 7, padding: "6px 12px", fontSize: 12, fontWeight: 700, color: "#1A1508", cursor: "pointer", opacity: v.trim() ? 1 : 0.5 }}>Save</button>
@@ -5030,7 +5031,7 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
                   })()}
                   {editing && (
                     <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 12, marginTop: 10 }}>
-                      <div style={{ fontSize: 11.5, color: C.textDim, marginBottom: 8 }}>Every payment from <b>{r.payer_name}</b> will show this customer.</div>
+                      <div style={{ fontSize: 11.5, color: C.textDim, marginBottom: 8 }}>All payments from <b>{r.payer_name}</b> will be assigned to this customer.</div>
                       <input list="pr-customers" value={tagging.customer} onChange={(e) => setTagging({ ...tagging, customer: e.target.value })} placeholder="Store or customer name"
                         style={{ width: "100%", boxSizing: "border-box", background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, marginBottom: 8 }} />
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
@@ -5041,7 +5042,7 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                         <button type="button" onClick={() => saveTag()} disabled={!tagging.customer.trim()} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 700, color: "#1A1508", cursor: "pointer", opacity: tagging.customer.trim() ? 1 : 0.5 }}>Save</button>
                         <button type="button" onClick={() => setTagging(null)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textFaint, borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer" }}>Cancel</button>
-                        {h?.tagged && <button type="button" onClick={() => removeTag(r.payer_name)} style={{ background: "none", border: "none", color: C.textFaint, fontSize: 11.5, cursor: "pointer", textDecoration: "underline" }}>Forget this person</button>}
+                        {h?.tagged && <button type="button" onClick={() => removeTag(r.payer_name)} style={{ background: "none", border: "none", color: C.textFaint, fontSize: 11.5, cursor: "pointer", textDecoration: "underline" }}>Remove link</button>}
                       </div>
                     </div>
                   )}
