@@ -4355,7 +4355,6 @@ function BillNumbersPage({ C, sbFetch, showAmounts }) {
   const cell = { padding: "8px 10px", borderTop: `1px solid ${C.border}`, fontSize: 12.5 };
   return (
     <div>
-      <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: "0 0 4px" }}>Bill Register</h2>
       <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>Complete register of B and INV numbers issued, continuing the BizAdvisor sequence. Entries cannot be deleted; cancelled bills remain listed as VOID with the user and date of cancellation.</div>
       {!started ? (
         <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, color: C.amber, borderRadius: 10, padding: "12px 14px", fontSize: 13, marginBottom: 14 }}>
@@ -4667,7 +4666,6 @@ function MoneyOwedPage({ authUser, C, sbFetch, logActivity }) {
 
   return (
     <div>
-      <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: "0 0 4px" }}>Accounts Receivable</h2>
       <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>Open customer balances and aging as of {fmtDate(today)}. Select a customer to view open invoices, issue a statement of account, or log a collection follow-up.</div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
         {[["all", "All"], ["credit", "Credit Term"], ["corporate", "Corporate"], ["consignment", "Consignment"], ["online", "Online & COD"]].map(([k, l]) => {
