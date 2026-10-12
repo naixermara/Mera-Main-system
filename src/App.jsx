@@ -1567,7 +1567,7 @@ export default function MeraConsignmentApp() {
               </span>
             </div>
             <h1 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 34, margin: "6px 0 0", letterSpacing: "-0.01em" }}>
-              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online & COD Sales" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : "Consignment Operations") : "Consignment Operations"}
+              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online & COD Sales" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : "Consignment Operations") : "Consignment Operations"}
             </h1>
             <div style={{ height: 2, width: 46, background: `linear-gradient(90deg, ${C.gold}, transparent)`, marginTop: 10 }} />
           </div>
@@ -1739,6 +1739,16 @@ export default function MeraConsignmentApp() {
               >
                 Receivables
               </button>
+              <button
+                onClick={() => setSalesSubPage("retention")}
+                style={{
+                  background: "none", border: "none", padding: "6px 2px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginLeft: 14,
+                  color: salesSubPage === "retention" ? C.gold : C.textFaint,
+                  borderBottom: `2px solid ${salesSubPage === "retention" ? C.gold : "transparent"}`,
+                }}
+              >
+                Retention
+              </button>
               {PENDING_PAYMENTS_ENABLED && <button
                 onClick={() => setSalesSubPage("pending")}
                 style={{
@@ -1778,6 +1788,8 @@ export default function MeraConsignmentApp() {
               <OnlineSalesPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             ) : salesSubPage === "payments" ? (
               <PaymentsReceivedPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} onSeen={() => setNewPaymentCount(0)} />
+            ) : salesSubPage === "retention" ? (
+              <CustomerRetentionPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             ) : salesSubPage === "owed" ? (
               <MoneyOwedPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             ) : salesSubPage === "pending" && PENDING_PAYMENTS_ENABLED ? (
@@ -4797,6 +4809,209 @@ function StatementPrintView({ c, today, onClose }) {
   );
 }
 
+// ============================================================================
+// CUSTOMER RETENTION — customers who used to buy and have gone quiet, so staff
+// call them before they are lost. A customer's "usual gap" is the average
+// number of days between their orders; they are flagged once they are well
+// past it. Consignment counts a visit where boxes were sold as a purchase.
+// Follow-up notes share the collection_notes table under a "retention:" key,
+// so they are add-only and show who called whom.
+// ============================================================================
+const RT_CHANNEL = { consignment: "Consignment", credit: "Credit Term", corporate: "Corporate", online: "Online & COD" };
+const rtIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const rtDays = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
+const rtMoney = (n) => `$${Math.round(Number(n || 0)).toLocaleString("en-US")}`;
+
+function CustomerRetentionPage({ authUser, C, sbFetch, logActivity }) {
+  const [src, setSrc] = useState(null);
+  const [notes, setNotes] = useState([]);
+  const [names, setNames] = useState({});
+  const [channel, setChannel] = useState("all");
+  const [openKey, setOpenKey] = useState(null);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [showLost, setShowLost] = useState(false);
+  const [showOnce, setShowOnce] = useState(false);
+  const today = rtIso(new Date());
+
+  useEffect(() => {
+    (async () => {
+      const get = async (q) => { try { return (await sbFetch(q)) || []; } catch (e) { return []; } };
+      const [vi, st, ci, cs, br, bs, os, cn, un] = await Promise.all([
+        get("visits?select=store_name,date,product,sold"),
+        get("stores?select=name,phone,salesperson,pl_price,night_price,day_price,pant_price,short_price"),
+        get("credit_invoices?select=store_id,invoice_date,amount"),
+        get("credit_stores?select=id,name,nickname,phone"),
+        get("bigco_reports?select=store_id,report_date,amount"),
+        get("bigco_stores?select=id,name,nickname,phone,parent_id"),
+        get("online_sales?select=customer_name,date,amount"),
+        get("collection_notes?select=*&customer_key=like.retention:*&order=created_at.desc"),
+        get("user_names?select=*"),
+      ]);
+      setSrc({ vi, st, ci, cs, br, bs, os });
+      setNotes(cn);
+      setNames(Object.fromEntries(un.map((x) => [x.email, x.name])));
+    })();
+  }, []);
+  const who = (email) => !email ? "—" : names[email] || email.split("@")[0];
+
+  const customers = useMemo(() => {
+    if (!src) return [];
+    const map = {};
+    const add = (channel, name, date, amount, extra) => {
+      if (!date || !name) return;
+      const k = `${channel}|${name}`;
+      const c = map[k] || (map[k] = { key: `retention:${k}`, channel, name, dates: new Set(), total: 0, recent: 0, phone: "", nickname: "", rep: "", ...extra });
+      c.dates.add(date); c.total += amount;
+      if (rtDays(date, today) <= 180) c.recent += amount;
+    };
+    const stByName = {}; src.st.forEach((s) => { stByName[s.name] = s; });
+    const skuByVisit = {}; SKUS.forEach((x) => { skuByVisit[x.visitKey] = x; });
+    src.vi.forEach((v) => {
+      const sold = Number(v.sold || 0); if (sold <= 0) return;
+      const s = stByName[v.store_name] || {}; const sku = skuByVisit[v.product];
+      add("consignment", v.store_name, v.date, sku ? sold * Number(s[sku.priceCol] || 0) : 0, { phone: s.phone || "", rep: s.salesperson || "" });
+    });
+    const cById = {}; src.cs.forEach((s) => { cById[s.id] = s; });
+    src.ci.forEach((i) => { const s = cById[i.store_id]; if (s) add("credit", s.name, i.invoice_date, Number(i.amount || 0), { phone: s.phone || "", nickname: s.nickname || "" }); });
+    const bById = {}; src.bs.forEach((s) => { bById[s.id] = s; });
+    src.br.forEach((r) => { const b = bById[r.store_id]; if (!b) return; const top = b.parent_id && bById[b.parent_id] ? bById[b.parent_id] : b; add("corporate", top.name, r.report_date, Number(r.amount || 0), { phone: top.phone || "", nickname: top.nickname || "" }); });
+    src.os.forEach((s) => add("online", (s.customer_name || "").trim(), s.date, Number(s.amount || 0), {}));
+    const notesBy = {}; notes.forEach((n) => { (notesBy[n.customer_key] = notesBy[n.customer_key] || []).push(n); });
+    return Object.values(map).map((c) => {
+      const d = Array.from(c.dates).sort();
+      const last = d[d.length - 1]; const gap = rtDays(last, today);
+      const avgGap = d.length > 1 ? Math.round(rtDays(d[0], last) / (d.length - 1)) : null;
+      // Expected back by: their own rhythm, but never sooner than 30 days.
+      const expected = Math.max(30, avgGap ? Math.round(avgGap * 1.5) : 30);
+      const status = gap <= expected ? "active" : gap <= 60 ? "risk" : gap <= 90 ? "lapsed" : "lost";
+      const hist = notesBy[c.key] || [];
+      return { ...c, orders: d.length, first: d[0], last, gap, avgGap, expected, status, hist };
+    });
+  }, [src, notes, today]);
+
+  if (!src) return <div style={{ padding: 40, color: C.textFaint }}>Loading…</div>;
+
+  const shown = customers.filter((c) => channel === "all" || c.channel === channel);
+  // Regular customers (2+ orders) who stopped are the priority. Someone who
+  // bought once never became a regular, so they get their own list.
+  const sortV = (a, b) => b.recent - a.recent || b.orders - a.orders || a.gap - b.gap;
+  const by = (s) => shown.filter((c) => c.orders >= 2 && c.status === s).sort(sortV);
+  const risk = by("risk"), lapsed = by("lapsed"), lost = by("lost");
+  const once = shown.filter((c) => c.orders === 1 && c.gap > 30 && c.gap <= 180).sort(sortV);
+  const active = shown.filter((c) => c.status === "active").length;
+  const valueAt = (list) => list.reduce((a, c) => a + (c.recent / 6), 0); // average monthly value over last 6 months
+
+  async function addNote(c) {
+    if (!draft.trim()) return;
+    setSaving(true);
+    try {
+      const [row] = await sbFetch("collection_notes", { method: "POST", headers: { Prefer: "return=representation" },
+        body: JSON.stringify({ customer_key: c.key, customer_name: c.name, channel: c.channel, note: draft.trim() }) });
+      setNotes((p) => [row || { customer_key: c.key, note: draft.trim(), created_by: authUser?.email, created_at: new Date().toISOString() }, ...p]);
+      if (logActivity) logActivity("Customer follow-up logged", c.name, draft.trim());
+      setDraft("");
+    } catch (e) { /* keep the draft so nothing is lost */ }
+    setSaving(false);
+  }
+
+  const tile = (label, value, sub, color) => (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "11px 14px", flex: "1 1 140px", minWidth: 0 }}>
+      <div style={{ fontSize: 10.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontSize: 21, fontWeight: 700, color: color || C.text, fontFamily: "'IBM Plex Mono', monospace", marginTop: 2 }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: C.textFaint, marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+  const badge = { risk: [C.amber, "At risk"], lapsed: [C.rose, "Lapsed"], lost: [C.textFaint, "Lost"], active: [C.textDim, "No reorder"] };
+
+  const card = (c) => {
+    const open = openKey === c.key; const last = c.hist[0]; const [col, lbl] = c.orders === 1 ? [C.textDim, "No reorder"] : badge[c.status];
+    return (
+      <div key={c.key} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12 }}>
+        <div onClick={() => { setOpenKey(open ? null : c.key); setDraft(""); }} style={{ padding: "11px 14px", cursor: "pointer" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, wordBreak: "break-word" }}>{c.name}{c.nickname ? <span style={{ color: C.textFaint, fontWeight: 400 }}> · {c.nickname}</span> : null}</div>
+              <div style={{ fontSize: 11.5, color: C.textFaint, marginTop: 2 }}>
+                {RT_CHANNEL[c.channel]} · {c.orders} order{c.orders === 1 ? "" : "s"}{c.avgGap >= 7 ? ` · usually every ${c.avgGap} days` : ""}{c.rep ? ` · ${c.rep}` : ""}
+                {c.phone ? " · " : ""}{c.phone && <a href={`tel:${c.phone}`} onClick={(e) => e.stopPropagation()} style={{ color: C.goldBright }}>{c.phone}</a>}
+              </div>
+            </div>
+            <div style={{ textAlign: "right", flexShrink: 0 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: col }}>{lbl} · {c.gap} days</div>
+              <div style={{ fontSize: 11, color: C.textFaint }}>last order {fmtDate(c.last)}</div>
+            </div>
+          </div>
+          {last && <div style={{ fontSize: 12, marginTop: 6, color: C.textDim }}>“{last.note}” <span style={{ color: C.textFaint }}>— {who(last.created_by)}, {fmtDate(String(last.created_at).slice(0, 10))}</span></div>}
+        </div>
+        {open && (
+          <div style={{ borderTop: `1px solid ${C.border}`, padding: "10px 14px 14px" }}>
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12, color: C.textDim, marginBottom: 10 }}>
+              <span>First order: <b>{fmtDate(c.first)}</b></span>
+              <span>Sales, last 6 months: <b style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{rtMoney(c.recent)}</b></span>
+              <span>All-time: <b style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{rtMoney(c.total)}</b></span>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+              <input value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addNote(c); }} placeholder="e.g. Called — still has stock, reorder next week"
+                style={{ flex: "1 1 220px", minWidth: 0, background: C.bg, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
+              <button disabled={saving || !draft.trim()} onClick={() => addNote(c)} style={{ background: C.surface, color: C.goldBright, border: `1px solid ${C.gold}`, borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", opacity: saving || !draft.trim() ? 0.5 : 1 }}>Log follow-up</button>
+            </div>
+            {c.hist.map((n, i) => (
+              <div key={n.id || i} style={{ fontSize: 12, marginTop: 3 }}><span style={{ color: C.textFaint }}>{fmtDate(String(n.created_at).slice(0, 10))} · {who(n.created_by)}:</span> {n.note}</div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+  const section = (title, sub, list) => list.length > 0 && (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+        <div style={{ fontWeight: 700, fontSize: 14 }}>{title} ({list.length})</div>
+        <div style={{ fontSize: 12, color: C.textFaint }}>{sub}</div>
+      </div>
+      <div style={{ display: "grid", gap: 8 }}>{list.map(card)}</div>
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>Customers who used to buy and have gone quiet, ordered by how much they used to buy. Call them before they are lost, and log each call.</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+        {[["all", "All"], ["consignment", "Consignment"], ["credit", "Credit Term"], ["corporate", "Corporate"], ["online", "Online & COD"]].map(([k, l]) => (
+          <button key={k} onClick={() => setChannel(k)} style={{ background: channel === k ? C.gold : C.surface, color: channel === k ? "#1A1508" : C.textFaint, border: `1px solid ${channel === k ? C.gold : C.border}`, borderRadius: 999, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>{l}</button>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 18 }}>
+        {tile("Active", String(active), "ordered recently", C.emerald)}
+        {tile("At risk", String(risk.length), `regulars · ~${rtMoney(valueAt(risk))}/month in usual sales`, C.amber)}
+        {tile("Lapsed", String(lapsed.length), `regulars · 61–90 days · ~${rtMoney(valueAt(lapsed))}/month`, C.rose)}
+        {tile("Bought once", String(once.length), "never reordered (last 6 months)")}
+        {tile("Lost", String(lost.length), "regulars · no order for 3+ months")}
+      </div>
+      {section("At risk — call this week", "regular customers overdue on their usual ordering rhythm, up to 60 days", risk)}
+      {section("Lapsed — win back", "regular customers with no order for 61–90 days", lapsed)}
+      {once.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <button onClick={() => setShowOnce(!showOnce)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer", marginBottom: 10, marginRight: 8 }}>
+            {showOnce ? "Hide" : "Show"} customers who bought once ({once.length})
+          </button>
+          {showOnce && section("Bought once — never reordered", "first order 1–6 months ago, no second order yet", once)}
+        </div>
+      )}
+      {lost.length > 0 && (
+        <div>
+          <button onClick={() => setShowLost(!showLost)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer", marginBottom: 10 }}>
+            {showLost ? "Hide" : "Show"} lost customers ({lost.length})
+          </button>
+          {showLost && section("Lost", "no order for more than 3 months", lost)}
+        </div>
+      )}
+      {risk.length + lapsed.length === 0 && <div style={{ padding: 30, textAlign: "center", color: C.textFaint }}>Every regular customer is ordering on their usual rhythm.</div>}
+    </div>
+  );
+}
+
 // Payments received — a read-only feed of every ABA payment the Telegram bot
 // saves. Nothing to confirm or assign: each payment just shows a hint of whose
 // money it is, worked out from (in order) a bill number in the remark, a name
@@ -6808,6 +7023,7 @@ const NAV = [
     { label: "Online & COD",       page: "sales", sub: "online" },
     { label: "Payments Received",  page: "sales", sub: "payments" },
     { label: "Accounts Receivable",         page: "sales", sub: "owed" },
+    { label: "Customer Retention",          page: "sales", sub: "retention" },
     ...(PENDING_PAYMENTS_ENABLED ? [{ label: "Pending Payments",   page: "sales", sub: "pending" }] : []),
     { label: "Province Coverage",  page: "sales", sub: "coverage" },
     { label: "Store Directory",             page: "stores" },
@@ -9400,7 +9616,8 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
 
     // Corporate and credit revenue is the invoiced amount, which is not split by
     // product, so it is reported as one figure rather than guessed per line.
-    const corpRevenue = monthReports.reduce((a, r) => a + Number(r.amount || 0), 0);
+    // Rebates a chain deducts when paying reduce what the sale was really worth.
+    const corpRevenue = monthReports.reduce((a, r) => a + Number(r.amount || 0) - Number(r.rebate || 0), 0);
     const creditRevenue = monthInvoices.reduce((a, i) => a + Number(i.amount || 0), 0);
     const consignRevenue = lines.reduce((a, l) => a + l.consignRevenue, 0);
 
@@ -9785,7 +10002,7 @@ function CustomerProfitSection({ C, sbFetch, month, canEdit }) {
     const [ci, cs, br, bs, os, oi, vi, st, pc, cp, sm] = await Promise.all([
       get("credit_invoices?select=store_id,invoice_date,invoice_number,amount,pl_sold,night_sold,day_sold,pant_sold,short_sold"),
       get("credit_stores?select=id,name,nickname"),
-      get("bigco_reports?select=store_id,report_date,invoice_number,amount,pl_sold,night_sold,day_sold,pant_sold,short_sold"),
+      get("bigco_reports?select=store_id,report_date,invoice_number,amount,rebate,pl_sold,night_sold,day_sold,pant_sold,short_sold"),
       get("bigco_stores?select=id,name,nickname,parent_id"),
       get("online_sales?select=id,date,customer_name,amount,bill_no"),
       get("online_sale_items?select=sale_id,product,qty,price,line_total"),
@@ -9809,7 +10026,7 @@ function CustomerProfitSection({ C, sbFetch, month, canEdit }) {
     const rows = {};
     const row = (channel, name) => {
       const k = `${channel}|${name}`;
-      return rows[k] || (rows[k] = { key: k, channel, name, special: !!special[cpKey(name)], sales: 0, cogs: 0, boxes: 0, free: 0, freeCost: 0, below: 0, belowBills: new Set(), noPrice: false, products: {} });
+      return rows[k] || (rows[k] = { key: k, channel, name, special: !!special[cpKey(name)], sales: 0, cogs: 0, boxes: 0, free: 0, freeCost: 0, rebate: 0, below: 0, belowBills: new Set(), noPrice: false, products: {} });
     };
     const addLine = (r, code, qty, revenue, unitPrice, doc) => {
       if (!qty) return;
@@ -9850,6 +10067,7 @@ function CustomerProfitSection({ C, sbFetch, month, canEdit }) {
         const lines = SKUS.map((x) => ({ code: x.code, qty: Number(b[x.soldCol] || 0) })).filter((l) => l.qty > 0);
         const boxes = lines.reduce((a, l) => a + l.qty, 0);
         const amount = Number(b.amount || 0);
+        r.rebate += Number(b.rebate || 0);
         lines.forEach((l) => addLine(r, l.code, l.qty, boxes ? amount * l.qty / boxes : 0, null, null));
         const should = lines.reduce((a, l) => a + l.qty * expected(top.name, l.code), 0);
         if (should - amount > 0.5) { r.below += should - amount; r.belowBills.add(String(b.invoice_number || "").trim() || "(no number)"); }
@@ -9868,7 +10086,7 @@ function CustomerProfitSection({ C, sbFetch, month, canEdit }) {
       if (!price) r.noPrice = true;
       addLine(r, sku.code, sold, sold * price, price || null, null);
     });
-    const list = Object.values(rows).map((r) => ({ ...r, gp: r.sales - r.cogs - r.freeCost, margin: r.sales > 0 ? (r.sales - r.cogs - r.freeCost) / r.sales : 0, belowBills: Array.from(r.belowBills) }));
+    const list = Object.values(rows).map((r) => ({ ...r, gp: r.sales - r.cogs - r.freeCost - r.rebate, margin: r.sales > 0 ? (r.sales - r.cogs - r.freeCost - r.rebate) / r.sales : 0, belowBills: Array.from(r.belowBills) }));
     return { list };
   }, [src, month]);
 
@@ -9978,6 +10196,7 @@ function CustomerProfitSection({ C, sbFetch, month, canEdit }) {
                       {r.belowBills.length > 0 && <div style={{ marginTop: 8, color: r.special ? C.rose : C.amber }}>{r.special ? "Below agreed price on" : "Below list price on"}: {r.belowBills.join(", ")}</div>}
                       {!r.special && r.below > 0.5 && canEdit && <button type="button" onClick={(e) => { e.stopPropagation(); setPriceEdit({ customer: r.name, prices: {} }); }} style={{ marginTop: 8, background: "none", border: `1px solid ${C.gold}`, color: C.goldBright, borderRadius: 8, padding: "5px 11px", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>Record agreed price for {r.name}</button>}
                       {(r.channel === "credit" || r.channel === "corporate") && <div style={{ marginTop: 6, color: C.textFaint, fontSize: 11 }}>Credit Term and Corporate bills record a total, not a price per product, so the check compares each bill total with its boxes at the agreed price.</div>}
+                      {r.rebate > 0 && <div style={{ marginTop: 6, color: C.amber }}>Rebate deducted by customer at payment: {cpMoney(r.rebate)} (taken off gross profit).</div>}
                       {r.free > 0 && <div style={{ marginTop: 6, color: C.textDim }}>{r.free} free boxes given (cost {cpMoney(r.freeCost)}, included in gross profit).</div>}
                     </div>
                   </td></tr>
@@ -10003,7 +10222,7 @@ function CustomerProfitSection({ C, sbFetch, month, canEdit }) {
         </button>
       )}
       <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 10, lineHeight: 1.5 }}>
-        Gross profit = sales − product cost − cost of free boxes. Delivery, commission, salaries and marketing are not allocated per customer. Consignment is valued at boxes sold × the store's agreed price.
+        Gross profit = sales − product cost − cost of free boxes − rebates deducted by the customer. Delivery, commission, salaries and marketing are not allocated per customer. Consignment is valued at boxes sold × the store's agreed price.
       </div>
 
       <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 14, paddingTop: 12 }}>
@@ -10105,11 +10324,11 @@ function SalesTotalPage({ authUser, C, sbFetch, onNavigate }) {
     const bigcoName = {};
     bigcoStores.forEach((s) => { bigcoName[s.id] = s.name; });
     const monthReports = bigcoReports.filter((r) => monthKey(r.report_date) === selectedMonth);
-    const corporateCollected = monthReports.reduce((a, r) => a + Number(r.paid || 0), 0);
+    const corporateCollected = monthReports.reduce((a, r) => a + Number(r.paid || 0) - Number(r.rebate || 0), 0);
     const corporateBilled = monthReports.reduce((a, r) => a + Number(r.amount || 0), 0);
     const corporateRows = {};
     monthReports.forEach((r) => {
-      const paid = Number(r.paid || 0);
+      const paid = Number(r.paid || 0) - Number(r.rebate || 0);
       if (paid <= 0) return;
       const name = bigcoName[r.store_id] || "Unknown store";
       corporateRows[name] = (corporateRows[name] || 0) + paid;
@@ -10859,7 +11078,7 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
 
     const monthReports = bigcoReports.filter((r) => monthKey(r.report_date) === selectedMonth);
     const corporateBilled = monthReports.reduce((a, r) => a + Number(r.amount || 0), 0);
-    const corporateCollected = monthReports.reduce((a, r) => a + Number(r.paid || 0), 0);
+    const corporateCollected = monthReports.reduce((a, r) => a + Number(r.paid || 0) - Number(r.rebate || 0), 0);
 
     const adSpend = adRows.filter((r) => r.month === selectedMonth).reduce((a, r) => a + Number(r.amount || 0), 0);
 
@@ -11026,6 +11245,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
           parentId: s.parent_id || null,
           paymentDay: s.payment_day || null,
           paymentNote: s.payment_note || "",
+          rebatePct: s.rebate_pct != null ? Number(s.rebate_pct) : null,
           reports: reportRows
             .filter((r) => r.store_id === s.id)
             .map((r) => ({
@@ -11037,6 +11257,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
               daySold: Number(r.day_sold || 0),
               amount: Number(r.amount || 0),
               paid: Number(r.paid || 0),
+              rebate: Number(r.rebate || 0),
               notes: r.notes || "",
             })),
         }));
@@ -11104,9 +11325,9 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
     try {
       await sbFetch(`bigco_stores?id=eq.${storeId}`, {
         method: "PATCH",
-        body: JSON.stringify({ name: changes.name, nickname: changes.nickname || null, notes: changes.notes, parent_id: changes.parentId ?? null, payment_day: changes.paymentDay ?? null, payment_note: changes.paymentNote ?? "" }),
+        body: JSON.stringify({ name: changes.name, nickname: changes.nickname || null, notes: changes.notes, parent_id: changes.parentId ?? null, payment_day: changes.paymentDay ?? null, payment_note: changes.paymentNote ?? "", rebate_pct: changes.rebatePct ?? null }),
       });
-      setStores((prev) => prev.map((s) => (s.id === storeId ? { ...s, name: changes.name, nickname: changes.nickname || "", notes: changes.notes, parentId: changes.parentId ?? null, paymentDay: changes.paymentDay ?? null, paymentNote: changes.paymentNote ?? "" } : s)));
+      setStores((prev) => prev.map((s) => (s.id === storeId ? { ...s, name: changes.name, nickname: changes.nickname || "", notes: changes.notes, parentId: changes.parentId ?? null, paymentDay: changes.paymentDay ?? null, paymentNote: changes.paymentNote ?? "", rebatePct: changes.rebatePct ?? null } : s)));
       setSaveError(false);
       return true;
     } catch (e) {
@@ -11206,6 +11427,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
           day_sold: changes.daySold,
           amount: changes.amount,
           paid: changes.paid,
+          rebate: changes.rebate || 0,
           notes: changes.notes,
         }),
       });
@@ -11247,11 +11469,15 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
       const s = { ...sRaw, reports: sRaw.reports || [] };
       const monthReports = s.reports.filter((r) => monthKey(r.reportDate) === selectedMonth);
       const monthBilled = monthReports.reduce((a, r) => a + r.amount, 0);
-      const monthCollected = monthReports.reduce((a, r) => a + r.paid, 0);
-      const monthOwed = Math.max(0, monthBilled - monthCollected);
+      // "paid" settles the bill (cash + any rebate the chain deducted);
+      // "collected" is the cash that actually arrived.
+      const monthSettled = monthReports.reduce((a, r) => a + r.paid, 0);
+      const monthCollected = monthReports.reduce((a, r) => a + r.paid - (r.rebate || 0), 0);
+      const monthOwed = Math.max(0, monthBilled - monthSettled);
       const allTimeBilled = s.reports.reduce((a, r) => a + r.amount, 0);
-      const allTimeCollected = s.reports.reduce((a, r) => a + r.paid, 0);
-      const outstanding = Math.max(0, allTimeBilled - allTimeCollected);
+      const allTimeSettled = s.reports.reduce((a, r) => a + r.paid, 0);
+      const allTimeCollected = s.reports.reduce((a, r) => a + r.paid - (r.rebate || 0), 0);
+      const outstanding = Math.max(0, allTimeBilled - allTimeSettled);
       // Complete = every report fully paid, with at least one report logged. Once complete, the
       // store "belongs" to whichever month its last report was dated, so it's still findable there.
       const isComplete = s.reports.length > 0 && outstanding === 0;
@@ -11708,7 +11934,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
                       onClick={(e) => {
                         e.stopPropagation();
                         if (editingStore !== s.id) {
-                          setEditStoreForm({ name: s.name, nickname: s.nickname || "", notes: s.notes, parentId: s.parentId || "", paymentDay: s.paymentDay || "", paymentNote: s.paymentNote || "" });
+                          setEditStoreForm({ name: s.name, nickname: s.nickname || "", notes: s.notes, parentId: s.parentId || "", paymentDay: s.paymentDay || "", paymentNote: s.paymentNote || "", rebatePct: s.rebatePct != null ? String(s.rebatePct) : "" });
                         }
                         setEditingStore(editingStore === s.id ? null : s.id);
                       }}
@@ -11785,6 +12011,10 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
                             <label style={{ fontSize: 9, color: C.textFaint }}>Usual pay day (1–31)</label>
                             <input type="number" min="1" max="31" value={editStoreForm.paymentDay} onChange={(e) => setEditStoreForm({ ...editStoreForm, paymentDay: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} placeholder="e.g. 25" />
                           </div>
+                          <div style={{ width: 110 }}>
+                            <label style={{ fontSize: 9, color: C.textFaint }}>Rebate deducted (%)</label>
+                            <input type="number" min="0" max="20" step="0.1" value={editStoreForm.rebatePct || ""} onChange={(e) => setEditStoreForm({ ...editStoreForm, rebatePct: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} placeholder="e.g. 2" />
+                          </div>
                           <div style={{ flex: 1 }}>
                             <label style={{ fontSize: 9, color: C.textFaint }}>Payment note (optional)</label>
                             <input type="text" value={editStoreForm.paymentNote} onChange={(e) => setEditStoreForm({ ...editStoreForm, paymentNote: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} placeholder="e.g. pays via bank transfer, contact: ..." />
@@ -11803,6 +12033,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
                             name: editStoreForm.name, nickname: (editStoreForm.nickname || "").trim(), notes: editStoreForm.notes, parentId: editStoreForm.parentId || null,
                             paymentDay: editStoreForm.paymentDay ? parseInt(editStoreForm.paymentDay, 10) : null,
                             paymentNote: editStoreForm.paymentNote,
+                            rebatePct: editStoreForm.rebatePct !== "" && editStoreForm.rebatePct != null && !isNaN(parseFloat(editStoreForm.rebatePct)) ? parseFloat(editStoreForm.rebatePct) : null,
                           });
                           if (ok) setEditingStore(null);
                         }}
@@ -11937,10 +12168,29 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
                                   <input type="number" step="0.01" value={editReportForm.amount} onChange={(e) => setEditReportForm({ ...editReportForm, amount: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
                                 </div>
                                 <div>
-                                  <label style={{ fontSize: 9, color: C.textFaint }}>Paid $</label>
+                                  <label style={{ fontSize: 9, color: C.textFaint }}>Cash received $</label>
                                   <input type="number" step="0.01" value={editReportForm.paid} onChange={(e) => setEditReportForm({ ...editReportForm, paid: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
                                 </div>
                               </div>
+                              {(() => {
+                                const acct = s.parentId ? (enrichedStores.find((x) => x.id === s.parentId) || s) : s;
+                                const pct = acct.rebatePct;
+                                const amt = parseFloat(editReportForm.amount) || 0;
+                                return (
+                                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 8, alignItems: "end" }}>
+                                    <div>
+                                      <label style={{ fontSize: 9, color: C.textFaint }}>Deducted by customer (rebate) $</label>
+                                      <input type="number" step="0.01" value={editReportForm.rebate} onChange={(e) => setEditReportForm({ ...editReportForm, rebate: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} placeholder="0.00" />
+                                    </div>
+                                    {pct ? (
+                                      <button type="button" onClick={() => { const rb = Math.round(amt * pct) / 100; setEditReportForm({ ...editReportForm, rebate: rb.toFixed(2), paid: (Math.round((amt - rb) * 100) / 100).toFixed(2) }); }}
+                                        style={{ background: "none", border: `1px solid ${C.gold}`, color: C.goldBright, borderRadius: 6, padding: "6px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                                        Paid in full less {pct}% rebate
+                                      </button>
+                                    ) : <div style={{ fontSize: 9.5, color: C.textFaint }}>Set the account's usual rebate % to fill this in one tap.</div>}
+                                  </div>
+                                );
+                              })()}
                               <div style={{ marginBottom: 8 }}>
                                 <label style={{ fontSize: 9, color: C.textFaint }}>Notes</label>
                                 <input type="text" value={editReportForm.notes} onChange={(e) => setEditReportForm({ ...editReportForm, notes: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
@@ -11955,7 +12205,9 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
                                       nightSold: parseFloat(editReportForm.nightSold) || 0,
                                       daySold: parseFloat(editReportForm.daySold) || 0,
                                       amount: parseFloat(editReportForm.amount) || 0,
-                                      paid: parseFloat(editReportForm.paid) || 0,
+                                      // "Paid" settles the bill: cash received plus what the customer deducted.
+                                      paid: Math.round(((parseFloat(editReportForm.paid) || 0) + (parseFloat(editReportForm.rebate) || 0)) * 100) / 100,
+                                      rebate: parseFloat(editReportForm.rebate) || 0,
                                       notes: editReportForm.notes,
                                     });
                                     if (ok) setEditingReportId(null);
@@ -11975,7 +12227,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
                             <div
                               style={{ fontSize: 11, color: C.textDim, cursor: "pointer", flex: 1 }}
                               onClick={() => {
-                                setEditReportForm({ reportDate: r.reportDate, invoiceNumber: r.invoiceNumber, plSold: r.plSold, nightSold: r.nightSold, daySold: r.daySold, amount: r.amount, paid: r.paid, notes: r.notes });
+                                setEditReportForm({ reportDate: r.reportDate, invoiceNumber: r.invoiceNumber, plSold: r.plSold, nightSold: r.nightSold, daySold: r.daySold, amount: r.amount, paid: Math.round(((r.paid || 0) - (r.rebate || 0)) * 100) / 100, rebate: r.rebate || "", notes: r.notes });
                                 setEditingReportId(r.id);
                               }}
                             >
@@ -11985,7 +12237,8 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
                               </div>
                               <div style={{ marginTop: 2 }}>
                                 <span>${r.amount.toLocaleString("en-US", MONEY2)} billed</span>
-                                {r.paid > 0 && <span style={{ color: C.emerald }}> · ${r.paid.toLocaleString("en-US", MONEY2)} paid</span>}
+                                {r.paid - (r.rebate || 0) > 0 && <span style={{ color: C.emerald }}> · ${(r.paid - (r.rebate || 0)).toLocaleString("en-US", MONEY2)} received</span>}
+                                {r.rebate > 0 && <span style={{ color: C.amber }}> · ${r.rebate.toLocaleString("en-US", MONEY2)} rebate deducted</span>}
                                 {remaining > 0 && <span style={{ color: C.rose }}> · ${remaining.toLocaleString("en-US", MONEY2)} remaining</span>}
                               </div>
                               {(r.plSold > 0 || r.nightSold > 0 || r.daySold > 0) && (
