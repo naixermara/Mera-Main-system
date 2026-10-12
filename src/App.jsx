@@ -1121,7 +1121,7 @@ export default function MeraConsignmentApp() {
     }
   }
 
-  // "+ New delivery note" on a store. Hands the store over to Delivery & Invoices
+  // "+ New delivery note" on a store. Hands the store over to Orders & Billing
   // so
   // the restock is recorded the way every other shipment is — as a delivery
   // note the store can sign — rather than as a number typed over the old one.
@@ -1567,7 +1567,7 @@ export default function MeraConsignmentApp() {
               </span>
             </div>
             <h1 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 34, margin: "6px 0 0", letterSpacing: "-0.01em" }}>
-              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? "Delivery & Invoices" : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online & COD Sales" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : "Consignment Operations") : "Consignment Operations"}
+              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online & COD Sales" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : "Consignment Operations") : "Consignment Operations"}
             </h1>
             <div style={{ height: 2, width: 46, background: `linear-gradient(90deg, ${C.gold}, transparent)`, marginTop: 10 }} />
           </div>
@@ -6817,7 +6817,7 @@ const NAV = [
     { label: "Stock on Hand",       page: "delivery", tab: "stock" },
     { label: "Products & Barcodes", page: "delivery", tab: "products" },
   ]},
-  { name: "Documents", items: [
+  { name: "Orders & Billing", items: [
     { label: "Delivery Notes", page: "delivery", tab: "notes" },
     { label: "Invoices",       page: "delivery", tab: "invoices" },
     { label: "Bill Register",   page: "bills" },
@@ -12311,7 +12311,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 22, marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
         <div>
-          <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: 0 }}>Delivery &amp; Invoices</h2>
+          <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: 0 }}>Delivery Notes &amp; Invoices</h2>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           {selectMode && selectedKeys.size > 0 && (
