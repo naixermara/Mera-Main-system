@@ -1655,9 +1655,7 @@ export default function MeraConsignmentApp() {
             ? <ProfitPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to profit figures.</div>
         ) : page === "bills" ? (
-          canSeeAccounting
-            ? <BillNumbersPage C={C} sbFetch={sbFetch} />
-            : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to this page.</div>
+          <BillNumbersPage C={C} sbFetch={sbFetch} showAmounts={canSeeAccounting} />
         ) : page === "payroll" ? (
           canSeePayroll
             ? <PayrollPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
@@ -4241,21 +4239,30 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
 // Bill numbers — every B / INV number the app has issued, in order, with
 // cancelled ones kept as VOID. This is the list the accountant checks for
 // gaps; nothing here can be edited or deleted.
-function BillNumbersPage({ C, sbFetch }) {
+function BillNumbersPage({ C, sbFetch, showAmounts }) {
   const [rows, setRows] = useState(null);
   const [counters, setCounters] = useState([]);
   const [month, setMonth] = useState(currentMonthKey());
+  const [names, setNames] = useState({});
   useEffect(() => {
     (async () => {
       try {
+        // Amounts come back empty for staff — the database decides, not the app.
         const [r, c] = await Promise.all([
-          sbFetch("bill_numbers?select=*&order=series.asc,seq.desc"),
-          sbFetch("document_counters?select=*&series_key=in.(bill-B,bill-INV)"),
+          sbFetch("rpc/list_bill_numbers", { method: "POST", body: "{}" }),
+          sbFetch("document_counters?select=*&series_key=in.(bill-B,bill-INV)").catch(() => []),
         ]);
         setRows(r || []); setCounters(c || []);
       } catch (e) { setRows([]); }
+      try {
+        const n = await sbFetch("user_names?select=*");
+        setNames(Object.fromEntries((n || []).map((x) => [x.email, x.name])));
+      } catch (e) { /* names optional */ }
     })();
   }, []);
+  const [narrow, setNarrow] = useState(typeof window !== "undefined" && window.innerWidth < 640);
+  useEffect(() => { const f = () => setNarrow(window.innerWidth < 640); window.addEventListener("resize", f); return () => window.removeEventListener("resize", f); }, []);
+  const who = (email) => !email ? "—" : names[email] || (email === "unknown" ? "Unknown" : email.split("@")[0]);
   if (!rows) return <div style={{ padding: 40, color: C.textFaint }}>Loading…</div>;
   const started = counters.length > 0;
   const next = (k) => { const c = counters.find((x) => x.series_key === `bill-${k}`); return c ? `${k}${String(c.next_number).padStart(7, "0")}` : "—"; };
@@ -4265,7 +4272,7 @@ function BillNumbersPage({ C, sbFetch }) {
   return (
     <div>
       <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: "0 0 4px" }}>Bill numbers</h2>
-      <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>Every B and INV number the app has given out, continuing BizAdvisor's sequence. Cancelled bills stay listed as VOID, so there are never gaps.</div>
+      <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>Every B and INV number the app has given out, continuing BizAdvisor's sequence, and who issued it. Nobody can delete a number from this list. Cancelled bills stay as VOID with the name of who cancelled them.</div>
       {!started ? (
         <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, color: C.amber, borderRadius: 10, padding: "12px 14px", fontSize: 13, marginBottom: 14 }}>
           Billing in the app is <b>not switched on yet</b>. Bills are still made in BizAdvisor. On switch day the starting numbers are set and the app takes over.
@@ -4283,27 +4290,52 @@ function BillNumbersPage({ C, sbFetch }) {
       <select value={month} onChange={(e) => setMonth(e.target.value)} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "7px 10px", fontSize: 13, marginBottom: 10 }}>
         {months.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
       </select>
+      {narrow ? (
+        <div style={{ display: "grid", gap: 8 }}>
+          {shown.length === 0 ? (
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20, textAlign: "center", color: C.textFaint, fontSize: 13 }}>No bill numbers issued in {monthLabel(month)}.</div>
+          ) : shown.map((r) => (
+            <div key={r.number} style={{ background: C.surface, border: `1px solid ${r.status === "void" ? C.rose + "55" : C.border}`, borderRadius: 12, padding: "10px 12px", opacity: r.status === "void" ? 0.75 : 1 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
+                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 14 }}>{r.number}</span>
+                <span style={{ fontWeight: 700, fontSize: 12, color: r.status === "void" ? C.rose : C.emerald }}>{r.status === "void" ? "VOID" : "Issued"}</span>
+              </div>
+              <div style={{ fontSize: 13, marginTop: 4, wordBreak: "break-word" }}>{r.customer || "—"}</div>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11.5, color: C.textFaint, marginTop: 4 }}>
+                <span>{fmtDate(String(r.issued_at).slice(0, 10))} · {r.source || "—"}</span>
+                {showAmounts && r.amount != null && <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: C.text }}>${Number(r.amount).toLocaleString("en-US", MONEY2)}</span>}
+              </div>
+              <div style={{ fontSize: 12, marginTop: 4 }}>Issued by <b>{who(r.issued_by)}</b>{r.status === "void" && <span style={{ color: C.rose }}> · cancelled by <b>{who(r.voided_by)}</b>{r.voided_at ? ` on ${fmtDate(String(r.voided_at).slice(0, 10))}` : ""}</span>}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
           <thead><tr style={{ textAlign: "left", fontSize: 11, color: C.textFaint }}>
-            <th style={{ padding: "8px 10px" }}>Number</th><th style={{ padding: "8px 10px" }}>Date</th><th style={{ padding: "8px 10px" }}>Customer</th><th style={{ padding: "8px 10px" }}>From</th><th style={{ padding: "8px 10px", textAlign: "right" }}>Amount</th><th style={{ padding: "8px 10px" }}>Status</th>
+            <th style={{ padding: "8px 10px" }}>Number</th><th style={{ padding: "8px 10px" }}>Date</th><th style={{ padding: "8px 10px" }}>Customer</th><th style={{ padding: "8px 10px" }}>From</th><th style={{ padding: "8px 10px" }}>Issued by</th>{showAmounts && <th style={{ padding: "8px 10px", textAlign: "right" }}>Amount</th>}<th style={{ padding: "8px 10px" }}>Status</th>
           </tr></thead>
           <tbody>
             {shown.length === 0 ? (
-              <tr><td colSpan={6} style={{ ...cell, textAlign: "center", color: C.textFaint, padding: 24 }}>No bill numbers issued in {monthLabel(month)}.</td></tr>
+              <tr><td colSpan={showAmounts ? 7 : 6} style={{ ...cell, textAlign: "center", color: C.textFaint, padding: 24 }}>No bill numbers issued in {monthLabel(month)}.</td></tr>
             ) : shown.map((r) => (
               <tr key={r.number} style={{ opacity: r.status === "void" ? 0.55 : 1 }}>
                 <td style={{ ...cell, fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 }}>{r.number}</td>
                 <td style={cell}>{fmtDate(String(r.issued_at).slice(0, 10))}</td>
                 <td style={cell}>{r.customer || "—"}</td>
                 <td style={{ ...cell, color: C.textFaint }}>{r.source || "—"}</td>
-                <td style={{ ...cell, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" }}>{r.amount == null ? "—" : `$${Number(r.amount).toLocaleString("en-US", MONEY2)}`}</td>
-                <td style={{ ...cell, fontWeight: 700, color: r.status === "void" ? C.rose : C.emerald }}>{r.status === "void" ? "VOID" : "Issued"}</td>
+                <td style={{ ...cell, fontWeight: 600 }}>{who(r.issued_by)}</td>
+                {showAmounts && <td style={{ ...cell, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" }}>{r.amount == null ? "—" : `$${Number(r.amount).toLocaleString("en-US", MONEY2)}`}</td>}
+                <td style={{ ...cell, color: r.status === "void" ? C.rose : C.emerald }}>
+                  <div style={{ fontWeight: 700 }}>{r.status === "void" ? "VOID" : "Issued"}</div>
+                  {r.status === "void" && <div style={{ fontSize: 11, color: C.textFaint, fontWeight: 400, whiteSpace: "nowrap" }}>by {who(r.voided_by)}{r.voided_at ? ` · ${fmtDate(String(r.voided_at).slice(0, 10))}` : ""}</div>}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      )}
     </div>
   );
 }
@@ -6328,7 +6360,7 @@ const NAV = [
   { name: "Documents", items: [
     { label: "Delivery notes", page: "delivery", tab: "notes" },
     { label: "Invoices",       page: "delivery", tab: "invoices" },
-    { label: "Bill numbers",   page: "bills", needs: "accounting" },
+    { label: "Bill numbers",   page: "bills" },
   ]},
   { name: "Marketing", items: [
     { label: "KOL & Content", page: "kol" },
