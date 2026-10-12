@@ -3942,13 +3942,20 @@ function PromoNoteInput({ C, lines, value, onChange }) {
   );
 }
 
+// A COD order is released before the money arrives. It stays "awaiting
+// payment" until someone marks it paid, and is flagged once it is older than
+// this many days so it cannot be forgotten.
+const COD_GRACE_DAYS = 3;
+const daysSince = (d) => Math.round((new Date(todayStr() + "T00:00:00") - new Date(d + "T00:00:00")) / 86400000);
+
 function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
   const [loading, setLoading] = useState(true);
   const [missing, setMissing] = useState(false);
   const [sales, setSales] = useState([]);
   const [items, setItems] = useState([]); // online_sale_items, all of them, keyed by sale_id client-side
   const [selectedMonth, setSelectedMonth] = useState(currentMonthKey());
-  const [form, setForm] = useState({ date: todayStr(), customer_name: "", description: "", channel: "online", promo: "" });
+  const [form, setForm] = useState({ date: todayStr(), customer_name: "", description: "", channel: "online", promo: "", paidNow: false });
+  const [payFor, setPayFor] = useState(null); // { id, date, note } while recording a payment
   const [freeMoves, setFreeMoves] = useState([]); // free/promo boxes given with an order (stock_moves reason "sample", ref OS…)
   const [channelFilter, setChannelFilter] = useState("all");
   const [storeNames, setStoreNames] = useState([]);
@@ -4004,6 +4011,9 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
           date: form.date,
           customer_name: form.customer_name.trim(),
           channel: form.channel || "online",
+          ...(form.channel === "cod" && !form.paidNow
+            ? { payment_status: "unpaid" }
+            : { payment_status: "paid", paid_at: form.date, paid_by: authUser?.email || null }),
           promo_note: freeOnlineLines(lineForm).length ? (form.promo || "").trim() || null : null,
           description: form.description.trim(),
           amount: draftTotal,
@@ -4013,7 +4023,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
       const stockOk = await saveOnlineSaleLines(sbFetch, inserted.id, lineForm, true, form.date, authUser?.email);
       if (!stockOk) setError("Sale saved, but the warehouse wasn't updated — is the stock table set up?");
       logActivity?.("Logged online sale", form.customer_name.trim(), `${activeLines.map((l) => `${l.qty} ${l.label}`).join(", ")} — ${money(draftTotal)}`);
-      setForm({ date: form.date, customer_name: "", description: "", channel: form.channel, promo: "" });
+      setForm({ date: form.date, customer_name: "", description: "", channel: form.channel, promo: "", paidNow: false });
       setLineForm(emptyOnlineLines());
       await reload();
     } catch (e) {
@@ -4047,6 +4057,20 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
     }
   }
 
+  async function recordPayment() {
+    if (!payFor) return;
+    const sale = sales.find((x) => x.id === payFor.id);
+    setBusy(true); setError("");
+    try {
+      await sbFetch(`online_sales?id=eq.${payFor.id}`, { method: "PATCH", body: JSON.stringify({ payment_status: "paid", paid_at: payFor.date || todayStr(), paid_by: authUser?.email || null, paid_note: (payFor.note || "").trim() || null }) });
+      logActivity?.("Recorded COD payment", sale?.customer_name || "", `${sale?.bill_no || ""} ${money(Number(sale?.amount || 0))} received ${payFor.date}${payFor.note ? ` — ${payFor.note}` : ""}`.trim());
+      setPayFor(null);
+      await reload();
+    } catch (e) {
+      setError("The payment could not be recorded. Please try again.");
+    } finally { setBusy(false); }
+  }
+
   async function deleteSale(id) {
     if (!window.confirm("Delete this online sale and its product lines? Any boxes it took out of the warehouse go back in.")) return;
     try {
@@ -4063,7 +4087,11 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
   }
 
   const monthAll = sales.filter((s) => monthKey(s.date) === selectedMonth);
-  const monthSales = monthAll.filter((s) => channelFilter === "all" || (s.channel || "online") === channelFilter);
+  // "Awaiting payment" spans every month — an unpaid order must never hide
+  // behind the month picker.
+  const unpaidAll = sales.filter((s) => s.payment_status === "unpaid").sort((a, b) => a.date.localeCompare(b.date));
+  const unpaidLate = unpaidAll.filter((s) => daysSince(s.date) > COD_GRACE_DAYS);
+  const monthSales = channelFilter === "unpaid" ? unpaidAll : monthAll.filter((s) => channelFilter === "all" || (s.channel || "online") === channelFilter);
   const monthTotal = monthSales.reduce((a, s) => a + Number(s.amount || 0), 0);
   const availableMonths = useMemo(() => monthsThrough(sales.map((s) => monthKey(s.date))), [sales]);
   const itemsBySale = (saleId) => items.filter((i) => i.sale_id === saleId);
@@ -4114,9 +4142,19 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
         </div>
       )}
 
+      {unpaidAll.length > 0 && (
+        <div style={{ background: unpaidLate.length ? C.roseBg : C.amberBg, border: `1px solid ${unpaidLate.length ? C.rose : C.amber}55`, borderRadius: 10, padding: "11px 14px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 12.5, color: unpaidLate.length ? C.rose : C.amber }}>
+            <b>{unpaidAll.length} order{unpaidAll.length === 1 ? "" : "s"} awaiting payment</b> — ${unpaidAll.reduce((a, x) => a + Number(x.amount || 0), 0).toLocaleString("en-US", MONEY2)}
+            {unpaidLate.length > 0 && <> · <b>{unpaidLate.length} overdue</b> (released more than {COD_GRACE_DAYS} days ago)</>}
+          </div>
+          <button type="button" onClick={() => setChannelFilter("unpaid")} style={{ background: "none", border: `1px solid ${unpaidLate.length ? C.rose : C.amber}`, color: unpaidLate.length ? C.rose : C.amber, borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Review</button>
+        </div>
+      )}
+
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "18px 20px", marginBottom: 18, maxWidth: 260 }}>
-        <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Total — {monthLabel(selectedMonth)}</div>
-        <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: C.emerald }}>${monthTotal.toLocaleString("en-US", MONEY2)}</div>
+        <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>{channelFilter === "unpaid" ? "Awaiting payment — all months" : `Total — ${monthLabel(selectedMonth)}`}</div>
+        <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: channelFilter === "unpaid" ? C.amber : C.emerald }}>${monthTotal.toLocaleString("en-US", MONEY2)}</div>
         <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>{monthSales.length} order{monthSales.length === 1 ? "" : "s"}{channelFilter === "all" ? ` · Online $${monthAll.filter((x) => (x.channel || "online") === "online").reduce((a, x) => a + Number(x.amount || 0), 0).toLocaleString("en-US", MONEY2)} · COD $${monthAll.filter((x) => x.channel === "cod").reduce((a, x) => a + Number(x.amount || 0), 0).toLocaleString("en-US", MONEY2)}` : ""}</div>
       </div>
 
@@ -4153,6 +4191,13 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
           <div style={{ fontSize: 13 }}>
             Order total: <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: C.goldBright }}>${draftTotal.toLocaleString("en-US", MONEY2)}</span>
+            {form.channel === "cod" && (
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: C.textDim, marginTop: 6, cursor: "pointer" }}>
+                <input type="checkbox" checked={!!form.paidNow} onChange={(e) => setForm({ ...form, paidNow: e.target.checked })} />
+                Payment already received
+              </label>
+            )}
+            {form.channel === "cod" && !form.paidNow && <div style={{ fontSize: 10.5, color: C.amber, marginTop: 3 }}>Will be tracked as awaiting payment until marked paid.</div>}
           </div>
           <button type="button" onClick={addSale} disabled={busy} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "9px 20px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>
             {busy ? "Saving…" : "Add sale"}
@@ -4162,16 +4207,16 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
       </div>
 
       <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-        {[["all", "All"], ["online", "Online"], ["cod", "COD"]].map(([k, l]) => (
+        {[["all", "All"], ["online", "Online"], ["cod", "COD"], ...(unpaidAll.length ? [["unpaid", "Awaiting payment"]] : [])].map(([k, l]) => (
           <button key={k} type="button" onClick={() => setChannelFilter(k)} style={{ background: channelFilter === k ? C.bg2 : "none", border: `1px solid ${channelFilter === k ? C.gold : C.border}`, color: channelFilter === k ? C.text : C.textDim, borderRadius: 7, padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-            {l} ({monthAll.filter((x) => k === "all" || (x.channel || "online") === k).length})
+            {l} ({k === "unpaid" ? unpaidAll.length : monthAll.filter((x) => k === "all" || (x.channel || "online") === k).length})
           </button>
         ))}
       </div>
       <div style={{ display: "grid", gap: 8 }}>
         {monthSales.length === 0 ? (
           <div style={{ background: C.surface, border: `1px dashed ${C.border}`, borderRadius: 12, padding: 30, textAlign: "center", fontSize: 12, color: C.textFaint }}>
-            No online sales logged for {monthLabel(selectedMonth)}.
+            {channelFilter === "unpaid" ? "No orders awaiting payment." : `No online sales logged for ${monthLabel(selectedMonth)}.`}
           </div>
         ) : (
           monthSales.map((s) => {
@@ -4181,13 +4226,14 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
               <div key={s.id} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px" }}>
                 <div
                   onClick={() => setExpandedId(expanded ? null : s.id)}
-                  style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", gap: 10 }}
+                  style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", gap: 10, flexWrap: "wrap" }}
                 >
-                  <div>
+                  <div style={{ flex: "1 1 240px", minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 700 }}>
                       {s.bill_no && <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, fontWeight: 600, color: C.gold, marginRight: 8 }}>{s.bill_no}</span>}
                       {s.customer_name}
                       {s.channel === "cod" && <span style={{ marginLeft: 8, fontSize: 9.5, fontWeight: 700, color: C.goldBright, background: `${C.gold}22`, borderRadius: 999, padding: "2px 8px" }}>COD</span>}
+                      {s.payment_status === "unpaid" && (() => { const d = daysSince(s.date); const late = d > COD_GRACE_DAYS; return <span style={{ marginLeft: 8, fontSize: 9.5, fontWeight: 700, color: late ? C.rose : C.amber, background: late ? C.roseBg : C.amberBg, border: `1px solid ${late ? C.rose : C.amber}55`, borderRadius: 999, padding: "2px 8px", whiteSpace: "nowrap" }}>{late ? `Overdue · ${d} days` : `Awaiting payment${d > 0 ? ` · ${d} day${d === 1 ? "" : "s"}` : ""}`}</span>; })()}
                     </div>
                     <div style={{ fontSize: 11, color: C.textFaint }}>
                       {fmtDate(s.date)} · {lines.map((l) => `${l.qty} ${labelFor(l.product)}`).join(", ") || "no items"}
@@ -4195,13 +4241,33 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
                       {s.description ? ` · ${s.description}` : ""}
                     </div>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, fontWeight: 700, color: C.emerald }}>${Number(s.amount).toLocaleString("en-US", MONEY2)}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginLeft: "auto" }}>
+                    <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, fontWeight: 700, color: s.payment_status === "unpaid" ? C.amber : C.emerald }}>${Number(s.amount).toLocaleString("en-US", MONEY2)}</span>
+                    {s.payment_status === "unpaid" && (
+                      <button type="button" onClick={(e) => { e.stopPropagation(); setPayFor({ id: s.id, date: todayStr(), note: "" }); }} style={{ background: C.gold, border: "none", color: "#1A1508", borderRadius: 8, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>Record payment</button>
+                    )}
                     <button type="button" onClick={(e) => { e.stopPropagation(); setPrintSale(s); }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "5px 10px", fontSize: 11, cursor: "pointer" }}>Invoice</button>
                     <button type="button" title="Edit products" onClick={(e) => { e.stopPropagation(); setExpandedId(s.id); setEditing({ id: s.id, lines: onlineLinesFromItems(lines, freeMoves.filter((m) => m.reference === onlineRef(s.id))), keepAmount: lines.length === 0, promo: s.promo_note || "" }); }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.gold, borderRadius: 8, padding: "5px 8px", cursor: "pointer", display: "inline-flex", alignItems: "center" }}><Pencil size={13} /></button>
                     <button type="button" onClick={(e) => { e.stopPropagation(); deleteSale(s.id); }} style={{ background: "none", border: "none", color: C.textFaint, cursor: "pointer" }}><Trash2 size={14} /></button>
                   </div>
                 </div>
+                {s.channel === "cod" && s.payment_status === "paid" && s.paid_at && (
+                  <div style={{ fontSize: 11, color: C.emerald, marginTop: 4 }}>Payment received {fmtDate(s.paid_at)}{s.paid_note ? ` — ${s.paid_note}` : ""}</div>
+                )}
+                {payFor && payFor.id === s.id && (
+                  <div style={{ marginTop: 10, paddingTop: 12, borderTop: `1px solid ${C.gold}55`, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }} onClick={(e) => e.stopPropagation()}>
+                    <div>
+                      <label style={{ fontSize: 9, color: C.textFaint }}>Date received</label>
+                      <input type="date" value={payFor.date} onChange={(e) => setPayFor({ ...payFor, date: e.target.value })} style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "7px 9px", fontSize: 13, display: "block" }} />
+                    </div>
+                    <div style={{ flex: "1 1 200px", minWidth: 0 }}>
+                      <label style={{ fontSize: 9, color: C.textFaint }}>Reference (optional)</label>
+                      <input type="text" value={payFor.note} onChange={(e) => setPayFor({ ...payFor, note: e.target.value })} placeholder="e.g. Cash via driver / ABA transfer" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "7px 9px", fontSize: 13, width: "100%", display: "block", boxSizing: "border-box" }} />
+                    </div>
+                    <button type="button" disabled={busy} onClick={recordPayment} style={{ background: C.gold, border: "none", color: "#1A1508", borderRadius: 8, padding: "8px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>{busy ? "Saving…" : `Confirm ${money(Number(s.amount || 0))} received`}</button>
+                    <button type="button" onClick={() => setPayFor(null)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "8px 12px", fontSize: 12, cursor: "pointer" }}>Cancel</button>
+                  </div>
+                )}
                 {editing && editing.id === s.id && (
                   <div style={{ marginTop: 10, paddingTop: 12, borderTop: `1px solid ${C.gold}55` }} onClick={(e) => e.stopPropagation()}>
                     <div style={{ fontSize: 10, color: C.gold, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700, marginBottom: 8 }}>Edit products</div>
@@ -4364,7 +4430,7 @@ function BillNumbersPage({ C, sbFetch, showAmounts }) {
 // pages always agree. Corporate bills fall due on the account's monthly
 // payment day when one is set, otherwise 30 days after the bill. Consignment
 // counts what a store still owed at its latest visit. Online & COD counts
-// bills marked NOT PAID. Follow-up notes can only be added, never edited, so
+// orders awaiting payment. Follow-up notes can only be added, never edited, so
 // the history of who called whom stays intact.
 const MO_CHANNEL = { credit: "Credit Term", corporate: "Corporate", consignment: "Consignment", online: "Online & COD" };
 const moIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -4402,7 +4468,7 @@ function MoneyOwedPage({ authUser, C, sbFetch, logActivity }) {
         get("bigco_reports?select=id,store_id,report_date,invoice_number,amount,paid"),
         get("stores?select=name,phone,address,vat_tin"),
         get("visits?select=store_name,date,owed,invoice_number,created_at&order=created_at.asc"),
-        get("online_sales?select=id,date,customer_name,amount,description,bill_no&description=ilike.*NOT%20PAID*"),
+        get("online_sales?select=id,date,customer_name,amount,description,bill_no,channel&payment_status=eq.unpaid"),
         get("collection_notes?select=*&order=created_at.desc"),
         get("user_names?select=*"),
       ]);
@@ -4457,14 +4523,14 @@ function MoneyOwedPage({ authUser, C, sbFetch, logActivity }) {
       out.push({ key: `consignment:${name}`, channel: "consignment", name, nickname: "", phone: s.phone || "", address: s.address || "", vat: s.vat_tin || "", terms: "Payable at next visit", lastPay: null,
         bills: [{ no: L.no, date: L.date, due: L.date, amount: L.owed, paid: 0, left: L.owed }] });
     });
-    // Online & COD — bills marked NOT PAID.
+    // Online & COD — orders released but not yet paid.
     const onl = {};
     src.on.forEach((s) => {
       const amount = Number(s.amount || 0); if (!s.date || amount <= 0) return;
       const name = (s.customer_name || "Online customer").trim();
       const m = String(s.description || "").match(/\b(?:INV|B)\d{7}\b/);
-      const c = onl[name] || (onl[name] = { key: `online:${name}`, channel: "online", name, nickname: "", phone: "", address: "", vat: "", terms: "Cash on delivery", lastPay: null, bills: [] });
-      c.bills.push({ no: s.bill_no || (m ? m[0] : `OS${String(s.id).padStart(6, "0")}`), date: s.date, due: s.date, amount, paid: 0, left: amount });
+      const c = onl[name] || (onl[name] = { key: `online:${name}`, channel: "online", name, nickname: "", phone: "", address: "", vat: "", terms: `Cash on delivery — due within ${COD_GRACE_DAYS} days`, lastPay: null, bills: [] });
+      c.bills.push({ no: s.bill_no || (m ? m[0] : `OS${String(s.id).padStart(6, "0")}`), date: s.date, due: moAddDays(s.date, COD_GRACE_DAYS), amount, paid: 0, left: amount });
     });
     Object.values(onl).forEach((c) => out.push(c));
 
@@ -10081,7 +10147,7 @@ function SalesReportPage({ authUser, C, sbFetch }) {
       const amount = Number(s.amount || 0); if (!s.date || amount <= 0) return;
       const units = {}; const value = {};
       (itemsBySale[s.id] || []).forEach((it) => { units[it.product] = (units[it.product] || 0) + Number(it.qty || 0); value[it.product] = (value[it.product] || 0) + Number(it.line_total || 0); });
-      const notPaid = /NOT PAID/i.test(s.description || "");
+      const notPaid = s.payment_status === "unpaid";
       out.push({ date: s.date, doc: s.bill_no || `OS${String(s.id).padStart(6, "0")}`, customer: (s.customer_name || "Online customer").trim(), channel: "online", amount,
         paid: notPaid ? 0 : amount, owedKnown: notPaid, phone: "", units, value });
     });
