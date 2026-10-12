@@ -185,10 +185,15 @@ async function serverLogout(token) {
   }
 }
 
+// Menu labels were renamed to standard business terms; a menu position saved
+// under an old name still opens the same page.
+const NAV_RENAMED = {"Total": "Sales Summary", "Sales report": "Sales Report", "Payments received": "Payments Received", "Money owed": "Accounts Receivable", "Stores": "Store Directory", "Stock on hand": "Stock on Hand", "Products & barcodes": "Products & Barcodes", "Delivery notes": "Delivery Notes", "Bill numbers": "Bill Register", "Post": "Post Entry", "From sales": "From Sales", "Journal entry": "Journal Entry", "Vendor": "Vendors", "Entries": "Ledger Entries", "Accounts": "Chart of Accounts"};
 function loadSavedNav() {
   try {
     const raw = localStorage.getItem("mera_nav_state");
-    return raw ? JSON.parse(raw) : null;
+    const saved = raw ? JSON.parse(raw) : null;
+    if (saved && NAV_RENAMED[saved.navPick]) saved.navPick = NAV_RENAMED[saved.navPick];
+    return saved;
   } catch (e) {
     return null;
   }
@@ -413,6 +418,7 @@ const BACKUP_TABLES = [
   "bigco_stores", "bigco_reports",
   "delivery_notes", "sales_invoices",
   "staff", "payroll_runs", "payslips",
+  "online_sales", "online_sale_items", "bill_numbers", "collection_notes",
   "activity_log",
 ];
 
@@ -1561,7 +1567,7 @@ export default function MeraConsignmentApp() {
               </span>
             </div>
             <h1 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 34, margin: "6px 0 0", letterSpacing: "-0.01em" }}>
-              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? "Delivery & Invoices" : page === "stores" ? "Stores" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "bills" ? "Documents" : page === "sales" ? (salesSubPage === "total" ? "Sales Total" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online & COD Sales" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : "Consignment Operations") : "Consignment Operations"}
+              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? "Delivery & Invoices" : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online & COD Sales" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : "Consignment Operations") : "Consignment Operations"}
             </h1>
             <div style={{ height: 2, width: 46, background: `linear-gradient(90deg, ${C.gold}, transparent)`, marginTop: 10 }} />
           </div>
@@ -1628,10 +1634,10 @@ export default function MeraConsignmentApp() {
               // them through the same nav list the sidebar uses, so the two
               // can never disagree about where you are.
               const MAP = {
-                kol: "KOL & Content", total: "Total", credit: "Credit Term",
+                kol: "KOL & Content", total: "Sales Summary", credit: "Credit Term",
                 corporate: "Corporate Accounts", consignment: "Consignment",
-                stores: "Stores", delivery: "Delivery notes",
-                accounting: "Post", payroll: "Payroll", profit: "Profit & Margin",
+                stores: "Store Directory", delivery: "Delivery Notes",
+                accounting: "Post Entry", payroll: "Payroll", profit: "Profit & Margin",
                 overview: "Overview",
               };
               const label = MAP[dest];
@@ -1671,7 +1677,7 @@ export default function MeraConsignmentApp() {
                   borderBottom: `2px solid ${salesSubPage === "total" ? C.gold : "transparent"}`,
                 }}
               >
-                Total
+                Summary
               </button>
               {canSeeSalesReport && <button
                 onClick={() => setSalesSubPage("report")}
@@ -1723,6 +1729,16 @@ export default function MeraConsignmentApp() {
               >
                 Payments{newPaymentCount > 0 ? ` (${newPaymentCount})` : ""}
               </button>
+              <button
+                onClick={() => setSalesSubPage("owed")}
+                style={{
+                  background: "none", border: "none", padding: "6px 2px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginLeft: 14,
+                  color: salesSubPage === "owed" ? C.gold : C.textFaint,
+                  borderBottom: `2px solid ${salesSubPage === "owed" ? C.gold : "transparent"}`,
+                }}
+              >
+                Receivables
+              </button>
               {PENDING_PAYMENTS_ENABLED && <button
                 onClick={() => setSalesSubPage("pending")}
                 style={{
@@ -1762,6 +1778,8 @@ export default function MeraConsignmentApp() {
               <OnlineSalesPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             ) : salesSubPage === "payments" ? (
               <PaymentsReceivedPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} onSeen={() => setNewPaymentCount(0)} />
+            ) : salesSubPage === "owed" ? (
+              <MoneyOwedPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             ) : salesSubPage === "pending" && PENDING_PAYMENTS_ENABLED ? (
               <PendingPaymentsPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} onCountChange={setPendingPaymentCount} />
             ) : salesSubPage === "coverage" ? (
@@ -4271,11 +4289,11 @@ function BillNumbersPage({ C, sbFetch, showAmounts }) {
   const cell = { padding: "8px 10px", borderTop: `1px solid ${C.border}`, fontSize: 12.5 };
   return (
     <div>
-      <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: "0 0 4px" }}>Bill numbers</h2>
-      <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>Every B and INV number the app has given out, continuing BizAdvisor's sequence, and who issued it. Nobody can delete a number from this list. Cancelled bills stay as VOID with the name of who cancelled them.</div>
+      <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: "0 0 4px" }}>Bill Register</h2>
+      <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>Complete register of B and INV numbers issued, continuing the BizAdvisor sequence. Entries cannot be deleted; cancelled bills remain listed as VOID with the user and date of cancellation.</div>
       {!started ? (
         <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, color: C.amber, borderRadius: 10, padding: "12px 14px", fontSize: 13, marginBottom: 14 }}>
-          Billing in the app is <b>not switched on yet</b>. Bills are still made in BizAdvisor. On switch day the starting numbers are set and the app takes over.
+          In-app billing is <b>not yet active</b>. Bills are currently issued in BizAdvisor. On go-live, the starting numbers will be set and the system will take over numbering.
         </div>
       ) : (
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
@@ -4293,7 +4311,7 @@ function BillNumbersPage({ C, sbFetch, showAmounts }) {
       {narrow ? (
         <div style={{ display: "grid", gap: 8 }}>
           {shown.length === 0 ? (
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20, textAlign: "center", color: C.textFaint, fontSize: 13 }}>No bill numbers issued in {monthLabel(month)}.</div>
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20, textAlign: "center", color: C.textFaint, fontSize: 13 }}>No bills issued in {monthLabel(month)}.</div>
           ) : shown.map((r) => (
             <div key={r.number} style={{ background: C.surface, border: `1px solid ${r.status === "void" ? C.rose + "55" : C.border}`, borderRadius: 12, padding: "10px 12px", opacity: r.status === "void" ? 0.75 : 1 }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
@@ -4317,7 +4335,7 @@ function BillNumbersPage({ C, sbFetch, showAmounts }) {
           </tr></thead>
           <tbody>
             {shown.length === 0 ? (
-              <tr><td colSpan={showAmounts ? 7 : 6} style={{ ...cell, textAlign: "center", color: C.textFaint, padding: 24 }}>No bill numbers issued in {monthLabel(month)}.</td></tr>
+              <tr><td colSpan={showAmounts ? 7 : 6} style={{ ...cell, textAlign: "center", color: C.textFaint, padding: 24 }}>No bills issued in {monthLabel(month)}.</td></tr>
             ) : shown.map((r) => (
               <tr key={r.number} style={{ opacity: r.status === "void" ? 0.55 : 1 }}>
                 <td style={{ ...cell, fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 }}>{r.number}</td>
@@ -4337,6 +4355,381 @@ function BillNumbersPage({ C, sbFetch, showAmounts }) {
       </div>
       )}
     </div>
+  );
+}
+
+// Accounts Receivable — every customer with an open balance, its aging, and
+// the collection follow-up. Credit Term uses the same rule as the Credit Term page
+// (payments not tied to a bill pay off the oldest bills first), so the two
+// pages always agree. Corporate bills fall due on the account's monthly
+// payment day when one is set, otherwise 30 days after the bill. Consignment
+// counts what a store still owed at its latest visit. Online & COD counts
+// bills marked NOT PAID. Follow-up notes can only be added, never edited, so
+// the history of who called whom stays intact.
+const MO_CHANNEL = { credit: "Credit Term", corporate: "Corporate", consignment: "Consignment", online: "Online & COD" };
+const moIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const moAddDays = (s, n) => { const d = new Date(s + "T00:00:00"); d.setDate(d.getDate() + n); return moIso(d); };
+const moDaysBetween = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
+const moMoney = (n) => `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+function moPayDayDue(billDate, payDay) {
+  const d = new Date(billDate + "T00:00:00");
+  const y = d.getMonth() === 11 ? d.getFullYear() + 1 : d.getFullYear();
+  const m = (d.getMonth() + 1) % 12;
+  const last = new Date(y, m + 1, 0).getDate();
+  return moIso(new Date(y, m, Math.min(payDay, last)));
+}
+
+function MoneyOwedPage({ authUser, C, sbFetch, logActivity }) {
+  const [src, setSrc] = useState(null);
+  const [notes, setNotes] = useState([]);
+  const [names, setNames] = useState({});
+  const [channel, setChannel] = useState("all");
+  const [openKey, setOpenKey] = useState(null);
+  const [draft, setDraft] = useState({ text: "", promise: "" });
+  const [saving, setSaving] = useState(false);
+  const [noteError, setNoteError] = useState("");
+  const [statementFor, setStatementFor] = useState(null);
+  const today = moIso(new Date());
+
+  useEffect(() => {
+    (async () => {
+      const get = async (q) => { try { return (await sbFetch(q)) || []; } catch (e) { return []; } };
+      const [cs, ci, cp, bs, br, st, vi, on, cn, un] = await Promise.all([
+        get("credit_stores?select=id,name,nickname,phone,address,vat_tin,credit_days"),
+        get("credit_invoices?select=id,store_id,invoice_date,invoice_number,amount,paid"),
+        get("credit_payments?select=store_id,payment_date,amount"),
+        get("bigco_stores?select=id,name,nickname,phone,address,vat_tin,parent_id,payment_day"),
+        get("bigco_reports?select=id,store_id,report_date,invoice_number,amount,paid"),
+        get("stores?select=name,phone,address,vat_tin"),
+        get("visits?select=store_name,date,owed,invoice_number,created_at&order=created_at.asc"),
+        get("online_sales?select=id,date,customer_name,amount,description,bill_no&description=ilike.*NOT%20PAID*"),
+        get("collection_notes?select=*&order=created_at.desc"),
+        get("user_names?select=*"),
+      ]);
+      setSrc({ cs, ci, cp, bs, br, st, vi, on });
+      setNotes(cn);
+      setNames(Object.fromEntries(un.map((x) => [x.email, x.name])));
+    })();
+  }, []);
+
+  const who = (email) => !email ? "—" : names[email] || email.split("@")[0];
+
+  const customers = useMemo(() => {
+    if (!src) return [];
+    const out = [];
+    // Credit Term — same rule as the Credit Term page.
+    src.cs.forEach((s) => {
+      const days = Number(s.credit_days || 30);
+      let pool = src.cp.filter((p) => p.store_id === s.id).reduce((a, p) => a + Number(p.amount || 0), 0);
+      const lastPay = src.cp.filter((p) => p.store_id === s.id).map((p) => p.payment_date).sort().pop() || null;
+      const bills = [];
+      src.ci.filter((i) => i.store_id === s.id && i.invoice_date).sort((a, b) => a.invoice_date.localeCompare(b.invoice_date)).forEach((i) => {
+        const amount = Number(i.amount || 0);
+        let paid = Number(i.paid || 0);
+        const gap = amount - paid;
+        if (gap > 0 && pool > 0) { const use = Math.min(gap, pool); paid += use; pool -= use; }
+        const left = Math.round((amount - paid) * 100) / 100;
+        if (left > 0.009) bills.push({ no: String(i.invoice_number || "").trim(), date: i.invoice_date, due: moAddDays(i.invoice_date, days), amount, paid, left });
+      });
+      if (bills.length) out.push({ key: `credit:${s.id}`, channel: "credit", name: s.name, nickname: s.nickname || "", phone: s.phone || "", address: s.address || "", vat: s.vat_tin || "", terms: `Net ${days} days`, lastPay, bills });
+    });
+    // Corporate — branches roll up to the account that pays.
+    const byId = {}; src.bs.forEach((s) => { byId[s.id] = s; });
+    const corp = {};
+    src.br.forEach((r) => {
+      const amount = Number(r.amount || 0); const left = Math.round((amount - Number(r.paid || 0)) * 100) / 100;
+      if (!r.report_date || left <= 0.009) return;
+      const branch = byId[r.store_id]; if (!branch) return;
+      const top = branch.parent_id && byId[branch.parent_id] ? byId[branch.parent_id] : branch;
+      const due = top.payment_day ? moPayDayDue(r.report_date, Number(top.payment_day)) : moAddDays(r.report_date, 30);
+      const c = corp[top.id] || (corp[top.id] = { key: `corporate:${top.id}`, channel: "corporate", name: top.name, nickname: top.nickname || "", phone: top.phone || "", address: top.address || "", vat: top.vat_tin || "", terms: top.payment_day ? `Monthly settlement on day ${top.payment_day}` : "Net 30 days", lastPay: null, bills: [] });
+      c.bills.push({ no: String(r.invoice_number || "").trim(), date: r.report_date, due, amount, paid: amount - left, left, branch: top.id !== branch.id ? branch.name : "" });
+    });
+    Object.values(corp).forEach((c) => { c.bills.sort((a, b) => a.date.localeCompare(b.date)); out.push(c); });
+    // Consignment — what the store still owed at its latest visit.
+    const latest = {};
+    src.vi.forEach((v) => { if (!v.date || !v.store_name) return; const L = latest[v.store_name]; if (!L || v.date > L.date) latest[v.store_name] = { date: v.date, owed: 0, no: "" }; });
+    src.vi.forEach((v) => { const L = latest[v.store_name]; if (L && v.date === L.date) { L.owed = Math.max(L.owed, Number(v.owed || 0)); if (v.invoice_number) L.no = String(v.invoice_number).trim(); } });
+    const stByName = {}; src.st.forEach((s) => { stByName[s.name] = s; });
+    Object.entries(latest).forEach(([name, L]) => {
+      if (L.owed <= 0.009) return;
+      const s = stByName[name] || {};
+      out.push({ key: `consignment:${name}`, channel: "consignment", name, nickname: "", phone: s.phone || "", address: s.address || "", vat: s.vat_tin || "", terms: "Payable at next visit", lastPay: null,
+        bills: [{ no: L.no, date: L.date, due: L.date, amount: L.owed, paid: 0, left: L.owed }] });
+    });
+    // Online & COD — bills marked NOT PAID.
+    const onl = {};
+    src.on.forEach((s) => {
+      const amount = Number(s.amount || 0); if (!s.date || amount <= 0) return;
+      const name = (s.customer_name || "Online customer").trim();
+      const m = String(s.description || "").match(/\b(?:INV|B)\d{7}\b/);
+      const c = onl[name] || (onl[name] = { key: `online:${name}`, channel: "online", name, nickname: "", phone: "", address: "", vat: "", terms: "Cash on delivery", lastPay: null, bills: [] });
+      c.bills.push({ no: s.bill_no || (m ? m[0] : `OS${String(s.id).padStart(6, "0")}`), date: s.date, due: s.date, amount, paid: 0, left: amount });
+    });
+    Object.values(onl).forEach((c) => out.push(c));
+
+    const notesByKey = {}; notes.forEach((n) => { (notesByKey[n.customer_key] = notesByKey[n.customer_key] || []).push(n); });
+    return out.map((c) => {
+      c.bills.forEach((b) => { b.age = moDaysBetween(b.date, today); b.late = moDaysBetween(b.due, today); });
+      const total = c.bills.reduce((a, b) => a + b.left, 0);
+      const late = c.bills.filter((b) => b.late > 0).reduce((a, b) => a + b.left, 0);
+      const maxLate = Math.max(0, ...c.bills.map((b) => b.late));
+      const nextDue = c.bills.filter((b) => b.late <= 0).map((b) => b.due).sort()[0] || null;
+      const hist = notesByKey[c.key] || [];
+      const promise = hist.find((n) => n.promise_date)?.promise_date || null;
+      const waiting = promise && promise >= today;
+      return { ...c, total, late, maxLate, nextDue, hist, promise, waiting };
+    });
+  }, [src, notes, today]);
+
+  if (!src) return <div style={{ padding: 40, color: C.textFaint }}>Loading…</div>;
+
+  const shown = customers.filter((c) => channel === "all" || c.channel === channel);
+  const sum = (arr, f) => arr.reduce((a, x) => a + f(x), 0);
+  const total = sum(shown, (c) => c.total);
+  const late = sum(shown, (c) => c.late);
+  const aging = [
+    { label: "0–30 days", test: (a) => a <= 30, color: C.emerald },
+    { label: "31–60 days", test: (a) => a > 30 && a <= 60, color: C.gold },
+    { label: "61–90 days", test: (a) => a > 60 && a <= 90, color: C.amber },
+    { label: "Over 90 days", test: (a) => a > 90, color: C.rose },
+  ].map((g) => ({ ...g, amount: sum(shown, (c) => sum(c.bills.filter((b) => g.test(b.age)), (b) => b.left)) }));
+  const chase = shown.filter((c) => c.late > 0 && !c.waiting).sort((a, b) => b.maxLate - a.maxLate || b.late - a.late);
+  const promised = shown.filter((c) => c.late > 0 && c.waiting).sort((a, b) => a.promise.localeCompare(b.promise));
+  const notYet = shown.filter((c) => c.late <= 0).sort((a, b) => (a.nextDue || "").localeCompare(b.nextDue || ""));
+
+  async function addNote(c) {
+    if (!draft.text.trim()) return;
+    setSaving(true);
+    try {
+      const [row] = await sbFetch("collection_notes", { method: "POST", headers: { Prefer: "return=representation" },
+        body: JSON.stringify({ customer_key: c.key, customer_name: c.name, channel: c.channel, note: draft.text.trim(), promise_date: draft.promise || null }) });
+      setNotes((prev) => [row || { customer_key: c.key, note: draft.text.trim(), promise_date: draft.promise || null, created_by: authUser?.email, created_at: new Date().toISOString() }, ...prev]);
+      setDraft({ text: "", promise: "" });
+      setNoteError("");
+      if (logActivity) logActivity("Collection follow-up logged", c.name, `${draft.text.trim()}${draft.promise ? ` (commitment ${draft.promise})` : ""}`);
+    } catch (e) { setNoteError("The follow-up could not be saved. Please try again."); }
+    setSaving(false);
+  }
+
+  const tile = (label, value, sub, color) => (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", flex: "1 1 150px", minWidth: 0 }}>
+      <div style={{ fontSize: 10.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: color || C.text, fontFamily: "'IBM Plex Mono', monospace", marginTop: 2 }}>{value}</div>
+      {sub && <div style={{ fontSize: 11.5, color: C.textFaint, marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+
+  const card = (c) => {
+    const open = openKey === c.key;
+    const lastNote = c.hist[0];
+    return (
+      <div key={c.key} style={{ background: C.surface, border: `1px solid ${c.late > 0 && !c.waiting ? C.rose + "55" : C.border}`, borderRadius: 12, overflow: "hidden" }}>
+        <div onClick={() => { setOpenKey(open ? null : c.key); setDraft({ text: "", promise: "" }); }} style={{ padding: "11px 14px", cursor: "pointer" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, wordBreak: "break-word" }}>{c.name}{c.nickname ? <span style={{ color: C.textFaint, fontWeight: 400 }}> · {c.nickname}</span> : null}</div>
+              <div style={{ fontSize: 11.5, color: C.textFaint, marginTop: 2 }}>{MO_CHANNEL[c.channel]} · {c.bills.length} open invoice{c.bills.length === 1 ? "" : "s"}{c.phone ? " · " : ""}{c.phone && <a href={`tel:${c.phone}`} onClick={(e) => e.stopPropagation()} style={{ color: C.goldBright }}>{c.phone}</a>}</div>
+            </div>
+            <div style={{ textAlign: "right", flexShrink: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 15, fontFamily: "'IBM Plex Mono', monospace" }}>{moMoney(c.total)}</div>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: c.late > 0 ? C.rose : C.emerald }}>
+                {c.late > 0 ? `${moMoney(c.late)} overdue · ${c.maxLate} day${c.maxLate === 1 ? "" : "s"}` : c.nextDue ? `Due ${fmtDate(c.nextDue)}` : "Current"}
+              </div>
+            </div>
+          </div>
+          {lastNote && (
+            <div style={{ fontSize: 12, marginTop: 6, color: c.waiting ? C.goldBright : C.textDim || C.textFaint }}>
+              {c.waiting ? `Committed to pay by ${fmtDate(c.promise)} — ` : ""}“{lastNote.note}” <span style={{ color: C.textFaint }}>— {who(lastNote.created_by)}, {fmtDate(String(lastNote.created_at).slice(0, 10))}</span>
+            </div>
+          )}
+        </div>
+        {open && (
+          <div style={{ borderTop: `1px solid ${C.border}`, padding: "10px 14px 14px" }}>
+            <div style={{ fontSize: 11.5, color: C.textFaint, marginBottom: 6 }}>Payment terms: {c.terms}{c.lastPay ? ` · Last payment received ${fmtDate(c.lastPay)}` : ""}</div>
+            <div style={{ display: "grid", gap: 4, marginBottom: 12 }}>
+              {c.bills.map((b, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5, padding: "6px 0", borderBottom: `1px dashed ${C.border}` }}>
+                  <div style={{ minWidth: 0 }}>
+                    <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 }}>{b.no || "(no number)"}</span>
+                    <span style={{ color: C.textFaint }}> · {fmtDate(b.date)}{b.branch ? ` · ${b.branch}` : ""}</span>
+                    <div style={{ fontSize: 11, color: b.late > 0 ? C.rose : C.textFaint }}>{b.late > 0 ? `Due ${fmtDate(b.due)} — ${b.late} day${b.late === 1 ? "" : "s"} overdue` : `Due ${fmtDate(b.due)}`}</div>
+                  </div>
+                  <div style={{ textAlign: "right", flexShrink: 0, fontFamily: "'IBM Plex Mono', monospace" }}>
+                    {moMoney(b.left)}
+                    {b.paid > 0.009 && <div style={{ fontSize: 10.5, color: C.textFaint }}>of {moMoney(b.amount)}</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+              <button onClick={() => setStatementFor(c)} style={{ background: C.gold, color: "#1A1508", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>Statement of Account</button>
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.textFaint, textTransform: "uppercase", marginBottom: 6 }}>Collection follow-up</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+              <input value={draft.text} onChange={(e) => setDraft({ ...draft, text: e.target.value })} placeholder="e.g. Called accounts payable; payment scheduled for Friday" style={{ flex: "1 1 220px", minWidth: 0, background: C.bg, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.textFaint }}>Commitment date
+                <input type="date" value={draft.promise} onChange={(e) => setDraft({ ...draft, promise: e.target.value })} style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "7px 8px", fontSize: 13 }} />
+              </label>
+              <button disabled={saving || !draft.text.trim()} onClick={() => addNote(c)} style={{ background: C.surface, color: C.goldBright, border: `1px solid ${C.gold}`, borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", opacity: saving || !draft.text.trim() ? 0.5 : 1 }}>Log follow-up</button>
+            </div>
+            {noteError && <div style={{ fontSize: 12, color: C.rose, marginBottom: 8 }}>{noteError}</div>}
+            {c.hist.length > 0 && (
+              <div style={{ display: "grid", gap: 4 }}>
+                {c.hist.map((n, i) => (
+                  <div key={n.id || i} style={{ fontSize: 12 }}>
+                    <span style={{ color: C.textFaint }}>{fmtDate(String(n.created_at).slice(0, 10))} · {who(n.created_by)}:</span> {n.note}{n.promise_date ? <span style={{ color: C.goldBright }}> (commitment: {fmtDate(n.promise_date)})</span> : null}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const section = (title, sub, list) => list.length > 0 && (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+        <div style={{ fontWeight: 700, fontSize: 14 }}>{title}</div>
+        <div style={{ fontSize: 12, color: C.textFaint }}>{sub}</div>
+      </div>
+      <div style={{ display: "grid", gap: 8 }}>{list.map(card)}</div>
+    </div>
+  );
+
+  return (
+    <div>
+      <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: "0 0 4px" }}>Accounts Receivable</h2>
+      <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>Open customer balances and aging as of {fmtDate(today)}. Select a customer to view open invoices, issue a statement of account, or log a collection follow-up.</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+        {[["all", "All"], ["credit", "Credit Term"], ["corporate", "Corporate"], ["consignment", "Consignment"], ["online", "Online & COD"]].map(([k, l]) => {
+          const n = k === "all" ? customers.length : customers.filter((c) => c.channel === k).length;
+          return (
+            <button key={k} onClick={() => setChannel(k)} style={{ background: channel === k ? C.gold : C.surface, color: channel === k ? "#1A1508" : C.textFaint, border: `1px solid ${channel === k ? C.gold : C.border}`, borderRadius: 999, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>{l} ({n})</button>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+        {tile("Total receivables", moMoney(total), `${shown.length} customer${shown.length === 1 ? "" : "s"} with open balances`)}
+        {tile("Overdue", moMoney(late), `${chase.length + promised.length} customer${chase.length + promised.length === 1 ? "" : "s"} past due`, late > 0 ? C.rose : C.emerald)}
+        {tile("Payment commitments", moMoney(sum(promised, (c) => c.late)), `${promised.length} customer${promised.length === 1 ? "" : "s"} with a committed date`, C.goldBright)}
+      </div>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", marginBottom: 18 }}>
+        <div style={{ fontSize: 10.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>Aging by invoice date</div>
+        <div style={{ display: "flex", height: 10, borderRadius: 5, overflow: "hidden", background: C.border, marginBottom: 8 }}>
+          {aging.map((g) => total > 0 && g.amount > 0 && <div key={g.label} style={{ width: `${(g.amount / total) * 100}%`, background: g.color }} />)}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8 }}>
+          {aging.map((g) => (
+            <div key={g.label} style={{ fontSize: 12 }}>
+              <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: g.color, marginRight: 6 }} />{g.label}
+              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 13.5 }}>{moMoney(g.amount)}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+      {shown.length === 0 && <div style={{ padding: 30, textAlign: "center", color: C.textFaint }}>No open balances.</div>}
+      {section("Overdue — action required", "past due with no payment commitment, longest overdue first", chase)}
+      {section("Payment commitments", "past due with a committed payment date; returns to Overdue if the date passes unpaid", promised)}
+      {section("Current", "open balances within payment terms", notYet)}
+      {statementFor && <StatementPrintView c={statementFor} today={today} onClose={() => setStatementFor(null)} />}
+    </div>
+  );
+}
+
+function StatementPrintView({ c, today, onClose }) {
+  const cell = { border: "1px solid #000", padding: "5px 6px" };
+  const total = c.bills.reduce((a, b) => a + b.left, 0);
+  const late = c.bills.filter((b) => b.late > 0).reduce((a, b) => a + b.left, 0);
+  const d = (s) => new Date(s + "T00:00:00").toLocaleDateString("en-GB");
+  return createPortal(
+    <div className="doc-print-root" style={{ position: "fixed", inset: 0, background: "#fff", zIndex: 999999, overflowY: "auto" }}>
+      <style>{`
+        @page { size: A4; margin: 10mm; }
+        @media print {
+          .doc-no-print { display: none !important; }
+          html, body { background: #fff !important; height: auto !important; overflow: visible !important; margin: 0; padding: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .doc-print-root { display: block !important; position: static !important; inset: auto !important; overflow: visible !important; height: auto !important; z-index: auto !important; }
+          .doc-page { margin: 0 !important; box-shadow: none !important; }
+        }
+      `}</style>
+      <div className="doc-no-print" style={{ position: "sticky", top: 0, background: "#1a1a1a", padding: "12px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, zIndex: 10 }}>
+        <span style={{ color: "#fff", fontSize: 14, fontWeight: 600 }}>Statement — {c.name}</span>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={() => window.print()} style={{ background: "#C9A961", border: "none", borderRadius: 8, padding: "8px 18px", fontSize: 13, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>Print / Save as PDF</button>
+          <button onClick={onClose} style={{ background: "#333", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 700, color: "#fff", cursor: "pointer" }}>Close</button>
+        </div>
+      </div>
+      <div className="doc-page" style={{ width: 718, maxWidth: "100%", margin: "16px auto", boxShadow: "0 0 0 1px #e0e0e0", background: "#fff", color: "#1a1a1a", fontFamily: "'Battambang', 'Khmer OS', Arial, sans-serif", fontSize: 12, boxSizing: "border-box", padding: "16px 30px 24px" }}>
+        <div style={{ position: "relative", marginBottom: 10, minHeight: 92 }}>
+          <img src={CHOUMHEAN_LOGO} alt="Company logo" style={{ width: 90, height: 90, objectFit: "contain", position: "absolute", left: 0, top: 0 }} />
+          <div style={{ textAlign: "center", padding: "0 100px" }}>
+            <div style={{ fontSize: 24, fontWeight: 700, lineHeight: 1.3 }}>ជំហានត្រេឌីង ឯ.ក</div>
+            <div style={{ fontSize: 11, color: "#333" }}>ជាន់ទី០២ ផ្លូវដឹអេលីហ្សេ ភូមិ១៤ សង្កាត់ទន្លេបាសាក់ ខណ្ឌចំការមន ភ្នំពេញ</div>
+            <div style={{ fontSize: 11, color: "#333" }}>លេខអត្តសញ្ញាណកម្ម (VAT TIN)៖ K002-902506031</div>
+            <div style={{ fontSize: 11, color: "#333" }}>លេខការិយាល័យ៖ 081 882 982</div>
+          </div>
+        </div>
+        <div style={{ textAlign: "center", marginBottom: 10 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, textDecoration: "underline", lineHeight: 1.4 }}>របាយការណ៍សមតុល្យគណនី</div>
+          <div style={{ fontSize: 15, fontWeight: 700, lineHeight: 1.4 }}>STATEMENT OF ACCOUNT</div>
+        </div>
+        <table style={{ width: "100%", borderCollapse: "collapse", border: "1px solid #000", marginBottom: 10, fontSize: 11 }}>
+          <tbody><tr>
+            <td style={{ ...cell, width: "60%", verticalAlign: "top" }}>
+              <div><b>ឈ្មោះអតិថិជន :</b> {c.name}</div>
+              {c.address && <div style={{ marginTop: 2 }}><b>អាសយដ្ឋាន :</b> {c.address}</div>}
+              {c.phone && <div style={{ marginTop: 2 }}><b>លេខទូរស័ព្ទ:</b> {c.phone}</div>}
+              {c.vat && <div style={{ marginTop: 2 }}><b>លេខអត្តសញ្ញាណកម្ម (VAT TIN)៖</b> {c.vat}</div>}
+            </td>
+            <td style={{ ...cell, verticalAlign: "top" }}>
+              <div><b>កាលបរិច្ឆេទ / Date:</b> {d(today)}</div>
+              <div style={{ marginTop: 2 }}><b>លក្ខខណ្ឌ / Terms:</b> {c.terms}</div>
+            </td>
+          </tr></tbody>
+        </table>
+        <table style={{ width: "100%", borderCollapse: "collapse", border: "1px solid #000", fontSize: 11 }}>
+          <thead><tr style={{ background: "#f2f2f2" }}>
+            <th style={cell}>ល.រ<br />No</th><th style={cell}>លេខវិក្កយបត្រ<br />Bill no</th><th style={cell}>កាលបរិច្ឆេទ<br />Date</th><th style={cell}>ថ្ងៃកំណត់<br />Due</th>
+            <th style={{ ...cell, textAlign: "right" }}>ទឹកប្រាក់<br />Amount</th><th style={{ ...cell, textAlign: "right" }}>បានបង់<br />Paid</th><th style={{ ...cell, textAlign: "right" }}>នៅជំពាក់<br />Balance</th>
+          </tr></thead>
+          <tbody>
+            {c.bills.map((b, i) => (
+              <tr key={i}>
+                <td style={{ ...cell, textAlign: "center" }}>{i + 1}</td>
+                <td style={cell}>{b.no || "—"}</td>
+                <td style={cell}>{d(b.date)}</td>
+                <td style={{ ...cell, fontWeight: b.late > 0 ? 700 : 400 }}>{d(b.due)}{b.late > 0 ? ` (${b.late}d)` : ""}</td>
+                <td style={{ ...cell, textAlign: "right" }}>{moMoney(b.amount)}</td>
+                <td style={{ ...cell, textAlign: "right" }}>{b.paid > 0.009 ? moMoney(b.paid) : "—"}</td>
+                <td style={{ ...cell, textAlign: "right", fontWeight: 700 }}>{moMoney(b.left)}</td>
+              </tr>
+            ))}
+            <tr>
+              <td colSpan={6} style={{ ...cell, textAlign: "right", fontWeight: 700 }}>សរុបនៅជំពាក់ / Total balance</td>
+              <td style={{ ...cell, textAlign: "right", fontWeight: 700, fontSize: 13 }}>{moMoney(total)}</td>
+            </tr>
+            {late > 0.009 && (
+              <tr>
+                <td colSpan={6} style={{ ...cell, textAlign: "right" }}>ក្នុងនោះហួសកាលកំណត់ / Of which overdue</td>
+                <td style={{ ...cell, textAlign: "right", fontWeight: 700 }}>{moMoney(late)}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+        <div style={{ marginTop: 14, fontSize: 11.5, lineHeight: 1.6 }}>
+          សូមមេត្តាទូទាត់សមតុល្យខាងលើ។ ប្រសិនបើលោកអ្នកបានបង់រួចហើយ សូមមេត្តាផ្ញើវិក្កយបត្របង់ប្រាក់មកយើងខ្ញុំ។ សូមអរគុណ!<br />
+          Please settle the balance above. If you have already paid, kindly send us the payment receipt. Thank you!
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 70, fontSize: 11 }}>
+          <div style={{ width: 200, borderTop: "1px solid #000", textAlign: "center", paddingTop: 4 }}>រៀបចំដោយ / Prepared by</div>
+          <div style={{ width: 200, borderTop: "1px solid #000", textAlign: "center", paddingTop: 4 }}>អតិថិជន / Customer</div>
+        </div>
+      </div>
+    </div>,
+    document.body
   );
 }
 
@@ -6342,38 +6735,39 @@ const NAV = [
     { label: "Overview", page: "overview" },
   ]},
   { name: "Sales", items: [
-    { label: "Total",              page: "sales", sub: "total" },
-    { label: "Sales report",       page: "sales", sub: "report", needs: "owner" },
+    { label: "Sales Summary",              page: "sales", sub: "total" },
+    { label: "Sales Report",       page: "sales", sub: "report", needs: "owner" },
     { label: "Consignment",        page: "sales", sub: "consignment", view: "regular" },
     { label: "Corporate Accounts", page: "sales", sub: "consignment", view: "bigco" },
     { label: "Credit Term",        page: "sales", sub: "credit" },
     { label: "Online & COD",       page: "sales", sub: "online" },
-    { label: "Payments received",  page: "sales", sub: "payments" },
+    { label: "Payments Received",  page: "sales", sub: "payments" },
+    { label: "Accounts Receivable",         page: "sales", sub: "owed" },
     ...(PENDING_PAYMENTS_ENABLED ? [{ label: "Pending Payments",   page: "sales", sub: "pending" }] : []),
     { label: "Province Coverage",  page: "sales", sub: "coverage" },
-    { label: "Stores",             page: "stores" },
+    { label: "Store Directory",             page: "stores" },
   ]},
   { name: "Warehouse", items: [
-    { label: "Stock on hand",       page: "delivery", tab: "stock" },
-    { label: "Products & barcodes", page: "delivery", tab: "products" },
+    { label: "Stock on Hand",       page: "delivery", tab: "stock" },
+    { label: "Products & Barcodes", page: "delivery", tab: "products" },
   ]},
   { name: "Documents", items: [
-    { label: "Delivery notes", page: "delivery", tab: "notes" },
+    { label: "Delivery Notes", page: "delivery", tab: "notes" },
     { label: "Invoices",       page: "delivery", tab: "invoices" },
-    { label: "Bill numbers",   page: "bills" },
+    { label: "Bill Register",   page: "bills" },
   ]},
   { name: "Marketing", items: [
     { label: "KOL & Content", page: "kol" },
   ]},
   { name: "Accounting", needs: "accounting", items: [
-    { label: "Post",          page: "accounting", tab: "post" },
-    { label: "From sales",    page: "accounting", tab: "sales" },
-    { label: "Journal entry", page: "accounting", tab: "journal" },
-    { label: "Vendor",        page: "accounting", tab: "vendor" },
-    { label: "Entries",       page: "accounting", tab: "ledger" },
+    { label: "Post Entry",          page: "accounting", tab: "post" },
+    { label: "From Sales",    page: "accounting", tab: "sales" },
+    { label: "Journal Entry", page: "accounting", tab: "journal" },
+    { label: "Vendors",        page: "accounting", tab: "vendor" },
+    { label: "Ledger Entries",       page: "accounting", tab: "ledger" },
     { label: "Reports",       page: "accounting", tab: "reports" },
     { label: "Finance",       page: "accounting", tab: "finance" },
-    { label: "Accounts",      page: "accounting", tab: "accounts" },
+    { label: "Chart of Accounts",      page: "accounting", tab: "accounts" },
   ]},
   { name: "People", needs: "payroll", items: [
     { label: "Payroll", page: "payroll" },
