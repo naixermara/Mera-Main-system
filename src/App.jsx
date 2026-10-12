@@ -102,6 +102,12 @@ async function sbFetchOnce(path, options = {}, retries = 2) {
             }
           }
         }
+        if (/MONTH_LOCKED/.test(text)) {
+          let msg = "This month is closed.";
+          try { msg = String(JSON.parse(text).message || msg).replace(/^MONTH_LOCKED:\s*/, ""); } catch (e) { /* keep default */ }
+          try { window.dispatchEvent(new CustomEvent("mera-month-locked", { detail: msg })); } catch (e) { /* old browser */ }
+          throw new Error(`MONTH_LOCKED: ${msg}`);
+        }
         throw new Error(`Supabase error ${res.status}: ${text}`);
       }
       const text = await res.text();
@@ -729,6 +735,12 @@ export default function MeraConsignmentApp() {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     toastTimerRef.current = setTimeout(() => setToast(null), kind === "error" ? 5000 : 2800);
   }, []);
+  // A save that touches a closed month is refused by the database; say why.
+  useEffect(() => {
+    const onLocked = (e) => notify(e.detail || "This month is closed.", "error");
+    window.addEventListener("mera-month-locked", onLocked);
+    return () => window.removeEventListener("mera-month-locked", onLocked);
+  }, [notify]);
   const [activityEntries, setActivityEntries] = useState(null);
   const [activityLoading, setActivityLoading] = useState(false);
   const [newStoreForm, setNewStoreForm] = useState({
@@ -1567,7 +1579,7 @@ export default function MeraConsignmentApp() {
               </span>
             </div>
             <h1 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 34, margin: "6px 0 0", letterSpacing: "-0.01em" }}>
-              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online & COD Sales" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : "Consignment Operations") : "Consignment Operations"}
+              {page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "close" ? "Month Close" : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Operations" : salesSubPage === "online" ? "Online & COD Sales" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : "Consignment Operations") : "Consignment Operations"}
             </h1>
             <div style={{ height: 2, width: 46, background: `linear-gradient(90deg, ${C.gold}, transparent)`, marginTop: 10 }} />
           </div>
@@ -1660,6 +1672,10 @@ export default function MeraConsignmentApp() {
           canSeePayroll
             ? <ProfitPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to profit figures.</div>
+        ) : page === "close" ? (
+          canSeeAccounting
+            ? <MonthClosePage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
+            : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>Only the owner or accountant can close months.</div>
         ) : page === "bills" ? (
           <BillNumbersPage C={C} sbFetch={sbFetch} showAmounts={canSeeAccounting} />
         ) : page === "payroll" ? (
@@ -5012,6 +5028,142 @@ function CustomerRetentionPage({ authUser, C, sbFetch, logActivity }) {
   );
 }
 
+// ============================================================================
+// MONTH CLOSE — once the accountant has finished a month, closing it locks
+// that month's sales, bills, visits, stock moves and ledger entries in the
+// database itself. Payments can still be recorded against a closed month's
+// invoices (customers pay later); everything else needs the month reopened,
+// with a reason, by the owner or accountant. Every close and reopen is logged.
+// ============================================================================
+function MonthClosePage({ authUser, C, sbFetch, logActivity }) {
+  const [data, setData] = useState(null);
+  const [locks, setLocks] = useState([]);
+  const [log, setLog] = useState([]);
+  const [names, setNames] = useState({});
+  const [confirm, setConfirm] = useState(null); // { month, mode: "close" | "reopen", reason }
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function load() {
+    const get = async (q) => { try { return (await sbFetch(q)) || []; } catch (e) { return []; } };
+    const [ci, br, os, vi, st, lk, lg, un] = await Promise.all([
+      get("credit_invoices?select=invoice_date,amount"),
+      get("bigco_reports?select=report_date,amount,rebate"),
+      get("online_sales?select=date,amount"),
+      get("visits?select=date,store_name,product,sold,paid"),
+      get("stores?select=name,pl_price,night_price,day_price,pant_price,short_price"),
+      get("period_locks?select=*"),
+      get("period_lock_log?select=*&order=done_at.desc&limit=50"),
+      get("user_names?select=*"),
+    ]);
+    const m = {};
+    const row = (k) => m[k] || (m[k] = { month: k, credit: 0, corporate: 0, online: 0, consignment: 0, bills: 0 });
+    ci.forEach((r) => { if (r.invoice_date) { const x = row(monthKey(r.invoice_date)); x.credit += Number(r.amount || 0); x.bills++; } });
+    br.forEach((r) => { if (r.report_date) { const x = row(monthKey(r.report_date)); x.corporate += Number(r.amount || 0) - Number(r.rebate || 0); x.bills++; } });
+    os.forEach((r) => { if (r.date) { const x = row(monthKey(r.date)); x.online += Number(r.amount || 0); x.bills++; } });
+    const stBy = {}; st.forEach((s) => { stBy[s.name] = s; });
+    const sku = {}; SKUS.forEach((x) => { sku[x.visitKey] = x; });
+    vi.forEach((v) => { const sold = Number(v.sold || 0); if (!v.date || sold <= 0 || !sku[v.product]) return; row(monthKey(v.date)).consignment += sold * Number(stBy[v.store_name]?.[sku[v.product].priceCol] || 0); });
+    setData(Object.values(m).filter((x) => x.month >= "2026-01").sort((a, b) => b.month.localeCompare(a.month)));
+    setLocks(lk); setLog(lg);
+    setNames(Object.fromEntries(un.map((x) => [x.email, x.name])));
+  }
+  useEffect(() => { load(); }, []);
+  const who = (e) => !e ? "—" : names[e] || e.split("@")[0];
+  const money = (n) => `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  async function act() {
+    if (!confirm) return;
+    setBusy(true); setErr("");
+    try {
+      if (confirm.mode === "close") {
+        const d = data.find((x) => x.month === confirm.month) || {};
+        await sbFetch("rpc/close_month", { method: "POST", body: JSON.stringify({ p_month: confirm.month, p_summary: { credit: d.credit || 0, corporate: d.corporate || 0, online: d.online || 0, consignment: d.consignment || 0, bills: d.bills || 0 } }) });
+        logActivity?.("Closed month", monthLabel(confirm.month), "");
+      } else {
+        if (!(confirm.reason || "").trim()) { setErr("Give a reason for reopening."); setBusy(false); return; }
+        await sbFetch("rpc/reopen_month", { method: "POST", body: JSON.stringify({ p_month: confirm.month, p_reason: confirm.reason.trim() }) });
+        logActivity?.("Reopened month", monthLabel(confirm.month), confirm.reason.trim());
+      }
+      setConfirm(null); await load();
+    } catch (e) { setErr("That could not be saved. Please try again."); }
+    setBusy(false);
+  }
+
+  if (!data) return <div style={{ padding: 40, color: C.textFaint }}>Loading…</div>;
+  const lockOf = (m) => locks.find((l) => l.month === m && l.is_closed);
+  const cur = currentMonthKey();
+  const th = { padding: "8px 10px", fontSize: 10.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", textAlign: "right", whiteSpace: "nowrap" };
+  const td = { padding: "10px", borderTop: `1px solid ${C.border}`, fontSize: 12.5, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", whiteSpace: "nowrap" };
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14, lineHeight: 1.6 }}>
+        Close a month once its figures are final. A closed month's sales, bills, consignment visits, stock movements and ledger entries cannot be added, changed or deleted by anyone. Payments received later can still be recorded against its invoices. Reopening requires a reason and is logged.
+      </div>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflowX: "auto", marginBottom: 18 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+          <thead><tr>
+            <th style={{ ...th, textAlign: "left" }}>Month</th><th style={th}>Consignment</th><th style={th}>Credit Term</th><th style={th}>Corporate</th><th style={th}>Online &amp; COD</th><th style={th}>Total sales</th><th style={{ ...th, textAlign: "left" }}>Status</th><th style={th}></th>
+          </tr></thead>
+          <tbody>
+            {data.map((d) => {
+              const l = lockOf(d.month); const total = d.consignment + d.credit + d.corporate + d.online;
+              return (
+                <tr key={d.month}>
+                  <td style={{ ...td, textAlign: "left", fontFamily: "inherit", fontWeight: 700 }}>{monthLabel(d.month)}</td>
+                  <td style={td}>{money(d.consignment)}</td><td style={td}>{money(d.credit)}</td><td style={td}>{money(d.corporate)}</td><td style={td}>{money(d.online)}</td>
+                  <td style={{ ...td, fontWeight: 700 }}>{money(total)}</td>
+                  <td style={{ ...td, textAlign: "left", fontFamily: "inherit" }}>
+                    {l ? <span style={{ color: C.emerald, fontWeight: 700 }}>🔒 Closed<span style={{ color: C.textFaint, fontWeight: 400, fontSize: 11 }}> · {who(l.closed_by)}, {fmtDate(String(l.closed_at).slice(0, 10))}</span></span>
+                       : <span style={{ color: d.month === cur ? C.textDim : C.amber, fontWeight: 700 }}>{d.month === cur ? "Current month" : "Open"}</span>}
+                  </td>
+                  <td style={{ ...td, fontFamily: "inherit" }}>
+                    {l ? <button onClick={() => { setErr(""); setConfirm({ month: d.month, mode: "reopen", reason: "" }); }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "5px 11px", fontSize: 11.5, cursor: "pointer" }}>Reopen</button>
+                       : d.month < cur && <button onClick={() => { setErr(""); setConfirm({ month: d.month, mode: "close" }); }} style={{ background: C.gold, border: "none", color: "#1A1508", borderRadius: 8, padding: "6px 12px", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>Close month</button>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {confirm && (
+        <div style={{ background: confirm.mode === "close" ? C.surface : C.amberBg, border: `1px solid ${confirm.mode === "close" ? C.gold : C.amber}`, borderRadius: 12, padding: "14px 16px", marginBottom: 18 }}>
+          {confirm.mode === "close" ? (
+            <div style={{ fontSize: 13, lineHeight: 1.6 }}>
+              <b>Close {monthLabel(confirm.month)}?</b> After this, nobody can add, change or delete that month's sales, bills, visits, stock movements or ledger entries. Payments received later can still be recorded. Totals at the moment of closing are saved with the lock.
+            </div>
+          ) : (
+            <div>
+              <div style={{ fontSize: 13, marginBottom: 8, color: C.amber }}><b>Reopen {monthLabel(confirm.month)}?</b> Its records can be changed again until it is closed again. The reason is recorded.</div>
+              <input value={confirm.reason} onChange={(e) => setConfirm({ ...confirm, reason: e.target.value })} placeholder="Reason, e.g. accountant correcting invoice INV0000301"
+                style={{ width: "100%", boxSizing: "border-box", background: C.bg, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
+            </div>
+          )}
+          {err && <div style={{ color: C.rose, fontSize: 12, marginTop: 8 }}>{err}</div>}
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button disabled={busy} onClick={act} style={{ background: C.gold, border: "none", color: "#1A1508", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>{busy ? "Saving…" : confirm.mode === "close" ? `Close ${monthLabel(confirm.month)}` : "Reopen month"}</button>
+            <button onClick={() => setConfirm(null)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "8px 14px", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>History</div>
+      {log.length === 0 ? <div style={{ fontSize: 12, color: C.textFaint }}>No months closed yet.</div> : (
+        <div style={{ display: "grid", gap: 4 }}>
+          {log.map((x) => (
+            <div key={x.id} style={{ fontSize: 12, color: C.textDim }}>
+              {fmtDate(String(x.done_at).slice(0, 10))} · <b style={{ color: x.action === "close" ? C.emerald : C.amber }}>{x.action === "close" ? "Closed" : "Reopened"}</b> {monthLabel(x.month)} · {who(x.done_by)}{x.reason ? ` — “${x.reason}”` : ""}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Payments received — a read-only feed of every ABA payment the Telegram bot
 // saves. Nothing to confirm or assign: each payment just shows a hint of whose
 // money it is, worked out from (in order) a bill number in the remark, a name
@@ -7049,6 +7201,7 @@ const NAV = [
     { label: "Reports",       page: "accounting", tab: "reports" },
     { label: "Finance",       page: "accounting", tab: "finance" },
     { label: "Chart of Accounts",      page: "accounting", tab: "accounts" },
+    { label: "Month Close",            page: "close" },
   ]},
   { name: "People", needs: "payroll", items: [
     { label: "Payroll", page: "payroll" },
