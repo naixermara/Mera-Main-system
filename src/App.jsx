@@ -1650,7 +1650,7 @@ export default function MeraConsignmentApp() {
               // can never disagree about where you are.
               const MAP = {
                 kol: "KOL & Content", total: "Sales Summary", credit: "Credit Term",
-                corporate: "Corporate Accounts", consignment: "Consignment",
+                corporate: "Corporate Accounts", consignment: "Consignment", online: "Online & COD",
                 stores: "Store Directory", delivery: "Delivery Notes",
                 accounting: "Post Entry", payroll: "Payroll", profit: "Profit & Margin",
                 overview: "Overview",
@@ -1802,6 +1802,7 @@ export default function MeraConsignmentApp() {
                 sbFetch={sbFetch}
                 onNavigate={(dest) => {
                   if (dest === "credit") { setSalesSubPage("credit"); }
+                  else if (dest === "online") { setSalesSubPage("online"); }
                   else { setSalesSubPage("consignment"); setConsignmentSubView(dest === "corporate" ? "bigco" : "regular"); }
                 }}
               />
@@ -10947,19 +10948,22 @@ function SalesTotalPage({ authUser, C, sbFetch, onNavigate }) {
   const [creditPayments, setCreditPayments] = useState([]);
   const [bigcoStores, setBigcoStores] = useState([]);
   const [creditStores, setCreditStores] = useState([]);
+  const [onlineSales, setOnlineSales] = useState([]);
   const [openBreakdown, setOpenBreakdown] = useState(null);
 
   useEffect(() => {
     (async () => {
       try {
-        const [visitRows, reportRows, invoiceRows, paymentRows, bigcoStoreRows, creditStoreRows] = await Promise.all([
+        const [visitRows, reportRows, invoiceRows, paymentRows, bigcoStoreRows, creditStoreRows, onlineRows] = await Promise.all([
           sbFetch("visits?select=*"),
           sbFetch("bigco_reports?select=*"),
           sbFetch("credit_invoices?select=*"),
           sbFetch("credit_payments?select=*"),
           sbFetch("bigco_stores?select=*"),
           sbFetch("credit_stores?select=*"),
+          sbFetch("online_sales?select=id,date,customer_name,amount,payment_status"),
         ]);
+        setOnlineSales(onlineRows || []);
         setVisits(visitRows || []);
         setBigcoReports(reportRows || []);
         setCreditInvoices(invoiceRows || []);
@@ -10980,8 +10984,9 @@ function SalesTotalPage({ authUser, C, sbFetch, onNavigate }) {
     bigcoReports.forEach((r) => r.report_date && acc.push(monthKey(r.report_date)));
     creditInvoices.forEach((i) => i.invoice_date && acc.push(monthKey(i.invoice_date)));
     creditPayments.forEach((p) => p.payment_date && acc.push(monthKey(p.payment_date)));
+    onlineSales.forEach((o) => o.date && acc.push(monthKey(o.date)));
     return monthsThrough(acc);
-  }, [visits, bigcoReports, creditInvoices, creditPayments]);
+  }, [visits, bigcoReports, creditInvoices, creditPayments, onlineSales]);
 
   const summary = useMemo(() => {
     // --- Consignment / Regular stores: money taken on visits during the month
@@ -11033,6 +11038,18 @@ function SalesTotalPage({ authUser, C, sbFetch, onNavigate }) {
       creditRows[name] = (creditRows[name] || 0) + amt;
     });
 
+    // --- Online & COD: orders dated in the month that have been paid
+    // (COD orders still awaiting payment are billed but not collected)
+    const monthOnline = onlineSales.filter((o) => o.date && monthKey(o.date) === selectedMonth && Number(o.amount || 0) > 0);
+    const onlineBilled = monthOnline.reduce((a, o) => a + Number(o.amount || 0), 0);
+    const onlineCollected = monthOnline.filter((o) => o.payment_status !== "unpaid").reduce((a, o) => a + Number(o.amount || 0), 0);
+    const onlineRows = {};
+    monthOnline.forEach((o) => {
+      if (o.payment_status === "unpaid") return;
+      const name = o.customer_name || "Online customer";
+      onlineRows[name] = (onlineRows[name] || 0) + Number(o.amount || 0);
+    });
+
     const toList = (obj) => Object.entries(obj).map(([name, amount]) => ({ name, amount })).sort((a, b) => b.amount - a.amount);
 
     return {
@@ -11041,20 +11058,24 @@ function SalesTotalPage({ authUser, C, sbFetch, onNavigate }) {
       corporateBilled,
       creditCollected,
       creditBilled,
-      totalCollected: consignmentCollected + corporateCollected + creditCollected,
-      totalBilled: corporateBilled + creditBilled,
+      onlineCollected,
+      onlineBilled,
+      totalCollected: consignmentCollected + corporateCollected + creditCollected + onlineCollected,
+      totalBilled: corporateBilled + creditBilled + onlineBilled,
       breakdowns: {
         consignment: toList(consignmentRows),
         corporate: toList(corporateRows),
         credit: toList(creditRows),
+        online: toList(onlineRows),
       },
     };
-  }, [visits, bigcoReports, creditInvoices, creditPayments, bigcoStores, creditStores, selectedMonth]);
+  }, [visits, bigcoReports, creditInvoices, creditPayments, bigcoStores, creditStores, onlineSales, selectedMonth]);
 
   const accounts = [
     { key: "consignment", label: "Consignment", sub: "Regular stores", value: summary.consignmentCollected, billed: null, go: "regular" },
     { key: "corporate", label: "Corporate Accounts", sub: null, value: summary.corporateCollected, billed: summary.corporateBilled, go: "corporate" },
     { key: "credit", label: "Credit Term", sub: null, value: summary.creditCollected, billed: summary.creditBilled, go: "credit" },
+    { key: "online", label: "Online & COD", sub: null, value: summary.onlineCollected, billed: summary.onlineBilled, go: "online" },
   ];
 
   const pct = (v) => (summary.totalCollected > 0 ? (v / summary.totalCollected) * 100 : 0);
@@ -11064,7 +11085,7 @@ function SalesTotalPage({ authUser, C, sbFetch, onNavigate }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4, marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
         <div>
           <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: 0 }}>Total collected</h2>
-          <div style={{ fontSize: 12, color: C.textFaint, marginTop: 4 }}>Consignment + Corporate Accounts + Credit Term</div>
+          <div style={{ fontSize: 12, color: C.textFaint, marginTop: 4 }}>Consignment + Corporate Accounts + Credit Term + Online &amp; COD</div>
         </div>
         <select
           value={selectedMonth}
@@ -11089,7 +11110,7 @@ function SalesTotalPage({ authUser, C, sbFetch, onNavigate }) {
               ${summary.totalCollected.toLocaleString("en-US", MONEY2)}
             </div>
             <div style={{ fontSize: 11, color: C.textFaint, marginTop: 6 }}>
-              Across all 3 accounts{summary.totalBilled > 0 ? ` · $${summary.totalBilled.toLocaleString("en-US", MONEY2)} invoiced this month (Corporate + Credit Term)` : ""}
+              Across all 4 channels{summary.totalBilled > 0 ? ` · $${summary.totalBilled.toLocaleString("en-US", MONEY2)} invoiced this month (Corporate, Credit Term, Online & COD)` : ""}
             </div>
 
             {summary.totalCollected > 0 && (
@@ -11097,15 +11118,16 @@ function SalesTotalPage({ authUser, C, sbFetch, onNavigate }) {
                 <div style={{ width: `${pct(summary.consignmentCollected)}%`, background: C.emerald }} />
                 <div style={{ width: `${pct(summary.corporateCollected)}%`, background: C.gold }} />
                 <div style={{ width: `${pct(summary.creditCollected)}%`, background: C.amber }} />
+                <div style={{ width: `${pct(summary.onlineCollected)}%`, background: C.sky || "#5BA4CF" }} />
               </div>
             )}
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 14, marginBottom: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 14, marginBottom: 8 }}>
             {accounts.map((a, idx) => (
               <div key={a.key} style={{ background: C.surface, border: `1px solid ${openBreakdown === a.key ? C.gold : C.border}`, borderRadius: 12, padding: "18px 20px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                  <div style={{ width: 8, height: 8, borderRadius: 3, background: [C.emerald, C.gold, C.amber][idx] }} />
+                  <div style={{ width: 8, height: 8, borderRadius: 3, background: [C.emerald, C.gold, C.amber, C.sky || "#5BA4CF"][idx] }} />
                   <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>{a.label}</div>
                 </div>
                 <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: C.emerald }}>
@@ -11672,6 +11694,7 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
   const [creditInvoices, setCreditInvoices] = useState([]);
   const [creditPayments, setCreditPayments] = useState([]);
   const [bigcoReports, setBigcoReports] = useState([]);
+  const [onlineSales, setOnlineSales] = useState([]);
   const [adRows, setAdRows] = useState([]);
   const [showKolPaidBreakdown, setShowKolPaidBreakdown] = useState(false);
 
@@ -11711,11 +11734,13 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
   useEffect(() => {
     (async () => {
       try { setAdRows((await sbFetch("ad_spend?select=*")) || []); } catch (e) { /* table not created yet */ }
+      try { setOnlineSales((await sbFetch("online_sales?select=id,date,amount,payment_status")) || []); } catch (e) { /* non-critical */ }
     })();
   }, []);
 
   const availableMonths = useMemo(() => {
     const acc = [];
+    onlineSales.forEach((o) => o.date && acc.push(monthKey(o.date)));
     consignmentVisits.forEach((v) => acc.push(monthKey(v.date)));
     kols.forEach((k) => k.videos.forEach((v) => acc.push(monthKey(v.posted_date))));
     creditInvoices.forEach((inv) => acc.push(monthKey(inv.invoice_date)));
@@ -11757,10 +11782,15 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
 
     const adSpend = adRows.filter((r) => r.month === selectedMonth).reduce((a, r) => a + Number(r.amount || 0), 0);
 
-    return { consignmentCollected, kolSpend, kolPaid, kolPaidBreakdown, adSpend, creditBilled, creditCollected, corporateBilled, corporateCollected };
-  }, [consignmentVisits, kols, creditInvoices, creditPayments, bigcoReports, adRows, selectedMonth]);
+    // Online & COD: orders dated this month that have been paid
+    const monthOnline = onlineSales.filter((o) => o.date && monthKey(o.date) === selectedMonth && Number(o.amount || 0) > 0);
+    const onlineBilled = monthOnline.reduce((a, o) => a + Number(o.amount || 0), 0);
+    const onlineCollected = monthOnline.filter((o) => o.payment_status !== "unpaid").reduce((a, o) => a + Number(o.amount || 0), 0);
 
-  const totalCollected = summary.consignmentCollected + summary.corporateCollected + summary.creditCollected;
+    return { consignmentCollected, kolSpend, kolPaid, kolPaidBreakdown, adSpend, creditBilled, creditCollected, corporateBilled, corporateCollected, onlineBilled, onlineCollected };
+  }, [consignmentVisits, kols, creditInvoices, creditPayments, bigcoReports, onlineSales, adRows, selectedMonth]);
+
+  const totalCollected = summary.consignmentCollected + summary.corporateCollected + summary.creditCollected + summary.onlineCollected;
   const marketingSpend = summary.kolSpend + summary.adSpend;
   const netTotal = totalCollected - marketingSpend;
 
@@ -11769,7 +11799,7 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 22, marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
         <div>
           <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: 0 }}>Overview</h2>
-          <div style={{ fontSize: 12, color: C.textFaint, marginTop: 4 }}>Combined view across Consignment, Corporate Accounts, Credit Term, and KOL &amp; Content</div>
+          <div style={{ fontSize: 12, color: C.textFaint, marginTop: 4 }}>Combined view across Consignment, Corporate Accounts, Credit Term, Online &amp; COD and KOL &amp; Content</div>
         </div>
         <select
           value={selectedMonth}
@@ -11792,7 +11822,7 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
               {netTotal >= 0 ? "+" : "-"}${Math.abs(netTotal).toLocaleString("en-US", MONEY2)}
             </div>
             <div style={{ fontSize: 11, color: C.textFaint, marginTop: 6 }}>
-              ${totalCollected.toLocaleString("en-US", MONEY2)} collected across all 3 sales accounts, minus ${marketingSpend.toLocaleString("en-US", MONEY2)} marketing spend
+              ${totalCollected.toLocaleString("en-US", MONEY2)} collected across all 4 sales channels, minus ${marketingSpend.toLocaleString("en-US", MONEY2)} marketing spend
             </div>
             <button
               type="button"
@@ -11844,6 +11874,15 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
               <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Credit Term</div>
               <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: C.emerald }}>${summary.creditCollected.toLocaleString("en-US", MONEY2)}</div>
               <div style={{ fontSize: 11, color: C.textFaint, marginTop: 4 }}>collected of ${summary.creditBilled.toLocaleString("en-US", MONEY2)} billed</div>
+            </button>
+
+            <button
+              onClick={() => onNavigate("online")}
+              style={{ textAlign: "left", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "18px 20px", cursor: "pointer" }}
+            >
+              <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Online &amp; COD</div>
+              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: C.emerald }}>${summary.onlineCollected.toLocaleString("en-US", MONEY2)}</div>
+              <div style={{ fontSize: 11, color: C.textFaint, marginTop: 4 }}>collected of ${summary.onlineBilled.toLocaleString("en-US", MONEY2)} billed</div>
             </button>
           </div>
 
