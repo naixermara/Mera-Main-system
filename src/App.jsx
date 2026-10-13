@@ -1662,7 +1662,9 @@ export default function MeraConsignmentApp() {
             }}
           />
         ) : page === "kol" ? (
-          <KolPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
+          canSeePayroll
+            ? <KolPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
+            : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to marketing figures.</div>
         ) : page === "delivery" ? (
           <DeliveryNotePage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} stockForStore={stockForStore} onStockHandled={() => setStockForStore(null)} onStoreDelivered={recordDeliveryToStore} openPanel={childTab} />
         ) : page === "stores" ? (
@@ -7711,7 +7713,7 @@ const NAV = [
     { label: "Invoices",       page: "delivery", tab: "invoices" },
     { label: "Bill Register",   page: "bills" },
   ]},
-  { name: "Marketing", items: [
+  { name: "Marketing", needs: "payroll", items: [
     { label: "KOL & Content", page: "kol" },
   ]},
   { name: "Accounting", needs: "accounting", items: [
@@ -10068,6 +10070,12 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
   const [onlineSales, setOnlineSales] = useState([]);
   const [onlineSaleItems, setOnlineSaleItems] = useState([]);
   const [miscExpenses, setMiscExpenses] = useState([]);
+  // Marketing (KOL & ad boosting) is recorded on the Marketing page and is
+  // never posted to the Accounting ledger. It is still a real cost, so it is
+  // read here and deducted from profit — once, from that single source.
+  const [mktKols, setMktKols] = useState([]);
+  const [mktVideos, setMktVideos] = useState([]);
+  const [mktAds, setMktAds] = useState([]);
   const [showExpenseBreakdown, setShowExpenseBreakdown] = useState(false);
   const [expenseForm, setExpenseForm] = useState({ date: todayStr(), description: "", amount: "", declare: false, accountId: "", paidFromId: "" });
   // Declared expenses live in the Accounting ledger (gl_*). Only accounting
@@ -10188,6 +10196,11 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
       } catch (e) {
         // online_sales tables missing just means no online revenue tracked yet
       }
+      try {
+        const [kr, vr] = await Promise.all([sbFetch("kols?select=id,name,package_cost,package_videos"), sbFetch("kol_videos?select=kol_id,posted_date,video_cost")]);
+        setMktKols(kr || []); setMktVideos(vr || []);
+      } catch (e) { /* no KOL data yet */ }
+      try { setMktAds((await sbFetch("ad_spend?select=*")) || []); } catch (e) { /* no ad spend table yet */ }
       await reloadMiscExpenses();
       await reloadLedger();
       try {
@@ -10331,6 +10344,21 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
     const declaredExpenseCost = declaredExpenses.reduce((a, x) => a + x.amount, 0);
     const otherExpenseCost = privateExpenseCost + declaredExpenseCost;
 
+    // Marketing — same rule as the Dashboard: a KOL package is costed per
+    // video in the month the video is posted, plus any extra per-video cost;
+    // ad boosting by the month it is logged for. Not declared, never in the ledger.
+    let kolCost = 0;
+    const kolBreakdown = [];
+    mktKols.forEach((k) => {
+      const per = Number(k.package_videos || 0) > 0 ? Number(k.package_cost || 0) / Number(k.package_videos) : 0;
+      const vids = mktVideos.filter((v) => v.kol_id === k.id && v.posted_date && monthKey(v.posted_date) === selectedMonth);
+      const c = vids.reduce((a, v) => a + per + Number(v.video_cost || 0), 0);
+      if (c > 0.005) { kolCost += c; kolBreakdown.push({ name: k.name || "Unnamed KOL", amount: c, videos: vids.length }); }
+    });
+    kolBreakdown.sort((a, b) => b.amount - a.amount);
+    const adCost = mktAds.filter((r) => r.month === selectedMonth).reduce((a, r) => a + Number(r.amount || 0), 0);
+    const marketingCost = kolCost + adCost;
+
     // Online Sales — a third channel tracked only here, never posted to
     // Accounting (not declared for that channel), but it's real revenue for
     // Profit & Margin. Now itemized by product, so COGS is real, not guessed.
@@ -10342,12 +10370,12 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
 
     const revenue = consignRevenue + corpRevenue + creditRevenue + onlineRevenue;
     const cogs = lines.reduce((a, l) => a + l.cogs, 0) + onlineCogs;
-    const profit = revenue - cogs - sampleCost - otherExpenseCost;
+    const profit = revenue - cogs - sampleCost - otherExpenseCost - marketingCost;
     const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
     const priced = lines.every((l) => l.perBox > 0);
 
-    return { lines, revenue, consignRevenue, corpRevenue, creditRevenue, onlineRevenue, onlineCogs, cogs, sampleCost, sampleBreakdown, otherExpenseCost, privateExpenseCost, declaredExpenseCost, declaredExpenses, monthExpenses, profit, margin, priced, stockValueAll, collectedAll, paidRatio };
-  }, [visits, bigcoReports, creditInvoices, stores, costs, stockMoves, miscExpenses, onlineSales, onlineSaleItems, selectedMonth, consignBasis, glAccounts, glEntries, glLines]);
+    return { lines, revenue, consignRevenue, corpRevenue, creditRevenue, onlineRevenue, onlineCogs, cogs, sampleCost, sampleBreakdown, otherExpenseCost, privateExpenseCost, declaredExpenseCost, declaredExpenses, monthExpenses, kolCost, adCost, marketingCost, kolBreakdown, profit, margin, priced, stockValueAll, collectedAll, paidRatio };
+  }, [visits, bigcoReports, creditInvoices, stores, costs, stockMoves, miscExpenses, onlineSales, onlineSaleItems, selectedMonth, consignBasis, glAccounts, glEntries, glLines, mktKols, mktVideos, mktAds]);
 
   const cell = { padding: "10px 8px", textAlign: "right", whiteSpace: "nowrap" };
   const th = { textAlign: "right", padding: "11px 8px", fontWeight: 700 };
@@ -10458,10 +10486,15 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
               <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: C.amber }}>${report.otherExpenseCost.toLocaleString("en-US", MONEY2)}</div>
               <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>declared ${report.declaredExpenseCost.toLocaleString("en-US", MONEY2)} · not declared ${report.privateExpenseCost.toLocaleString("en-US", MONEY2)} · tap to add</div>
             </button>
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "18px 20px" }}>
+              <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Marketing</div>
+              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: C.amber }}>${report.marketingCost.toLocaleString("en-US", MONEY2)}</div>
+              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>KOL ${report.kolCost.toLocaleString("en-US", MONEY2)} · ads ${report.adCost.toLocaleString("en-US", MONEY2)} · from the Marketing page, not declared</div>
+            </div>
             <div style={{ background: C.surface, border: `1px solid ${C.gold}50`, borderRadius: 12, padding: "18px 20px" }}>
               <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Gross profit</div>
               <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: report.profit >= 0 ? C.emerald : C.rose }}>${report.profit.toLocaleString("en-US", MONEY2)}</div>
-              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>after samples and all expenses</div>
+              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>after samples, expenses and marketing</div>
             </div>
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "18px 20px" }}>
               <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Margin</div>
@@ -10639,7 +10672,7 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
             ))}
             <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 10, lineHeight: 1.5 }}>
               This is the value of goods sold, not cash collected — see Sales → Total for what actually came in.
-              Gross profit is before salaries, KOL and ad spend.
+              KOL and ad spend come from the Marketing page. Salaries and other costs count once they are recorded as expenses — declared in Accounting, or not declared here.
             </div>
           </div>
           <CustomerProfitSection C={C} sbFetch={sbFetch} month={selectedMonth} canEdit={canDeclare} />
@@ -11791,7 +11824,9 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
   }, [consignmentVisits, kols, creditInvoices, creditPayments, bigcoReports, onlineSales, adRows, selectedMonth]);
 
   const totalCollected = summary.consignmentCollected + summary.corporateCollected + summary.creditCollected + summary.onlineCollected;
-  const marketingSpend = summary.kolSpend + summary.adSpend;
+  // KOL fees and ad spend are owner-only (same people as payroll).
+  const canSeeMarketing = PAYROLL_EMAILS.includes(String(authUser?.email || "").toLowerCase());
+  const marketingSpend = canSeeMarketing ? summary.kolSpend + summary.adSpend : 0;
   const netTotal = totalCollected - marketingSpend;
 
   return (
@@ -11817,12 +11852,14 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
       ) : (
         <>
           <div style={{ background: C.surface, border: `1px solid ${C.gold}50`, borderRadius: 14, padding: "22px 24px", marginBottom: 24 }}>
-            <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Net — {monthLabel(selectedMonth)}</div>
+            <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>{canSeeMarketing ? "Net" : "Collected"} — {monthLabel(selectedMonth)}</div>
             <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 32, fontWeight: 600, marginTop: 8, color: netTotal >= 0 ? C.emerald : C.rose }}>
               {netTotal >= 0 ? "+" : "-"}${Math.abs(netTotal).toLocaleString("en-US", MONEY2)}
             </div>
             <div style={{ fontSize: 11, color: C.textFaint, marginTop: 6 }}>
-              ${totalCollected.toLocaleString("en-US", MONEY2)} collected across all 4 sales channels, minus ${marketingSpend.toLocaleString("en-US", MONEY2)} marketing spend
+              {canSeeMarketing
+                ? `$${totalCollected.toLocaleString("en-US", MONEY2)} collected across all 4 sales channels, minus $${marketingSpend.toLocaleString("en-US", MONEY2)} marketing spend`
+                : "Collected across all 4 sales channels"}
             </div>
             <button
               type="button"
@@ -11852,7 +11889,7 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
               <div style={{ fontSize: 11, color: C.textFaint, marginTop: 4 }}>collected of ${summary.corporateBilled.toLocaleString("en-US", MONEY2)} billed</div>
             </button>
 
-            <button
+            {canSeeMarketing && <button
               onClick={() => onNavigate("kol")}
               style={{ textAlign: "left", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "18px 20px", cursor: "pointer" }}
             >
@@ -11865,7 +11902,7 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
               >
                 cash paid this month: ${summary.kolPaid.toLocaleString("en-US", MONEY2)} · tap to see by KOL
               </div>
-            </button>
+            </button>}
 
             <button
               onClick={() => onNavigate("credit")}
