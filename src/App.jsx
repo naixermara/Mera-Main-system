@@ -617,7 +617,7 @@ export default function MeraConsignmentApp() {
   const [navMobile, setNavMobile] = useState(false);
   const [consignmentSubView, setConsignmentSubView] = useState(() => loadSavedNav()?.consignmentSubView || "regular");
   // One title for both the page header and the browser tab.
-  const pageTitle = page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : childTab === "invoices" ? "Invoices" : childTab === "notes" ? "Delivery Notes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "close" ? "Month Close" : page === "stockplan" ? "Stock Forecast" : page === "cashflow" ? "Cash Forecast" : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Term" : salesSubPage === "online" ? "Online & COD" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : (consignmentSubView === "bigco" ? "Corporate Accounts" : "Consignment")) : "Operations";
+  const pageTitle = page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : childTab === "invoices" ? "Invoices" : childTab === "notes" ? "Delivery Notes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "close" ? "Month Close" : page === "stockplan" ? "Stock Forecast" : page === "cashflow" ? "Cash Forecast" : page === "expenses" ? (childTab === "approve" ? "Expense Approval" : "Expense Claims") : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Term" : salesSubPage === "online" ? "Online & COD" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : (consignmentSubView === "bigco" ? "Corporate Accounts" : "Consignment")) : "Operations";
   useEffect(() => { document.title = `Mèra — ${pageTitle}`; }, [pageTitle]);
 
   // Remembers which page/tab was open, purely so a browser refresh lands
@@ -1689,6 +1689,8 @@ export default function MeraConsignmentApp() {
             : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>Only the owner or accountant can close months.</div>
         ) : page === "bills" ? (
           <BillNumbersPage C={C} sbFetch={sbFetch} showAmounts={canSeeAccounting} />
+        ) : page === "expenses" ? (
+          <ExpenseClaimsPage key={childTab === "approve" && canSeePayroll ? "approve" : "mine"} authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} approve={childTab === "approve" && canSeePayroll} />
         ) : page === "payroll" ? (
           canSeePayroll
             ? <PayrollPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
@@ -7886,7 +7888,6 @@ const NAV = [
   ]},
   { name: "Sales", items: [
     { label: "Sales Summary",              page: "sales", sub: "total" },
-    { label: "Sales Report",       page: "sales", sub: "report", needs: "owner" },
     { label: "Consignment",        page: "sales", sub: "consignment", view: "regular" },
     { label: "Corporate Accounts", page: "sales", sub: "consignment", view: "bigco" },
     { label: "Credit Term",        page: "sales", sub: "credit" },
@@ -7908,8 +7909,8 @@ const NAV = [
     { label: "Invoices",       page: "delivery", tab: "invoices" },
     { label: "Bill Register",   page: "bills" },
   ]},
-  { name: "Marketing", needs: "payroll", items: [
-    { label: "KOL & Content", page: "kol" },
+  { name: "Office", items: [
+    { label: "Expense Claims", page: "expenses" },
   ]},
   { name: "Accounting", needs: "accounting", items: [
     { label: "Post Entry",          page: "accounting", tab: "post" },
@@ -7923,11 +7924,14 @@ const NAV = [
     { label: "Cash Forecast",          page: "cashflow" },
     { label: "Month Close",            page: "close" },
   ]},
-  { name: "People", needs: "payroll", items: [
-    { label: "Payroll", page: "payroll" },
-  ]},
-  { name: "Insights", needs: "payroll", items: [
+  // Executive Office — everything sensitive in one place: profit, sales
+  // report, marketing spend, salaries and expense approval. Rosa and Lita only.
+  { name: "Executive Office", needs: "payroll", items: [
     { label: "Profit & Margin", page: "profit" },
+    { label: "Sales Report",    page: "sales", sub: "report", needs: "owner" },
+    { label: "Expense Approval", page: "expenses", tab: "approve" },
+    { label: "KOL & Content",   page: "kol" },
+    { label: "Payroll",         page: "payroll" },
   ]},
 ];
 
@@ -11147,6 +11151,240 @@ function MarketingReturnSection({ C, trend }) {
       <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 10, lineHeight: 1.5 }}>
         "Left after mkt" is what sales left after box cost and marketing — before salaries and other expenses. If it stays low while marketing rises, the spending isn't paying back.
       </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// EXPENSE CLAIMS — any staff member records money spent for the company
+// (fuel, delivery, supplies…) with a receipt photo. Staff see only their own
+// claims. Rosa and Lita approve each one in Executive Office → Expense Approval
+// and decide: Declare (posted to the books as an EX entry) or Not declared
+// (counted in profit only). Decisions run in the database
+// (expense_claim_decide), so a claim can never be counted twice.
+// ============================================================================
+const CLAIM_STATUS = {
+  pending: ["Awaiting approval", "amber"],
+  declared: ["Approved · declared", "emerald"],
+  not_declared: ["Approved · not declared", "emerald"],
+  rejected: ["Rejected", "rose"],
+};
+const CLAIM_PAID_WITH = { cash: "Cash", aba: "ABA", other: "Other" };
+
+function ExpenseClaimsPage({ authUser, C, sbFetch, logActivity, approve }) {
+  const money = (n) => `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const email = String(authUser?.email || "").toLowerCase();
+  const isAdmin = PAYROLL_EMAILS.includes(email) && !!approve;
+  const [rows, setRows] = useState(null);
+  const [accounts, setAccounts] = useState([]);
+  const [form, setForm] = useState({ date: todayStr(), description: "", amount: "", paidWith: "cash" });
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+  const [filter, setFilter] = useState("pending");
+  const [deciding, setDeciding] = useState(null); // { id, account, paidFrom }
+  const [receipt, setReceipt] = useState(null);   // { id, url }
+  const fileRef = useRef(null);
+
+  async function load() {
+    try {
+      setRows((await sbFetch("expense_claims?select=*&order=created_at.desc")) || []);
+    } catch (e) {
+      setRows([]); setErr("Couldn't load expense claims.");
+    }
+    if (isAdmin) {
+      try { setAccounts((await sbFetch("gl_accounts?select=id,code,name,type,is_cash,active&order=code.asc")) || []); } catch (e) { /* books not readable */ }
+    }
+  }
+  useEffect(() => { load(); }, [isAdmin]);
+
+  // KOL and ad spending must never be declared, so those accounts are not offered.
+  const expenseAccounts = accounts.filter((a) => a.type === "expense" && a.active !== false && !String(a.code).startsWith("5") && !/kol|advertis|boost/i.test(a.name || ""));
+  const cashAccounts = accounts.filter((a) => a.is_cash && a.active !== false);
+  const defaultPaidFrom = (paidWith) => {
+    if (paidWith === "cash") { const c = cashAccounts.find((a) => /cash|petty/i.test(a.name || "")); if (c) return c.code; }
+    return cashAccounts.find((a) => a.code === "1010200")?.code || cashAccounts[0]?.code || "";
+  };
+
+  async function uploadReceipt(f) {
+    const token = await ensureFreshAccessToken();
+    const ext = (f.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
+    const path = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const res = await fetch(`${SUPABASE_URL}/storage/v1/object/expense-receipts/${path}`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${token || SUPABASE_KEY}`, "Content-Type": f.type || "image/jpeg" },
+      body: f,
+    });
+    if (!res.ok) throw new Error("receipt");
+    return path;
+  }
+
+  async function submit() {
+    const amount = parseFloat(form.amount);
+    setErr(""); setMsg("");
+    if (!form.description.trim()) { setErr("Describe what the money was spent on."); return; }
+    if (!amount || amount <= 0) { setErr("Enter an amount greater than 0."); return; }
+    setBusy(true);
+    try {
+      const receipt_path = file ? await uploadReceipt(file) : null;
+      await sbFetch("expense_claims", {
+        method: "POST",
+        body: JSON.stringify({ expense_date: form.date, description: form.description.trim(), amount, paid_with: form.paidWith, receipt_path, created_by: email }),
+      });
+      logActivity?.("Submitted expense claim", form.description.trim(), money(amount));
+      setForm({ ...form, description: "", amount: "" }); setFile(null); if (fileRef.current) fileRef.current.value = "";
+      setMsg("Submitted. It will count once it is approved.");
+      await load();
+    } catch (e) {
+      setErr(String(e?.message) === "receipt" ? "The receipt photo didn't upload. Nothing was saved — try again." : "Couldn't submit. Nothing was saved — try again.");
+    }
+    setBusy(false);
+  }
+
+  async function withdraw(r) {
+    if (!window.confirm("Withdraw this expense claim?")) return;
+    try {
+      await sbFetch(`expense_claims?id=eq.${r.id}`, { method: "DELETE" });
+      await load();
+    } catch (e) { setErr("Couldn't withdraw it."); }
+  }
+
+  async function decide(r, decision) {
+    setErr(""); setMsg("");
+    if (decision === "rejected" && !window.confirm(`Reject "${r.description}"? It will not count anywhere.`)) return;
+    const d = deciding && deciding.id === r.id ? deciding : {};
+    if (decision === "declared" && (!d.account || !d.paidFrom)) { setErr("Pick the expense account and where it was paid from."); return; }
+    setBusy(true);
+    try {
+      const out = await sbFetch("rpc/expense_claim_decide", {
+        method: "POST",
+        body: JSON.stringify({ p_id: r.id, p_decision: decision, p_expense_account: d.account || null, p_paid_from: d.paidFrom || null, p_note: null }),
+      });
+      const o = Array.isArray(out) ? out[0] : out;
+      setMsg(decision === "declared" ? `Approved and posted to the books${o?.entry_no ? ` as ${o.entry_no}` : ""}.` : decision === "not_declared" ? "Approved — counted in profit, not declared." : "Rejected.");
+      logActivity?.(decision === "rejected" ? "Rejected expense claim" : "Approved expense claim", r.description, `${money(r.amount)} · ${CLAIM_STATUS[decision][0]}`);
+      setDeciding(null);
+      await load();
+    } catch (e) {
+      const t = String(e?.message || e);
+      setErr(t.includes("already decided") ? "Someone already decided this one." : t.includes("MONTH_LOCKED") ? "That month is closed. Reopen it in Month Close first." : "Couldn't save the decision — nothing changed.");
+    }
+    setBusy(false);
+  }
+
+  async function openReceipt(r) {
+    if (receipt?.id === r.id) { setReceipt(null); return; }
+    try {
+      const token = await ensureFreshAccessToken();
+      const res = await fetch(`${SUPABASE_URL}/storage/v1/object/authenticated/expense-receipts/${r.receipt_path}`, { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${token || SUPABASE_KEY}` } });
+      if (!res.ok) throw new Error();
+      setReceipt({ id: r.id, url: URL.createObjectURL(await res.blob()) });
+    } catch (e) { setErr("Couldn't open the receipt."); }
+  }
+
+  const list = (rows || []).filter((r) => (isAdmin ? (filter === "all" || (filter === "pending" ? r.status === "pending" : r.status !== "pending")) : true));
+  const pendingCount = (rows || []).filter((r) => r.status === "pending").length;
+  const pendingTotal = (rows || []).filter((r) => r.status === "pending").reduce((a, r) => a + Number(r.amount || 0), 0);
+
+  const card = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 18px", marginBottom: 16 };
+  const lab = { fontSize: 10.5, color: C.textFaint, fontWeight: 700, display: "block", marginBottom: 4 };
+  const inp = { background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "9px 10px", fontSize: 13, width: "100%", boxSizing: "border-box" };
+  const pill = (on) => ({ background: on ? C.gold : "none", color: on ? "#1A1508" : C.textDim, border: `1px solid ${on ? C.gold : C.border}`, borderRadius: 999, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" });
+  const btn = (bg, fg) => ({ background: bg, color: fg, border: "none", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: busy ? "default" : "pointer" });
+
+  return (
+    <div>
+      <div style={{ marginTop: 4, marginBottom: 16 }}>
+        <div style={{ fontSize: 12, color: C.textFaint, lineHeight: 1.5 }}>
+          {isAdmin
+            ? "Expenses submitted by staff. Approve each one as declared (posted to the books) or not declared (profit only), or reject it."
+            : "Record money you spent for the company. Management approves it before it counts."}
+        </div>
+      </div>
+
+      {err && <div style={{ background: C.roseBg, color: C.rose, padding: "10px 12px", borderRadius: 9, fontSize: 12.5, marginBottom: 12 }}>{err}</div>}
+      {msg && <div style={{ background: C.emeraldBg || "#14301f", color: C.emerald, padding: "10px 12px", borderRadius: 9, fontSize: 12.5, marginBottom: 12 }}>{msg}</div>}
+
+      {!isAdmin && (
+        <div style={card}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>New expense</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
+            <div><label style={lab}>Date</label><input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} style={inp} /></div>
+            <div><label style={lab}>Amount $</label><input inputMode="decimal" placeholder="0.00" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} style={inp} /></div>
+            <div style={{ gridColumn: "1 / -1" }}><label style={lab}>What was it for?</label><input placeholder="e.g. Fuel for delivery to Takeo" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} style={inp} /></div>
+          </div>
+          <label style={{ ...lab, marginTop: 12 }}>Paid with</label>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {Object.entries(CLAIM_PAID_WITH).map(([k, l]) => <button key={k} type="button" onClick={() => setForm({ ...form, paidWith: k })} style={pill(form.paidWith === k)}>{l}</button>)}
+          </div>
+          <label style={{ ...lab, marginTop: 12 }}>Receipt photo (optional)</label>
+          <input ref={fileRef} type="file" accept="image/*" onChange={(e) => setFile(e.target.files?.[0] || null)} style={{ fontSize: 12, color: C.textDim, maxWidth: "100%" }} />
+          <div style={{ marginTop: 14 }}>
+            <button type="button" disabled={busy} onClick={submit} className="primarybtn" style={{ background: `linear-gradient(135deg, ${C.goldBright}, ${C.gold})`, color: "#1A1508", border: "none", borderRadius: 9, padding: "11px 20px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+              {busy ? "Submitting…" : "Submit expense"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {isAdmin && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+          {[["pending", `To approve (${pendingCount})`], ["done", "Decided"], ["all", "All"]].map(([k, l]) => <button key={k} type="button" onClick={() => setFilter(k)} style={pill(filter === k)}>{l}</button>)}
+          {pendingCount > 0 && <span style={{ fontSize: 12, color: C.textFaint, marginLeft: 4 }}>{money(pendingTotal)} waiting</span>}
+        </div>
+      )}
+
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", margin: "4px 0 8px" }}>{isAdmin ? "Claims" : "My expenses"}</div>
+      {rows === null ? <div style={{ color: C.textFaint, padding: 16 }}>Loading…</div> : list.length === 0 ? (
+        <div style={{ ...card, color: C.textFaint, fontSize: 13 }}>{isAdmin && filter === "pending" ? "Nothing waiting for approval." : "No expenses yet."}</div>
+      ) : list.map((r) => {
+        const [sLabel, sCol] = CLAIM_STATUS[r.status] || [r.status, "textFaint"];
+        const d = deciding?.id === r.id ? deciding : null;
+        return (
+          <div key={r.id} style={{ ...card, padding: "13px 16px", marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 700, wordBreak: "break-word" }}>{r.description}</div>
+                <div style={{ fontSize: 11.5, color: C.textFaint, marginTop: 3 }}>
+                  {fmtDate(r.expense_date)} · {CLAIM_PAID_WITH[r.paid_with] || r.paid_with}{isAdmin ? ` · by ${r.created_by}` : ""}
+                </div>
+                <div style={{ fontSize: 11, color: C[sCol], fontWeight: 700, marginTop: 5 }}>{sLabel}{r.decided_by && r.status !== "pending" && isAdmin ? <span style={{ color: C.textFaint, fontWeight: 400 }}> · {r.decided_by}</span> : null}</div>
+              </div>
+              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, fontWeight: 700, whiteSpace: "nowrap" }}>{money(r.amount)}</div>
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
+              {r.receipt_path && <button type="button" onClick={() => openReceipt(r)} style={btn("none", C.textDim)}><span style={{ textDecoration: "underline" }}>{receipt?.id === r.id ? "Hide receipt" : "Receipt"}</span></button>}
+              {!isAdmin && r.status === "pending" && <button type="button" onClick={() => withdraw(r)} style={btn("none", C.textFaint)}>Withdraw</button>}
+              {isAdmin && r.status === "pending" && (
+                <>
+                  <button type="button" disabled={busy} onClick={() => decide(r, "not_declared")} style={btn(C.bg2, C.text)}>Approve · don't declare</button>
+                  <button type="button" disabled={busy} onClick={() => setDeciding(d ? null : { id: r.id, account: "", paidFrom: defaultPaidFrom(r.paid_with) })} style={btn(d ? C.gold : C.bg2, d ? "#1A1508" : C.text)}>Approve · declare</button>
+                  <button type="button" disabled={busy} onClick={() => decide(r, "rejected")} style={btn("none", C.rose)}>Reject</button>
+                </>
+              )}
+            </div>
+            {d && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, marginTop: 10, background: C.bg2, borderRadius: 10, padding: 12 }}>
+                <div><label style={lab}>Expense account</label>
+                  <select value={d.account} onChange={(e) => setDeciding({ ...d, account: e.target.value })} style={inp}>
+                    <option value="">Choose…</option>
+                    {expenseAccounts.map((a) => <option key={a.id} value={a.code}>{a.code} · {a.name}</option>)}
+                  </select></div>
+                <div><label style={lab}>Paid from</label>
+                  <select value={d.paidFrom} onChange={(e) => setDeciding({ ...d, paidFrom: e.target.value })} style={inp}>
+                    <option value="">Choose…</option>
+                    {cashAccounts.map((a) => <option key={a.id} value={a.code}>{a.code} · {a.name}</option>)}
+                  </select></div>
+                <div style={{ display: "flex", alignItems: "flex-end" }}>
+                  <button type="button" disabled={busy} onClick={() => decide(r, "declared")} style={{ ...btn(`linear-gradient(135deg, ${C.goldBright}, ${C.gold})`, "#1A1508"), width: "100%", padding: "10px 12px" }}>Post to the books</button>
+                </div>
+              </div>
+            )}
+            {receipt?.id === r.id && <img src={receipt.url} alt="Receipt" style={{ display: "block", maxWidth: "100%", maxHeight: 420, marginTop: 10, borderRadius: 8 }} />}
+          </div>
+        );
+      })}
     </div>
   );
 }
