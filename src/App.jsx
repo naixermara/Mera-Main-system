@@ -10988,12 +10988,12 @@ function MoneyLeftSection({ C, sbFetch, month, glAccounts, glEntries, glLines, g
     const isCash = (id) => !!acc.get(id)?.is_cash;
     const salaryRe = /salar|wage|payroll|ប្រាក់ខែ/i;
 
-    // Salaries come from the Payroll page: by the day marked paid, or — if not
-    // marked — counted in the payroll month itself.
+    // Salaries come from the Payroll page, counted on the day they are marked
+    // paid. A payroll not yet marked paid is money still to go out, not spent.
     const runMonth = Object.fromEntries(src.runs.map((r) => [r.id, r.month]));
-    const payslips = src.ps.filter((p) => (p.paid_at ? inMonth(p.paid_at) : runMonth[p.run_id] === month));
-    const payroll = payslips.reduce((a, p) => a + Number(p.net_pay || 0), 0);
-    const payrollUnmarked = payslips.filter((p) => !p.paid_at).length;
+    const payroll = src.ps.filter((p) => p.paid_at && inMonth(p.paid_at)).reduce((a, p) => a + Number(p.net_pay || 0), 0);
+    const unpaidSlips = src.ps.filter((p) => !p.paid_at && runMonth[p.run_id] && runMonth[p.run_id] <= month);
+    const payrollDue = unpaidSlips.reduce((a, p) => a + Number(p.net_pay || 0), 0);
 
     // From the books: every entry this month that moves a cash/bank account
     // against something else (transfers between own accounts are ignored).
@@ -11027,7 +11027,7 @@ function MoneyLeftSection({ C, sbFetch, month, glAccounts, glEntries, glLines, g
     ];
     const outs = [
       ["Paid from bank & cash (in the books)", bookOut, Object.entries(outBy).sort((a, b) => b[1] - a[1])],
-      ["Salaries (Payroll)", payroll],
+      ["Salaries paid (Payroll)", payroll],
       ["KOL payments", kolOut],
       ["Ad boosting", adOut],
       ["Other expenses (not declared)", privateOut],
@@ -11037,7 +11037,7 @@ function MoneyLeftSection({ C, sbFetch, month, glAccounts, glEntries, glLines, g
       warn.push("No rent, fuel, delivery, utilities or other running costs are recorded this month. Record them under Expenses below, or money left is too high.");
     if (!glReady) warn.push("The books couldn't be read, so bank receipts and payments are missing.");
     if (!src.pendOk) warn.push("Payments not yet posted couldn't be read.");
-    if (payrollUnmarked) warn.push(`${payrollUnmarked} payslip(s) are not marked paid in Payroll — counted here as paid for ${monthLabel(month)}.`);
+    if (unpaidSlips.length) warn.push(`Salaries not yet marked paid in Payroll: ${unpaidSlips.length} payslip(s), $${payrollDue.toLocaleString("en-US", MONEY2)} — not counted until marked paid.`);
     if (month === currentMonthKey()) warn.push("This month is not finished yet.");
     return { moneyIn, moneyOut, left: moneyIn - moneyOut, ins, outs, warn };
   }, [src, month, glAccounts, glEntries, glLines, glReady, miscExpenses, mktAds]);
