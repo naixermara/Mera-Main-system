@@ -5699,22 +5699,161 @@ const prTail = (raw) => { const m = String(raw || "").match(/\(\*(\d{2,4})\)/); 
 const prBills = (txt) => Array.from(new Set((String(txt || "").toUpperCase().match(/\b(?:INV|B)\s?\d{7}\b/g) || []).map((x) => x.replace(/\s/g, ""))));
 const PR_CHANNEL_LABEL = { consignment: "Consignment", corporate: "Corporate", credit: "Credit Term", online: "Online & COD", cod: "Online & COD", other: "Other" };
 
+// Apply one received payment (ABA or cash) to the customer's open bills.
+// Suggests the customer and the bill(s); one tap records the payment on the
+// bill itself, so it shows as paid everywhere and reaches Post Sales & Payments.
+function ApplyPaymentPanel({ r, h, ctx, C, sbFetch, authUser, logActivity, onDone, onCancel, rememberPayer }) {
+  const fm = (n) => `$${Number(n || 0).toLocaleString("en-US", MONEY2)}`;
+  const cName = useMemo(() => Object.fromEntries(ctx.creditStores.map((s) => [s.id, s.name])), [ctx]);
+  const bName = useMemo(() => Object.fromEntries(ctx.corpStores.map((s) => [s.id, s.name])), [ctx]);
+  const cpBy = useMemo(() => { const m = {}; (ctx.creditPayments || []).forEach((p) => { if (p.invoice_id) m[p.invoice_id] = (m[p.invoice_id] || 0) + Number(p.amount || 0); }); return m; }, [ctx]);
+
+  // Every open bill, one list, so a bill number in the remark or an exact amount can be found anywhere.
+  const openBills = useMemo(() => [
+    ...ctx.credit.map((i) => ({ key: `credit:${i.id}`, channel: "credit", id: i.id, storeId: i.store_id, who: cName[i.store_id], no: String(i.invoice_number || "").trim(), date: i.invoice_date,
+      owed: Math.round((Number(i.amount || 0) - Number(i.paid || 0) - (cpBy[i.id] || 0)) * 100) / 100, raw: i })),
+    ...ctx.corp.map((b) => ({ key: `corporate:${b.id}`, channel: "corporate", id: b.id, storeId: b.store_id, who: bName[b.store_id], no: String(b.invoice_number || "").trim(), date: b.report_date,
+      owed: Math.round((Number(b.amount || 0) - Number(b.paid || 0)) * 100) / 100, raw: b })),
+    ...ctx.online.filter((o) => o.payment_status === "unpaid" && Number(o.amount || 0) > 0).map((o) => ({ key: `online:${o.id}`, channel: "online", id: o.id, who: o.customer_name,
+      no: o.bill_no || (prBills(o.description)[0] || ""), date: o.date, owed: Number(o.amount || 0), raw: o })),
+  ].filter((b) => b.owed > 0.005 && b.who).sort((a, b) => String(a.date).localeCompare(String(b.date))), [ctx, cName, bName, cpBy]);
+
+  const amount = Number(r.amount || 0);
+  const day = String(r.paid_at || "").slice(0, 10);
+  const remarkBills = prBills(`${r.remark || ""} ${r.raw_message || ""}`);
+
+  // First guess: bill in remark → exact amount for the hinted customer → exact amount anywhere → hinted customer's oldest bills.
+  const initial = useMemo(() => {
+    const byNo = openBills.filter((b) => remarkBills.includes(b.no.replace(/\s/g, "").toUpperCase()));
+    if (byNo.length) return { channel: byNo[0].channel, who: byNo[0].who, picked: byNo.map((b) => b.key) };
+    const hinted = h ? openBills.filter((b) => prNorm(b.who) === prNorm(h.who)) : [];
+    const exactHint = hinted.filter((b) => Math.abs(b.owed - amount) < 0.01);
+    if (exactHint.length) return { channel: exactHint[0].channel, who: exactHint[0].who, picked: [exactHint[0].key] };
+    const exactAll = openBills.filter((b) => Math.abs(b.owed - amount) < 0.01 && (!b.date || b.date <= day));
+    if (!h && exactAll.length === 1) return { channel: exactAll[0].channel, who: exactAll[0].who, picked: [exactAll[0].key] };
+    if (hinted.length) {
+      const picked = []; let left = amount;
+      hinted.forEach((b) => { if (left > 0.005) { picked.push(b.key); left -= b.owed; } });
+      return { channel: hinted[0].channel, who: hinted[0].who, picked };
+    }
+    return { channel: h?.channel === "cod" ? "online" : (h?.channel || ""), who: h?.who || "", picked: [] };
+  }, []); // eslint-disable-line
+
+  const [channel, setChannel] = useState(initial.channel || "credit");
+  const [who, setWho] = useState(initial.who || "");
+  const [picked, setPicked] = useState(initial.picked);
+  const [date, setDate] = useState(day || todayStr());
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const custBills = channel === "consignment" ? [] : openBills.filter((b) => b.channel === channel && (!who || prNorm(b.who) === prNorm(who)));
+  const chosen = custBills.filter((b) => picked.includes(b.key));
+  // Oldest first: fill each chosen bill until the money runs out.
+  let left = amount;
+  const alloc = chosen.map((b) => { const a = Math.min(b.owed, Math.max(0, left)); left -= a; return { ...b, apply: Math.round(a * 100) / 100 }; });
+  const leftover = Math.round(left * 100) / 100;
+  const customers = Array.from(new Set(channel === "consignment" ? ctx.stores.map((s) => s.name) : openBills.filter((b) => b.channel === channel).map((b) => b.who))).sort();
+  const isCash = String(r.channel || "").toLowerCase() === "cash";
+  const ref = isCash ? `Cash ${r.remark || ""}`.trim() : `ABA ${r.transaction_id || ""}`.trim();
+
+  async function apply() {
+    setErr("");
+    if (!who.trim()) { setErr("Choose the customer."); return; }
+    if (channel !== "consignment" && !alloc.length) { setErr("Tick the bill(s) this payment settles."); return; }
+    if (channel === "online" && alloc.some((b) => b.apply < b.owed - 0.01)) { setErr("Online & COD bills are settled in full only — tick only bills this payment fully covers."); return; }
+    if (leftover > 0.01 && channel !== "consignment" && !window.confirm(`${fm(leftover)} of this payment is not covered by the ticked bills. Apply the rest anyway?`)) return;
+    setBusy(true);
+    const who_ = authUser?.email || "unknown";
+    try {
+      if (channel === "credit") {
+        for (const b of alloc) if (b.apply > 0) await sbFetch("credit_payments", { method: "POST", body: JSON.stringify({ store_id: b.storeId, invoice_id: b.id, payment_date: date, amount: b.apply, notes: ref, created_by: who_ }) });
+      } else if (channel === "corporate") {
+        for (const b of alloc) if (b.apply > 0) await sbFetch(`bigco_reports?id=eq.${b.id}`, { method: "PATCH", body: JSON.stringify({ paid: Math.round((Number(b.raw.paid || 0) + b.apply) * 100) / 100 }) });
+      } else if (channel === "online") {
+        for (const b of alloc) await sbFetch(`online_sales?id=eq.${b.id}`, { method: "PATCH", body: JSON.stringify({ payment_status: "paid", paid_at: date, paid_by: who_, paid_note: ref }) });
+      } else {
+        await sbFetch("visits", { method: "POST", body: JSON.stringify([{ date, store_name: who.trim(), product: "Panty Liner", sold: 0, returned: 0, paid: amount, owed: 0, notes: `Payment received — ${ref}`, created_by: who_ }]) });
+      }
+      const note = channel === "consignment" ? `${who.trim()} · consignment payment` : `${alloc.map((b) => b.no || "bill").join(", ")} · ${who.trim()}`;
+      await sbFetch(`pending_payments?id=eq.${r.id}`, { method: "PATCH", body: JSON.stringify({ status: "assigned", assigned_type: channel, assigned_note: note, assigned_by: who_, assigned_at: new Date().toISOString() }) });
+      if (!isCash && r.payer_name && !h?.tagged) { try { await rememberPayer({ payer: r.payer_name, customer: who.trim(), channel }); } catch (e) { /* remembering is optional */ } }
+      logActivity?.("Applied payment", who.trim(), `${fm(amount)} → ${note}`);
+      onDone();
+    } catch (e) {
+      setErr("Couldn't apply — nothing may have been saved for some bills. Check the bill and try again.");
+      setBusy(false);
+    }
+  }
+
+  const inp = { background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "7px 9px", fontSize: 12.5, boxSizing: "border-box" };
+  return (
+    <div style={{ background: C.bg2, border: `1px solid ${C.gold}66`, borderRadius: 10, padding: 12, marginTop: 10 }}>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+        {[["credit", "Credit Term"], ["corporate", "Corporate"], ["online", "Online & COD"], ["consignment", "Consignment"]].map(([k, l]) => (
+          <button key={k} type="button" onClick={() => { setChannel(k); setPicked([]); setWho(""); }}
+            style={{ padding: "5px 10px", fontSize: 11, fontWeight: 700, borderRadius: 7, cursor: "pointer", background: channel === k ? C.gold : "none", color: channel === k ? "#1A1508" : C.textDim, border: `1px solid ${channel === k ? C.gold : C.border}` }}>{l}</button>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+        <input list={`ap-cust-${r.id}`} value={who} onChange={(e) => { setWho(e.target.value); setPicked([]); }} placeholder="Customer" style={{ ...inp, flex: "2 1 180px", minWidth: 0 }} />
+        <datalist id={`ap-cust-${r.id}`}>{customers.map((n) => <option key={n} value={n} />)}</datalist>
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inp, flex: "1 1 130px" }} />
+      </div>
+      {channel !== "consignment" && (
+        custBills.length === 0 ? <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 8 }}>{who ? "No unpaid bills for this customer." : "Choose the customer to see their unpaid bills."}</div> : (
+          <div style={{ display: "grid", gap: 4, marginBottom: 8 }}>
+            {custBills.map((b) => {
+              const a = alloc.find((x) => x.key === b.key);
+              return (
+                <label key={b.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, padding: "6px 8px", borderRadius: 7, background: a ? `${C.gold}18` : "none", cursor: "pointer" }}>
+                  <input type="checkbox" checked={picked.includes(b.key)} onChange={(e) => setPicked(e.target.checked ? [...picked, b.key] : picked.filter((k) => k !== b.key))} />
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{b.no || "—"}</span>
+                    <span style={{ display: "block", fontSize: 10.5, color: C.textFaint }}>{fmtDate(b.date)}{!who ? ` · ${b.who}` : ""}</span>
+                  </span>
+                  <span style={{ textAlign: "right" }}>
+                    <span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{fm(b.owed)}</span>
+                    {a && <span style={{ display: "block", fontSize: 10.5, color: a.apply < b.owed - 0.01 ? C.amber : C.emerald }}>{a.apply < b.owed - 0.01 ? `part ${fm(a.apply)}` : "paid in full"}</span>}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        )
+      )}
+      {channel === "consignment" && <div style={{ fontSize: 11.5, color: C.textFaint, marginBottom: 8 }}>Recorded as a payment from this store. Boxes sold are still logged by the visit.</div>}
+      {channel !== "consignment" && chosen.length > 0 && (
+        <div style={{ fontSize: 11.5, color: leftover > 0.01 ? C.amber : C.textDim, marginBottom: 8 }}>
+          {leftover > 0.01 ? `${fm(leftover)} left over — tick another bill or apply as a part payment.` : chosen.reduce((s, b) => s + b.owed, 0) > amount + 0.01 ? `Payment covers ${fm(amount)} of ${fm(chosen.reduce((s, b) => s + b.owed, 0))} — the rest stays unpaid.` : "Payment matches the ticked bill(s) exactly."}
+        </div>
+      )}
+      {err && <div style={{ color: C.rose, fontSize: 12, marginBottom: 8 }}>{err}</div>}
+      <div style={{ display: "flex", gap: 8 }}>
+        <button type="button" disabled={busy} onClick={apply} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>{busy ? "Applying…" : `Apply ${fm(amount)}`}</button>
+        <button type="button" onClick={onCancel} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState([]);
   const [links, setLinks] = useState([]);
-  const [ctx, setCtx] = useState({ credit: [], creditStores: [], corp: [], corpStores: [], visits: [], online: [], stores: [] });
+  const [ctx, setCtx] = useState({ credit: [], creditStores: [], corp: [], corpStores: [], visits: [], online: [], stores: [], creditPayments: [] });
   const [month, setMonth] = useState(currentMonthKey());
   const [filter, setFilter] = useState("all"); // all | unknown
   const [tagging, setTagging] = useState(null); // { payer, customer, channel }
   const [ask, setAsk] = useState({}); // payer key -> typed name, for the inline "Who is …?" question
+  const [applying, setApplying] = useState(null); // payment id being applied to bills
+  const [cash, setCash] = useState(null); // "+ Cash received" form
   const [error, setError] = useState("");
   const [lastSeen] = useState(() => { try { return Number(localStorage.getItem(PR_LAST_SEEN_KEY) || 0); } catch (e) { return 0; } });
 
   async function reload() {
     try {
       const get = async (q) => { try { return (await sbFetch(q)) || []; } catch (e) { return []; } };
-      const [p, l, ci, cs, br, bs, v, os, st] = await Promise.all([
+      const [p, l, ci, cs, br, bs, v, os, st, cp] = await Promise.all([
         sbFetch("pending_payments?select=*&order=paid_at.desc"),
         get("payer_links?select=*"),
         get("credit_invoices?select=id,store_id,invoice_number,amount,paid,invoice_date"),
@@ -5722,11 +5861,12 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
         get("bigco_reports?select=id,store_id,invoice_number,amount,paid,report_date"),
         get("bigco_stores?select=id,name"),
         get("visits?select=store_name,date,invoice_number&invoice_number=not.is.null"),
-        get("online_sales?select=id,date,customer_name,amount,description,bill_no"),
+        get("online_sales?select=id,date,customer_name,amount,description,bill_no,payment_status"),
         get("stores?select=name"),
+        get("credit_payments?select=invoice_id,amount"),
       ]);
       setRows(p || []); setLinks(l);
-      setCtx({ credit: ci, creditStores: cs, corp: br, corpStores: bs, visits: v, online: os, stores: st });
+      setCtx({ credit: ci, creditStores: cs, corp: br, corpStores: bs, visits: v, online: os, stores: st, creditPayments: cp });
       const maxId = Math.max(0, ...(p || []).map((r) => Number(r.id) || 0));
       try { localStorage.setItem(PR_LAST_SEEN_KEY, String(maxId)); } catch (e) { /* private mode */ }
       onSeen?.();
@@ -5756,7 +5896,7 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
     ctx.online.forEach((s) => addName(s.customer_name, "online"));
     const linkBy = {}; links.forEach((l) => { linkBy[prNorm(l.payer_name)] = l; });
     const assignedBy = {};
-    rows.forEach((r) => { if (r.status === "assigned" && r.assigned_note && !assignedBy[prNorm(r.payer_name)]) assignedBy[prNorm(r.payer_name)] = r; });
+    rows.forEach((r) => { if (r.status === "assigned" && r.assigned_type !== "books" && r.assigned_note && !assignedBy[prNorm(r.payer_name)]) assignedBy[prNorm(r.payer_name)] = r; });
     const open = [
       ...ctx.credit.map((i) => ({ owed: Number(i.amount || 0) - Number(i.paid || 0), date: i.invoice_date, no: i.invoice_number, who: cName[i.store_id], channel: "credit" })),
       ...ctx.corp.map((r) => ({ owed: Number(r.amount || 0) - Number(r.paid || 0), date: r.report_date, no: r.invoice_number, who: bName[r.store_id], channel: "corporate" })),
@@ -5773,7 +5913,7 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
     const link = lookup.linkBy[key];
     if (link) return { who: link.customer, channel: link.channel, why: link.note ? link.note : "Identified payer", sure: true, tagged: true };
     const prev = lookup.assignedBy[key];
-    if (prev) return { who: prev.assigned_note, channel: prev.assigned_type, why: "Matched to previous assignment", sure: false };
+    if (prev) return { who: String(prev.assigned_note).split(" · ").pop(), channel: prev.assigned_type, why: "Matched to previous assignment", sure: false };
     const name = lookup.byName[key];
     if (name) return { who: name.who, channel: name.channel, why: "Payer name matches customer", sure: false };
     const paidDay = String(r.paid_at || "").slice(0, 10);
@@ -5814,12 +5954,31 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
     } catch (e) { setError("Couldn't remove: " + e.message); }
   }
 
+  async function saveCash() {
+    const amt = parseFloat(cash?.amount);
+    if (!cash?.customer?.trim()) { setError("Enter which customer paid."); return; }
+    if (!amt || amt <= 0) { setError("Enter the amount received."); return; }
+    setError("");
+    try {
+      const [ins] = await sbFetch("pending_payments", { method: "POST", body: JSON.stringify({
+        amount: amt, payer_name: cash.customer.trim(), paid_at: `${cash.date}T12:00:00`, transaction_id: `CASH-${Date.now()}`,
+        channel: "Cash", status: "pending", remark: [cash.from?.trim() && `from ${cash.from.trim()}`, cash.ref?.trim()].filter(Boolean).join(" · ") || null,
+        raw_message: `Cash $${amt.toFixed(2)} received at the office from ${cash.from?.trim() || "—"} for ${cash.customer.trim()}${cash.ref?.trim() ? ` (${cash.ref.trim()})` : ""}`,
+      }) });
+      logActivity?.("Cash received", cash.customer.trim(), `$${amt.toFixed(2)}${cash.from ? ` from ${cash.from}` : ""}`);
+      setCash(null);
+      await reload();
+      if (ins?.id) setApplying(ins.id);
+    } catch (e) { setError("Couldn't save the cash payment: " + e.message); }
+  }
+
   if (loading) return <div style={{ padding: 40, color: C.textFaint }}>Loading…</div>;
 
   const months = Array.from(new Set([currentMonthKey(), ...rows.map((r) => String(r.paid_at || "").slice(0, 7))])).filter(Boolean).sort().reverse();
   const inMonth = rows.filter((r) => String(r.paid_at || "").slice(0, 7) === month && r.status !== "ignored");
   const withHints = inMonth.map((r) => ({ r, h: hintFor(r) }));
-  const shown = filter === "unknown" ? withHints.filter((x) => !x.h) : withHints;
+  const toApply = withHints.filter((x) => x.r.status === "pending");
+  const shown = filter === "unknown" ? withHints.filter((x) => !x.h) : filter === "apply" ? toApply : withHints;
   const total = inMonth.reduce((a, r) => a + Number(r.amount || 0), 0);
   const today = todayStr();
   const todayRows = rows.filter((r) => new Date(r.paid_at).toLocaleDateString("en-CA") === today);
@@ -5844,7 +6003,7 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
   return (
     <div>
       <div style={{ marginBottom: 14 }}>
-        <div style={{ fontSize: 12, color: C.textFaint }}>All ABA payments received via the Telegram feed, shown by customer. Identify a new payer once; the system applies it to all future payments from that payer.</div>
+        <div style={{ fontSize: 12, color: C.textFaint }}>Every payment received — ABA (from the Telegram feed) and cash brought to the office. Press <b>Apply</b> to put a payment on the customer's bill; the app suggests the customer and the bill.</div>
       </div>
 
       {error && <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, color: C.amber, borderRadius: 9, padding: "10px 14px", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
@@ -5852,14 +6011,35 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
         {tile("Today", fm(todayTotal), `${todayRows.length} payment${todayRows.length === 1 ? "" : "s"}`)}
         {tile(monthLabel(month), fm(total), `${inMonth.length} payment${inMonth.length === 1 ? "" : "s"}`)}
+        {tile("To apply", String(toApply.length), toApply.length ? fm(toApply.reduce((a, x) => a + Number(x.r.amount || 0), 0)) + " not yet on a bill" : "Every payment is on a bill")}
         {tile("Unidentified payers", String(unknownCount), unknownCount ? "Identify once — remembered thereafter" : "All payers identified")}
       </div>
+
+      {cash ? (
+        <div style={{ background: C.surface, border: `1px solid ${C.gold}`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>Cash received at the office</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input list="pr-customers" value={cash.customer} onChange={(e) => setCash({ ...cash, customer: e.target.value })} placeholder="Customer who paid" style={{ flex: "2 1 180px", minWidth: 0, background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
+            <input type="number" inputMode="decimal" value={cash.amount} onChange={(e) => setCash({ ...cash, amount: e.target.value })} placeholder="Amount $" style={{ flex: "1 1 100px", minWidth: 0, background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
+            <input type="date" value={cash.date} onChange={(e) => setCash({ ...cash, date: e.target.value })} style={{ flex: "1 1 130px", background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
+            <input value={cash.from} onChange={(e) => setCash({ ...cash, from: e.target.value })} placeholder="Handed over by (salesperson)" style={{ flex: "1 1 160px", minWidth: 0, background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
+            <input value={cash.ref} onChange={(e) => setCash({ ...cash, ref: e.target.value })} placeholder="Receipt / Telegram ref (optional)" style={{ flex: "1 1 160px", minWidth: 0, background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button type="button" onClick={saveCash} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>Save and apply to bill</button>
+            <button type="button" onClick={() => setCash(null)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <button type="button" onClick={() => setCash({ customer: "", amount: "", date: todayStr(), from: "", ref: "" })}
+          style={{ background: "none", border: `1px solid ${C.gold}`, color: C.goldBright, borderRadius: 8, padding: "7px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", marginBottom: 14 }}>+ Cash received</button>
+      )}
 
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
         <select value={month} onChange={(e) => setMonth(e.target.value)} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "7px 10px", fontSize: 13 }}>
           {months.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
         </select>
-        {[["all", "All"], ["unknown", `Unidentified (${unknownCount})`]].map(([k, l]) => (
+        {[["all", "All"], ["apply", `To apply (${toApply.length})`], ["unknown", `Unidentified (${unknownCount})`]].map(([k, l]) => (
           <button key={k} type="button" onClick={() => setFilter(k)} style={{ padding: "7px 12px", fontSize: 12, fontWeight: 700, borderRadius: 8, cursor: "pointer", background: filter === k ? C.gold : "none", color: filter === k ? "#1A1508" : C.textDim, border: `1px solid ${filter === k ? C.gold : C.border}` }}>{l}</button>
         ))}
       </div>
@@ -5899,13 +6079,18 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
                     </div>
                     <div style={{ textAlign: "right", flexShrink: 0 }}>
                       <div style={{ fontSize: 15, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", color: C.goldBright }}>{fm(r.amount)}</div>
-                      {h && <button type="button" onClick={() => setTagging(editing ? null : { rowId: r.id, payer: r.payer_name, customer: h?.tagged ? h.who : "", channel: h?.tagged ? h.channel : (h?.channel || ""), note: "" })}
+                      {r.status === "pending" && applying !== r.id && <div><button type="button" onClick={() => { setApplying(r.id); setTagging(null); }}
+                        style={{ marginTop: 4, background: C.gold, border: "none", color: "#1A1508", borderRadius: 7, padding: "4px 11px", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>Apply</button></div>}
+                      {h && r.status !== "pending" && <button type="button" onClick={() => setTagging(editing ? null : { rowId: r.id, payer: r.payer_name, customer: h?.tagged ? h.who : "", channel: h?.tagged ? h.channel : (h?.channel || ""), note: "" })}
                         style={{ marginTop: 4, background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 7, padding: "3px 9px", fontSize: 11, cursor: "pointer" }}>
                         {h?.tagged ? "Change" : "Correct"}
                       </button>}
                     </div>
                   </div>
-                  {!h && !editing && (() => {
+                  {r.status === "assigned" && <div style={{ fontSize: 11, color: C.emerald, marginTop: 5, overflowWrap: "anywhere" }}>✓ {r.assigned_type === "books" ? "Already recorded in the books" : `Applied · ${r.assigned_note || ""}`}</div>}
+                  {applying === r.id && <ApplyPaymentPanel r={r} h={h} ctx={ctx} C={C} sbFetch={sbFetch} authUser={authUser} logActivity={logActivity}
+                    rememberPayer={(t) => saveTag(t)} onCancel={() => setApplying(null)} onDone={async () => { setApplying(null); await reload(); }} />}
+                  {!h && !editing && r.status !== "pending" && (() => {
                     const k = prNorm(r.payer_name); const v = ask[k] || "";
                     return (
                       <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
