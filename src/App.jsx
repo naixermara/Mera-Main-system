@@ -193,7 +193,7 @@ async function serverLogout(token) {
 
 // Menu labels were renamed to standard business terms; a menu position saved
 // under an old name still opens the same page.
-const NAV_RENAMED = {"Total": "Sales Summary", "Sales report": "Sales Report", "Payments received": "Payments Received", "Money owed": "Accounts Receivable", "Stores": "Store Directory", "Stock on hand": "Stock on Hand", "Products & barcodes": "Products & Barcodes", "Delivery notes": "Delivery Notes", "Bill numbers": "Bill Register", "Post": "Post Entry", "From sales": "From Sales", "Journal entry": "Journal Entry", "Vendor": "Vendors", "Entries": "Ledger Entries", "Accounts": "Chart of Accounts"};
+const NAV_RENAMED = {"Total": "Sales Summary", "Sales report": "Sales Report", "Payments received": "Payments Received", "Money owed": "Accounts Receivable", "Stores": "Store Directory", "Stock on hand": "Stock on Hand", "Products & barcodes": "Products & Barcodes", "Delivery notes": "Delivery Notes", "Bill numbers": "Bill Register", "Post": "Post Entry", "From sales": "Post Sales & Payments", "From Sales": "Post Sales & Payments", "Journal entry": "Journal Entry", "Vendor": "Vendors", "Entries": "Ledger Entries", "Accounts": "Chart of Accounts"};
 function loadSavedNav() {
   try {
     const raw = localStorage.getItem("mera_nav_state");
@@ -6031,12 +6031,22 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
         const storeName = st?.name || "";
         const rows = consignRows(st, draft.cqty || {}, parseFloat(draft.paid) || 0);
         if (rows.length === 0) { setError("Enter how many pieces of each product this payment clears."); setBusy(false); return; }
+        // Boxes sold at the store get a B bill, the same as a visit logged on
+        // the Consignment page, so the sale reaches the books before its payment.
+        let billNo = null;
+        if (rows.some((r) => r.qty > 0)) {
+          const amount = rows.reduce((a, r) => {
+            const sku = SKUS.find((x) => x.visitKey === r.visitKey);
+            return a + (Number(r.qty) || 0) * (Number(sku ? st?.[sku.priceCol] : 0) || 0);
+          }, 0);
+          billNo = await issueBillNumber("B", "consignment payment", storeName, amount);
+        }
         await sbFetch("visits", {
           method: "POST",
-          body: JSON.stringify(rows.map((r) => ({
+          body: JSON.stringify(rows.map((r, i) => ({
             date: draft.date, store_name: storeName, product: r.visitKey,
             sold: r.qty, returned: 0, paid: r.paid, owed: r.owed,
-            notes: draft.notes, invoice_number: null, created_by: authUser?.email || "unknown",
+            notes: draft.notes, invoice_number: i === rows.length - 1 ? billNo : null, created_by: authUser?.email || "unknown",
           }))),
         });
         summary = `Consignment · ${storeName} · ${rows.map((r) => `${r.qty} ${r.label}`).join(", ")}`;
@@ -7718,7 +7728,7 @@ const NAV = [
   ]},
   { name: "Accounting", needs: "accounting", items: [
     { label: "Post Entry",          page: "accounting", tab: "post" },
-    { label: "From Sales",    page: "accounting", tab: "sales" },
+    { label: "Post Sales & Payments", page: "accounting", tab: "sales" },
     { label: "Journal Entry", page: "accounting", tab: "journal" },
     { label: "Vendors",        page: "accounting", tab: "vendor" },
     { label: "Ledger Entries",       page: "accounting", tab: "ledger" },
@@ -7764,6 +7774,166 @@ const POST_KINDS = [
   { key: "withdraw", label: "Cash Withdraw", help: "Cash taken out of the bank." },
   { key: "transfer", label: "Cash Transfer", help: "Between any two cash or bank accounts." },
 ];
+
+// ============================================================================
+// POST SALES & PAYMENTS — every bill the app issues and every payment it
+// records is turned into a ledger entry here, the same way BizAdvisor booked
+// them (B: VAT inside the price; INV: VAT added; cost of every box at the
+// declared cost). Nothing reaches the books until the accountant presses Post,
+// and nothing can be posted twice. Built in the database (ledger_pending /
+// ledger_post), so the figures here are exactly what will be written.
+// ============================================================================
+function LedgerPostingPanel({ C, sbFetch, accounts, logActivity, onPosted }) {
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [sel, setSel] = useState({});        // key -> true
+  const [cash, setCash] = useState({});      // key -> account code
+  const [dates, setDates] = useState({});    // key -> yyyy-mm-dd
+  const [open, setOpen] = useState(null);
+  const [filter, setFilter] = useState("all");
+
+  const cashAccounts = (accounts || []).filter((a) => a.is_cash && a.active !== false);
+  const defaultCash = cashAccounts.find((a) => a.code === "1010200")?.code || cashAccounts[0]?.code || "";
+  const nameOf = (code) => { const a = (accounts || []).find((x) => x.code === code); return a ? `${a.code} · ${a.name}` : code; };
+  const money = (n) => `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  async function load() {
+    setErr("");
+    try {
+      const r = await sbFetch("rpc/ledger_pending", { method: "POST", body: "{}" });
+      setRows(Array.isArray(r) ? r : []);
+    } catch (e) {
+      setRows([]);
+      setErr(String(e?.message || e).includes("ledger_pending") ? "The posting setup is missing in the database." : "Couldn't load what is waiting to be posted.");
+    }
+  }
+  useEffect(() => { load(); }, []);
+
+  const shown = (rows || []).filter((r) => filter === "all" || (filter === "sales" ? r.kind !== "payment" : r.kind === "payment"));
+  const chosen = shown.filter((r) => sel[r.source_key]);
+  const allOn = shown.length > 0 && shown.every((r) => sel[r.source_key] || (r.problem && r.kind === "sale"));
+
+  async function run(skip) {
+    if (!chosen.length) return;
+    if (skip && !window.confirm(`Mark ${chosen.length} item(s) as already in the books? Nothing will be posted for them.`)) return;
+    setBusy(true); setErr(""); setMsg("");
+    try {
+      const items = chosen.map((r) => ({
+        key: r.source_key,
+        ...(skip ? { skip: true } : {}),
+        ...(r.needs_cash ? { cash: cash[r.source_key] || defaultCash } : {}),
+        ...(dates[r.source_key] ? { date: dates[r.source_key] } : {}),
+      }));
+      const res = await sbFetch("rpc/ledger_post", { method: "POST", body: JSON.stringify({ p_items: items }) });
+      const out = Array.isArray(res) ? res[0] : res;
+      setMsg(skip ? `${out?.skipped || 0} marked as already in the books.` : `${out?.posted || 0} entr${(out?.posted || 0) === 1 ? "y" : "ies"} posted to the books.`);
+      logActivity?.(skip ? "Marked as already in books" : "Posted to books", `${chosen.length} item(s)`, chosen.map((r) => r.ref).join(", ").slice(0, 200));
+      setSel({});
+      await load();
+      onPosted?.();
+    } catch (e) {
+      const t = String(e?.message || e);
+      setErr(t.includes("MONTH_LOCKED") ? "That month is closed. Reopen it in Month Close first." : t.includes("cannot be posted") ? t.replace(/^.*?Bill/, "Bill") : "Nothing was posted — please try again.");
+    }
+    setBusy(false);
+  }
+
+  const th = { padding: "8px 8px", fontSize: 10.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", textAlign: "left", whiteSpace: "nowrap" };
+  const td = { padding: "9px 8px", borderTop: `1px solid ${C.border}`, fontSize: 12.5, verticalAlign: "top" };
+  const inp = { background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 7, padding: "5px 7px", fontSize: 12 };
+  const counts = { sales: (rows || []).filter((r) => r.kind !== "payment").length, payments: (rows || []).filter((r) => r.kind === "payment").length };
+
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: C.textFaint, marginBottom: 12, lineHeight: 1.6 }}>
+        Bills issued and payments recorded in the app, waiting to go into the books. Each bill is booked like BizAdvisor did — sale, VAT, and the cost of every box at the declared cost. Choose which bank or cash account each payment went into, then press <b>Post</b>. Nothing is posted twice.
+      </div>
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+        {[["all", `All (${(rows || []).length})`], ["sales", `Bills (${counts.sales})`], ["payments", `Payments (${counts.payments})`]].map(([k, l]) => (
+          <button key={k} type="button" onClick={() => setFilter(k)}
+            style={{ background: filter === k ? C.gold : "none", color: filter === k ? "#1A1508" : C.textDim, border: `1px solid ${filter === k ? C.gold : C.border}`, borderRadius: 999, padding: "5px 12px", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>{l}</button>
+        ))}
+      </div>
+
+      {err && <div style={{ background: C.roseBg || "#3a1d24", color: C.rose, padding: "10px 12px", borderRadius: 9, fontSize: 12.5, marginBottom: 10 }}>{err}</div>}
+      {msg && <div style={{ background: C.emeraldBg || "#14301f", color: C.emerald, padding: "10px 12px", borderRadius: 9, fontSize: 12.5, marginBottom: 10 }}>{msg}</div>}
+
+      {rows === null ? <div style={{ color: C.textFaint, padding: 20 }}>Loading…</div> : shown.length === 0 ? (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "22px 18px", color: C.textFaint, fontSize: 13 }}>Everything is in the books. Nothing waiting.</div>
+      ) : (
+        <>
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
+              <thead><tr>
+                <th style={th}><input type="checkbox" checked={allOn} onChange={(e) => { const n = {}; if (e.target.checked) shown.forEach((r) => { if (!(r.problem && r.kind === "sale")) n[r.source_key] = true; }); setSel(n); }} /></th>
+                <th style={th}>Date</th><th style={th}>Type</th><th style={th}>Bill</th><th style={th}>Customer</th>
+                <th style={{ ...th, textAlign: "right" }}>Amount</th><th style={th}>Paid into</th><th style={th}></th>
+              </tr></thead>
+              <tbody>
+                {shown.map((r) => {
+                  const blocked = r.problem && r.kind === "sale";
+                  return (
+                    <React.Fragment key={r.source_key}>
+                      <tr>
+                        <td style={td}><input type="checkbox" disabled={blocked} checked={!!sel[r.source_key]} onChange={(e) => setSel({ ...sel, [r.source_key]: e.target.checked })} /></td>
+                        <td style={{ ...td, whiteSpace: "nowrap" }}>
+                          {r.kind === "payment"
+                            ? <input type="date" value={dates[r.source_key] || r.doc_date} onChange={(e) => setDates({ ...dates, [r.source_key]: e.target.value })} style={inp} />
+                            : fmtDate(r.doc_date)}
+                        </td>
+                        <td style={td}><span style={{ fontWeight: 700, color: r.kind === "payment" ? C.emerald : r.kind === "void" ? C.rose : C.gold }}>{r.kind === "payment" ? "Payment" : r.kind === "void" ? "Void" : "Bill"}</span><div style={{ fontSize: 10.5, color: C.textFaint }}>{r.channel}</div></td>
+                        <td style={{ ...td, fontFamily: "'IBM Plex Mono', monospace", whiteSpace: "nowrap" }}>{r.ref}</td>
+                        <td style={td}>{r.customer || "—"}{r.problem && <div style={{ fontSize: 10.5, color: blocked ? C.rose : C.amber, marginTop: 3, maxWidth: 260 }}>{r.problem}</div>}</td>
+                        <td style={{ ...td, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", whiteSpace: "nowrap" }}>{money(r.amount)}</td>
+                        <td style={td}>
+                          {r.needs_cash ? (
+                            <select value={cash[r.source_key] || defaultCash} onChange={(e) => setCash({ ...cash, [r.source_key]: e.target.value })} style={{ ...inp, maxWidth: 210 }}>
+                              {cashAccounts.map((a) => <option key={a.code} value={a.code}>{a.code} · {a.name}</option>)}
+                            </select>
+                          ) : <span style={{ color: C.textFaint }}>—</span>}
+                        </td>
+                        <td style={td}><button type="button" onClick={() => setOpen(open === r.source_key ? null : r.source_key)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 7, padding: "4px 9px", fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>{open === r.source_key ? "Hide" : "Entry"}</button></td>
+                      </tr>
+                      {open === r.source_key && (
+                        <tr><td colSpan={8} style={{ padding: "0 12px 12px", background: C.bg2 }}>
+                          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8 }}>
+                            <tbody>
+                              {(r.lines || []).map((l, i) => (
+                                <tr key={i}>
+                                  <td style={{ padding: "4px 6px", fontSize: 12, color: C.textDim }}>{l.code === "$cash" ? nameOf(cash[r.source_key] || defaultCash) : nameOf(l.code)}</td>
+                                  <td style={{ padding: "4px 6px", fontSize: 12, color: C.textFaint }}>{l.memo}</td>
+                                  <td style={{ padding: "4px 6px", fontSize: 12, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" }}>{Number(l.dr) ? `Dr ${Number(l.dr).toFixed(2)}` : ""}</td>
+                                  <td style={{ padding: "4px 6px", fontSize: 12, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" }}>{Number(l.cr) ? `Cr ${Number(l.cr).toFixed(2)}` : ""}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </td></tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+            <button type="button" disabled={busy || !chosen.length} onClick={() => run(false)}
+              style={{ background: chosen.length ? `linear-gradient(135deg, ${C.goldBright}, ${C.gold})` : C.surfaceHover, color: chosen.length ? "#1A1508" : C.textFaint, border: "none", borderRadius: 9, padding: "10px 18px", fontSize: 13, fontWeight: 700, cursor: chosen.length ? "pointer" : "default" }}>
+              {busy ? "Posting…" : `Post ${chosen.length || ""} to the books`}
+            </button>
+            <button type="button" disabled={busy || !chosen.length} onClick={() => run(true)}
+              style={{ background: "none", border: `1px solid ${C.border}`, color: chosen.length ? C.textDim : C.textFaint, borderRadius: 9, padding: "10px 14px", fontSize: 12, cursor: chosen.length ? "pointer" : "default" }}>
+              Already in the books — don't post
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
   const [tab, setTab] = useState(openTab || "post");
@@ -8489,7 +8659,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
   return (
     <div>
       <div style={{ display: "flex", gap: 6, marginTop: 22, marginBottom: 18, flexWrap: "wrap" }} className="mera-subtabs">
-        {[{ key: "post", label: "Post" }, { key: "sales", label: "From sales" }, { key: "journal", label: "Journal entry" }, { key: "vendor", label: "Vendor" }, { key: "ledger", label: "Entries" }, { key: "reports", label: "Reports" }, { key: "finance", label: "Finance" }, { key: "accounts", label: "Accounts" }].map((t) => (
+        {[{ key: "post", label: "Post" }, { key: "sales", label: "Post sales & payments" }, { key: "journal", label: "Journal entry" }, { key: "vendor", label: "Vendor" }, { key: "ledger", label: "Entries" }, { key: "reports", label: "Reports" }, { key: "finance", label: "Finance" }, { key: "accounts", label: "Accounts" }].map((t) => (
           <button key={t.key} onClick={() => { setTab(t.key); setError(""); }} style={{ background: "none", border: "none", padding: "6px 2px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginRight: 14, color: tab === t.key ? C.gold : C.textFaint, borderBottom: `2px solid ${tab === t.key ? C.gold : "transparent"}` }}>
             {t.label}
           </button>
@@ -8586,112 +8756,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
 
       {/* ---------------- draft from the app's own sales ---------------- */}
       {tab === "sales" && (
-        <div style={{ maxWidth: 640 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
-            <div style={{ fontSize: 12.5, color: C.textFaint, flex: 1, minWidth: 220 }}>
-              Takes what the app already recorded this month and drafts one entry. Nothing is posted until you press the button.
-            </div>
-            <select value={month} onChange={(e) => setMonth(e.target.value)} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 9, padding: "10px 12px", fontSize: 13, fontWeight: 600 }}>
-              {monthsThrough([month, currentMonthKey()]).map((mk) => <option key={mk} value={mk}>{monthLabel(mk)}</option>)}
-            </select>
-          </div>
-
-          {!salesSummary ? (
-            <div style={{ color: C.textFaint, fontSize: 13, padding: "20px 0" }}>Loading sales…</div>
-          ) : (
-            <>
-              <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px", marginBottom: 14 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Count a consignment sale when</div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
-                  {[["collected", "The store pays you", "Only money actually received. Nothing counted on a shelf estimate."],
-                    ["stock", "The stock leaves the shelf", "Value of units logged as sold; anything unpaid becomes money owed to you."]].map(([key, label, help]) => (
-                    <button key={key} type="button" onClick={() => setConsignBasis(key)}
-                      style={{ flex: 1, minWidth: 220, textAlign: "left", background: consignBasis === key ? C.bg2 : "none", border: `1px solid ${consignBasis === key ? C.gold : C.border}`, borderRadius: 10, padding: "10px 12px", cursor: "pointer" }}>
-                      <div style={{ fontSize: 12.5, fontWeight: 700, color: consignBasis === key ? C.goldBright : C.text }}>{label}</div>
-                      <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 3, lineHeight: 1.4 }}>{help}</div>
-                    </button>
-                  ))}
-                </div>
-                {consignBasis === "collected" && salesSummary.consignStockValue > salesSummary.consignCollected + 0.005 && (
-                  <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 8 }}>
-                    Visits logged {money(salesSummary.consignStockValue)} of stock as sold this month. Not counted on this basis.
-                  </div>
-                )}
-              </div>
-
-              <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px", marginBottom: 14 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>{monthLabel(month)} — what will be posted</div>
-                {[["Consignment", salesSummary.consignRevenue, salesSummary.consignCollected],
-                  ["Corporate Accounts", salesSummary.corpRevenue, salesSummary.corpCollected],
-                  ["Credit Term", salesSummary.credRevenue, salesSummary.credCollected]].map(([label, rev, col]) => (
-                  <div key={label} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 12.5, borderBottom: `1px solid ${C.border}` }}>
-                    <span style={{ color: C.textDim }}>{label}</span>
-                    <span><span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{money(rev)}</span> <span style={{ color: C.textFaint, fontSize: 11 }}>sold · {money(col)} collected</span></span>
-                  </div>
-                ))}
-                <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 0 0", fontSize: 13, fontWeight: 700 }}>
-                  <span>Total</span>
-                  <span><span style={{ fontFamily: "'IBM Plex Mono', monospace", color: C.gold }}>{money(salesSummary.revenue)}</span> <span style={{ color: C.textFaint, fontSize: 11 }}>sold · {money(salesSummary.collected)} collected</span></span>
-                </div>
-              </div>
-
-              <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 18px", marginBottom: 14 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Which accounts to use</div>
-                {[["Money collected goes to", "cashId", cashAccounts],
-                  ["Still owed goes to", "arId", accounts.filter((a) => a.type === "asset")],
-                  ["Sales are credited to", "revenueId", byType("income")]].map(([label, field, opts]) => (
-                  <div key={field} style={{ marginBottom: 10 }}>
-                    <label style={lbl}>{label}</label>
-                    <select style={inp} value={salesMap[field]} onChange={(e) => setSalesMap({ ...salesMap, [field]: e.target.value })}>
-                      <option value="">— choose —</option>
-                      {opts.map((a) => <option key={a.id} value={a.id}>{a.code} · {a.name}</option>)}
-                    </select>
-                  </div>
-                ))}
-              </div>
-
-              {salesSummary.revenue > 0 && (
-                <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 14px", marginBottom: 14, fontSize: 12.5 }}>
-                  <div style={{ color: C.textFaint, marginBottom: 8, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                    {priorPosted.count ? "This will post (the difference only)" : "This will post"}
-                  </div>
-                  {nothingNew ? (
-                    <div style={{ color: C.textFaint }}>Nothing new to post.</div>
-                  ) : (
-                    <>
-                      {Math.abs(delta.collected) > 0.005 && (
-                        <div style={{ display: "flex", justifyContent: "space-between" }}><span>{delta.collected > 0 ? "Dr" : "Cr"} {acctOf(salesMap.cashId)?.name || "cash"}</span><span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{money(Math.abs(delta.collected))}</span></div>
-                      )}
-                      {Math.abs(delta.receivable) > 0.005 && (
-                        <div style={{ display: "flex", justifyContent: "space-between" }}><span>{delta.receivable > 0 ? "Dr" : "Cr"} {acctOf(salesMap.arId)?.name || "receivables"}</span><span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{money(Math.abs(delta.receivable))}</span></div>
-                      )}
-                      {Math.abs(delta.revenue) > 0.005 && (
-                        <div style={{ display: "flex", justifyContent: "space-between", color: C.textDim }}><span>&nbsp;&nbsp;&nbsp;{delta.revenue > 0 ? "Cr" : "Dr"} {acctOf(salesMap.revenueId)?.name || "sales"}</span><span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{money(Math.abs(delta.revenue))}</span></div>
-                      )}
-                    </>
-                  )}
-                </div>
-              )}
-
-              {priorPosted.count > 0 && (
-                <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 14px", marginBottom: 14, fontSize: 12.5 }}>
-                  <div style={{ color: C.textFaint, marginBottom: 6, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em" }}>Already posted for this month</div>
-                  <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: C.textDim }}>{priorPosted.count} entr{priorPosted.count === 1 ? "y" : "ies"}</span><span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{money(priorPosted.revenue)}</span></div>
-                  <div style={{ fontSize: 11, color: C.textFaint, marginTop: 6 }}>
-                    {nothingNew
-                      ? "Nothing has changed since then, so there is nothing to post."
-                      : `Posting now adds only the difference — ${money(delta.revenue)} — so the month is never counted twice.`}
-                  </div>
-                </div>
-              )}
-
-              <button onClick={postSalesEntry} disabled={busy || nothingNew} className="primarybtn"
-                style={{ width: "100%", background: !nothingNew ? `linear-gradient(135deg, ${C.goldBright}, ${C.gold})` : C.surfaceHover, color: !nothingNew ? "#1A1508" : C.textFaint, border: "none", borderRadius: 9, padding: "12px 0", fontSize: 13.5, fontWeight: 700, cursor: !nothingNew ? "pointer" : "default" }}>
-                {busy ? "Posting…" : nothingNew ? "Nothing new to post" : priorPosted.count ? `Post the difference (${money(delta.revenue)})` : `Post ${monthLabel(month)} sales`}
-              </button>
-            </>
-          )}
-        </div>
+        <LedgerPostingPanel C={C} sbFetch={sbFetch} accounts={accounts} logActivity={logActivity} onPosted={reload} />
       )}
 
       {/* ---------------- manual journal ---------------- */}
