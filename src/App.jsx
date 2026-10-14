@@ -10514,7 +10514,9 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
     return monthsThrough(acc);
   }, [visits, bigcoReports, creditInvoices, miscExpenses, glEntries]);
 
-  const report = useMemo(() => {
+  // One month's figures. Pure on the loaded data, so the same rules give the
+  // selected month and the month-by-month marketing trend.
+  const buildReport = (selectedMonth) => {
     const costOf = (k) => {
       const c = costs.find((x) => x.product === k);
       return { perBox: c ? Number(c.cost_per_box || 0) : 0, packsPerBox: c ? Number(c.packs_per_box || 1) || 1 : 1 };
@@ -10625,7 +10627,14 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
     const priced = lines.every((l) => l.perBox > 0);
 
     return { lines, revenue, consignRevenue, corpRevenue, creditRevenue, onlineRevenue, onlineCogs, cogs, sampleCost, sampleBreakdown, otherExpenseCost, privateExpenseCost, declaredExpenseCost, declaredExpenses, monthExpenses, kolCost, adCost, marketingCost, kolBreakdown, profit, margin, priced, stockValueAll, collectedAll, paidRatio };
-  }, [visits, bigcoReports, creditInvoices, stores, costs, stockMoves, miscExpenses, onlineSales, onlineSaleItems, selectedMonth, consignBasis, glAccounts, glEntries, glLines, mktKols, mktVideos, mktAds]);
+  };
+  const report = useMemo(() => buildReport(selectedMonth), [selectedMonth, ...[visits, bigcoReports, creditInvoices, stores, costs, stockMoves, miscExpenses, onlineSales, onlineSaleItems, consignBasis, glAccounts, glEntries, glLines, mktKols, mktVideos, mktAds]]);
+  // The selected month and the five before it, oldest first.
+  const trend = useMemo(() => {
+    const out = []; let [y, m] = selectedMonth.split("-").map(Number);
+    for (let i = 0; i < 6; i++) { out.unshift(`${y}-${String(m).padStart(2, "0")}`); m -= 1; if (m === 0) { m = 12; y -= 1; } }
+    return out.map((mk) => { const r = buildReport(mk); return { month: mk, revenue: r.revenue, gross: r.revenue - r.cogs - r.sampleCost, marketing: r.marketingCost, kol: r.kolCost, ads: r.adCost, profit: r.profit }; });
+  }, [selectedMonth, ...[visits, bigcoReports, creditInvoices, stores, costs, stockMoves, miscExpenses, onlineSales, onlineSaleItems, consignBasis, glAccounts, glEntries, glLines, mktKols, mktVideos, mktAds]]);
 
   const cell = { padding: "10px 8px", textAlign: "right", whiteSpace: "nowrap" };
   const th = { textAlign: "right", padding: "11px 8px", fontWeight: 700 };
@@ -10925,6 +10934,8 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
               KOL and ad spend come from the Marketing page. Salaries and other costs count once they are recorded as expenses — declared in Accounting, or not declared here.
             </div>
           </div>
+          <MoneyLeftSection C={C} sbFetch={sbFetch} month={selectedMonth} glAccounts={glAccounts} glEntries={glEntries} glLines={glLines} glReady={glReady} miscExpenses={miscExpenses} mktAds={mktAds} profit={report.profit} />
+          <MarketingReturnSection C={C} trend={trend} />
           <CustomerProfitSection C={C} sbFetch={sbFetch} month={selectedMonth} canEdit={canDeclare} />
         </>
       )}
@@ -10946,6 +10957,199 @@ const CP_CHANNEL = { online: "Online & COD", credit: "Credit Term", corporate: "
 const CP_LIST = Object.fromEntries(SKUS.map((x) => [x.code, x.priceOptions[0]]));
 const cpMoney = (n) => `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const cpKey = (s) => String(s || "").trim().toLowerCase();
+
+// ============================================================================
+// MONEY LEFT AFTER SPENDING — actual cash, not profit on paper. Money in is
+// what reached the company's bank/cash accounts (from the books, plus app
+// payments not yet posted). Money out is everything paid: from the books,
+// not-declared expenses, KOL payments, ad boosting and salaries. Only what is
+// recorded counts, so gaps are flagged instead of guessed.
+// ============================================================================
+function MoneyLeftSection({ C, sbFetch, month, glAccounts, glEntries, glLines, glReady, miscExpenses, mktAds, profit }) {
+  const [src, setSrc] = useState(null);
+  const [open, setOpen] = useState(null);
+  useEffect(() => {
+    (async () => {
+      const get = async (q, post) => { try { return (await sbFetch(q, post ? { method: "POST", body: "{}" } : undefined)) || []; } catch (e) { return null; } };
+      const [kp, ps, runs, pend] = await Promise.all([
+        get("kol_payments?select=payment_date,amount,kol_id"),
+        get("payslips?select=run_id,net_pay,paid_at,staff_name"),
+        get("payroll_runs?select=id,month"),
+        get("rpc/ledger_pending", true),
+      ]);
+      setSrc({ kp: kp || [], ps: ps || [], runs: runs || [], pend: pend || [], pendOk: pend !== null });
+    })();
+  }, []);
+
+  const d = useMemo(() => {
+    if (!src) return null;
+    const inMonth = (x) => x && monthKey(x) === month;
+    const acc = new Map((glAccounts || []).map((a) => [a.id, a]));
+    const isCash = (id) => !!acc.get(id)?.is_cash;
+    const salaryRe = /salar|wage|payroll|ប្រាក់ខែ/i;
+
+    // Salaries come from the Payroll page: by the day marked paid, or — if not
+    // marked — counted in the payroll month itself.
+    const runMonth = Object.fromEntries(src.runs.map((r) => [r.id, r.month]));
+    const payslips = src.ps.filter((p) => (p.paid_at ? inMonth(p.paid_at) : runMonth[p.run_id] === month));
+    const payroll = payslips.reduce((a, p) => a + Number(p.net_pay || 0), 0);
+    const payrollUnmarked = payslips.filter((p) => !p.paid_at).length;
+
+    // From the books: every entry this month that moves a cash/bank account
+    // against something else (transfers between own accounts are ignored).
+    const entries = new Map((glEntries || []).filter((e) => inMonth(e.entry_date)).map((e) => [e.id, e]));
+    const byEntry = {};
+    (glLines || []).forEach((l) => { if (entries.has(l.entry_id)) (byEntry[l.entry_id] = byEntry[l.entry_id] || []).push(l); });
+    let bookIn = 0, bookOut = 0, salaryInBooks = 0;
+    const outBy = {};
+    Object.values(byEntry).forEach((ls) => {
+      const cashNet = ls.filter((l) => isCash(l.account_id)).reduce((a, l) => a + Number(l.debit || 0) - Number(l.credit || 0), 0);
+      const other = ls.filter((l) => !isCash(l.account_id));
+      if (!other.length || Math.abs(cashNet) < 0.005) return;
+      if (cashNet > 0) { bookIn += cashNet; return; }
+      const main = other.slice().sort((a, b) => Number(b.debit || 0) - Number(a.debit || 0))[0];
+      const name = acc.get(main.account_id)?.name || "Other";
+      if (salaryRe.test(name)) { salaryInBooks += -cashNet; if (payroll > 0) return; }
+      bookOut += -cashNet;
+      outBy[name] = (outBy[name] || 0) + -cashNet;
+    });
+
+    const pendIn = src.pend.filter((r) => r.kind === "payment" && inMonth(r.doc_date)).reduce((a, r) => a + Number(r.amount || 0), 0);
+    const privateOut = (miscExpenses || []).filter((m) => inMonth(m.date)).reduce((a, m) => a + Number(m.amount || 0), 0);
+    const kolOut = src.kp.filter((p) => inMonth(p.payment_date)).reduce((a, p) => a + Number(p.amount || 0), 0);
+    const adOut = (mktAds || []).filter((r) => r.month === month).reduce((a, r) => a + Number(r.amount || 0), 0);
+
+    const moneyIn = bookIn + pendIn;
+    const moneyOut = bookOut + privateOut + kolOut + adOut + payroll;
+    const ins = [
+      ["Received into bank & cash (in the books)", bookIn],
+      ["Received, recorded in the app, not yet posted", pendIn],
+    ];
+    const outs = [
+      ["Paid from bank & cash (in the books)", bookOut, Object.entries(outBy).sort((a, b) => b[1] - a[1])],
+      ["Salaries (Payroll)", payroll],
+      ["KOL payments", kolOut],
+      ["Ad boosting", adOut],
+      ["Other expenses (not declared)", privateOut],
+    ];
+    const warn = [];
+    if (privateOut === 0 && (glReady ? Object.keys(outBy).filter((n) => !/stock|inventory|supplier|payable/i.test(n)).length === 0 : true))
+      warn.push("No rent, fuel, delivery, utilities or other running costs are recorded this month. Record them under Expenses below, or money left is too high.");
+    if (!glReady) warn.push("The books couldn't be read, so bank receipts and payments are missing.");
+    if (!src.pendOk) warn.push("Payments not yet posted couldn't be read.");
+    if (payrollUnmarked) warn.push(`${payrollUnmarked} payslip(s) are not marked paid in Payroll — counted here as paid for ${monthLabel(month)}.`);
+    if (month === currentMonthKey()) warn.push("This month is not finished yet.");
+    return { moneyIn, moneyOut, left: moneyIn - moneyOut, ins, outs, warn };
+  }, [src, month, glAccounts, glEntries, glLines, glReady, miscExpenses, mktAds]);
+
+  const m2 = (n) => `${n < 0 ? "−" : ""}$${Math.abs(Number(n || 0)).toLocaleString("en-US", MONEY2)}`;
+  const head = { fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em" };
+  const row = { display: "flex", justifyContent: "space-between", gap: 10, padding: "7px 0", borderBottom: `1px solid ${C.border}`, fontSize: 12.5 };
+  const mono = { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, whiteSpace: "nowrap" };
+
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 18px", marginTop: 16 }}>
+      <div style={head}>Money left after spending — {monthLabel(month)}</div>
+      <div style={{ fontSize: 11.5, color: C.textFaint, marginTop: 4, lineHeight: 1.5 }}>Actual money received minus actual money paid out. Profit above counts sales when made; this counts cash when it moves.</div>
+      {!d ? <div style={{ color: C.textFaint, padding: "16px 0", fontSize: 12.5 }}>Loading…</div> : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, margin: "14px 0" }}>
+            {[["Money in", d.moneyIn, C.emerald], ["Money out", d.moneyOut, C.amber], ["Money left", d.left, d.left >= 0 ? C.goldBright : C.rose]].map(([l, v, col]) => (
+              <div key={l} style={{ background: C.bg2, borderRadius: 10, padding: "12px 14px" }}>
+                <div style={{ fontSize: 10, color: C.textFaint, fontWeight: 700, textTransform: "uppercase" }}>{l}</div>
+                <div style={{ ...mono, fontSize: 20, marginTop: 6, color: col }}>{m2(v)}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: 11.5, color: C.textFaint, marginBottom: 12 }}>Profit on paper this month: <b style={{ color: C.text }}>{m2(profit)}</b></div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 16 }}>
+            <div>
+              <div style={{ ...head, fontSize: 10.5, marginBottom: 4 }}>Money in</div>
+              {d.ins.map(([l, v]) => <div key={l} style={row}><span style={{ color: C.textDim }}>{l}</span><span style={mono}>{m2(v)}</span></div>)}
+            </div>
+            <div>
+              <div style={{ ...head, fontSize: 10.5, marginBottom: 4 }}>Money out</div>
+              {d.outs.map(([l, v, detail]) => (
+                <React.Fragment key={l}>
+                  <div style={{ ...row, cursor: detail?.length ? "pointer" : "default" }} onClick={() => detail?.length && setOpen(open === l ? null : l)}>
+                    <span style={{ color: C.textDim }}>{l}{detail?.length ? <span style={{ color: C.textFaint, fontSize: 10.5 }}> · {open === l ? "hide" : "details"}</span> : null}</span>
+                    <span style={mono}>{m2(v)}</span>
+                  </div>
+                  {open === l && detail.map(([n, a]) => (
+                    <div key={n} style={{ ...row, fontSize: 11.5, paddingLeft: 12, color: C.textFaint }}><span>{n}</span><span style={mono}>{m2(a)}</span></div>
+                  ))}
+                </React.Fragment>
+              ))}
+            </div>
+          </div>
+          {d.warn.length > 0 && (
+            <div style={{ background: C.amberBg, color: C.amber, padding: "10px 12px", borderRadius: 9, fontSize: 11.5, marginTop: 14, lineHeight: 1.55, border: `1px solid ${C.amber}30` }}>
+              {d.warn.map((w) => <div key={w}>• {w}</div>)}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// MARKETING RETURN — six months side by side: what was spent on KOLs and ad
+// boosting (same cost rule as profit) against sales and gross profit, so the
+// marketing budget is set from actual results.
+// ============================================================================
+function MarketingReturnSection({ C, trend }) {
+  const k = (n) => { const a = Math.abs(n); const s = a >= 1000 ? `$${(a / 1000).toFixed(1)}k` : `$${a.toFixed(0)}`; return n < 0 ? `−${s}` : s; };
+  const head = { fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em" };
+  const th = { padding: "8px 6px", fontSize: 10, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", textAlign: "right", lineHeight: 1.3, verticalAlign: "bottom" };
+  const td = { padding: "9px 6px", borderTop: `1px solid ${C.border}`, fontSize: 12, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", whiteSpace: "nowrap" };
+  const cur = trend[trend.length - 1] || {};
+  const withMkt = trend.filter((t) => t.marketing > 0.5);
+  const spent = withMkt.reduce((a, t) => a + t.marketing, 0);
+  const gross = withMkt.reduce((a, t) => a + t.gross, 0);
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 18px", marginTop: 16 }}>
+      <div style={head}>Marketing return — last 6 months</div>
+      <div style={{ fontSize: 11.5, color: C.textFaint, marginTop: 4, lineHeight: 1.5 }}>KOL cost per video posted, plus ad boosting, against sales. Gross profit is sales minus box cost and samples.</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, margin: "14px 0" }}>
+        {[
+          [`Spent ${monthLabel(cur.month || "")}`, k(cur.marketing || 0), C.amber],
+          ["Sales per $1 spent", cur.marketing > 0.5 ? `$${(cur.revenue / cur.marketing).toFixed(2)}` : "—", C.text],
+          ["Gross profit per $1 (6 mo)", spent > 0.5 ? `$${(gross / spent).toFixed(2)}` : "—", gross / (spent || 1) >= 1 ? C.emerald : C.rose],
+        ].map(([l, v, col]) => (
+          <div key={l} style={{ background: C.bg2, borderRadius: 10, padding: "12px 14px" }}>
+            <div style={{ fontSize: 10, color: C.textFaint, fontWeight: 700, textTransform: "uppercase" }}>{l}</div>
+            <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, fontSize: 20, marginTop: 6, color: col }}>{v}</div>
+          </div>
+        ))}
+      </div>
+      <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
+        <thead><tr>
+          <th style={{ ...th, textAlign: "left" }}>Month</th><th style={th}>Sales</th><th style={th}>vs prior</th><th style={th}>Marketing</th><th style={th}>Left after mkt</th>
+        </tr></thead>
+        <tbody>
+          {trend.map((t, i) => {
+            const prev = i > 0 ? trend[i - 1].revenue : null;
+            const ch = prev > 0.5 ? (t.revenue - prev) / prev : null;
+            const after = t.gross - t.marketing;
+            return (
+              <tr key={t.month}>
+                <td style={{ ...td, textAlign: "left", fontFamily: "inherit" }}>{monthLabel(t.month).slice(0, 3)}</td>
+                <td style={td}>{k(t.revenue)}</td>
+                <td style={{ ...td, color: ch == null ? C.textFaint : ch >= 0 ? C.emerald : C.rose }}>{ch == null ? "—" : `${ch >= 0 ? "+" : ""}${(ch * 100).toFixed(0)}%`}</td>
+                <td style={td}>{k(t.marketing)}<div style={{ fontSize: 9.5, color: C.textFaint }}>{t.revenue > 0.5 ? `${((t.marketing / t.revenue) * 100).toFixed(0)}% of sales` : ""}</div></td>
+                <td style={{ ...td, color: after >= 0 ? C.emerald : C.rose, fontWeight: 700 }}>{k(after)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 10, lineHeight: 1.5 }}>
+        "Left after mkt" is what sales left after box cost and marketing — before salaries and other expenses. If it stays low while marketing rises, the spending isn't paying back.
+      </div>
+    </div>
+  );
+}
 
 function CustomerProfitSection({ C, sbFetch, month, canEdit }) {
   const [src, setSrc] = useState(null);
