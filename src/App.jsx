@@ -387,6 +387,7 @@ const emptyLogForm = {
   owed: "",
   invoiceNumber: "",
   notes: "",
+  saleRep: null, // null = use the store's assigned salesperson
 };
 
 const C = {
@@ -617,7 +618,7 @@ export default function MeraConsignmentApp() {
   const [navMobile, setNavMobile] = useState(false);
   const [consignmentSubView, setConsignmentSubView] = useState(() => loadSavedNav()?.consignmentSubView || "regular");
   // One title for both the page header and the browser tab.
-  const pageTitle = page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : childTab === "invoices" ? "Invoices" : childTab === "notes" ? "Delivery Notes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "close" ? "Month Close" : page === "stockplan" ? "Stock Forecast" : page === "cashflow" ? "Cash Forecast" : page === "expenses" ? (childTab === "approve" ? "Expense Register" : "Expenses") : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Term" : salesSubPage === "online" ? "Online & COD" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : (consignmentSubView === "bigco" ? "Corporate Accounts" : "Consignment")) : "Operations";
+  const pageTitle = page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : childTab === "invoices" ? "Invoices" : childTab === "notes" ? "Delivery Notes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "salesbyperson" ? "Sales by Person" : page === "assignreps" ? "Salesperson Assignment" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "close" ? "Month Close" : page === "stockplan" ? "Stock Forecast" : page === "cashflow" ? "Cash Forecast" : page === "expenses" ? (childTab === "approve" ? "Expense Register" : "Expenses") : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Term" : salesSubPage === "online" ? "Online & COD" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : (consignmentSubView === "bigco" ? "Corporate Accounts" : "Consignment")) : "Operations";
   useEffect(() => { document.title = `Mèra — ${pageTitle}`; }, [pageTitle]);
 
   // Remembers which page/tab was open, purely so a browser refresh lands
@@ -931,6 +932,7 @@ export default function MeraConsignmentApp() {
             owed: v.owed,
             notes: v.notes,
             invoice_number: v.invoiceNumber || null,
+            sale_rep: v.saleRep || null,
             created_by: authUser?.email || "unknown",
           }))
         ),
@@ -1224,6 +1226,8 @@ export default function MeraConsignmentApp() {
     rows[rows.length - 1].owed = parseFloat(logForm.owed) || 0;
     rows[rows.length - 1].notes = logForm.notes;
     rows[rows.length - 1].invoiceNumber = logForm.invoiceNumber;
+    const saleRep = (logForm.saleRep != null ? logForm.saleRep : store.salesperson || "").trim();
+    rows.forEach((r) => { r.saleRep = saleRep || null; });
 
     // A collection with boxes sold gets its B bill number here — the same
     // moment BizAdvisor used to issue it. Skipped if a number was typed in.
@@ -1242,6 +1246,10 @@ export default function MeraConsignmentApp() {
     }
 
     await addVisits(rows);
+    if (saleRep && saleRep !== (store.salesperson || "")) {
+      rememberStoreSalesperson(sbFetch, "stores", store.name, saleRep);
+      setStores((prev) => prev.map((x) => (x.id === store.id ? { ...x, salesperson: saleRep } : x)));
+    }
     setLogForm({ ...emptyLogForm, storeId: logForm.storeId, date: logForm.date });
     setStoreQuery(store.name);
   }
@@ -1677,6 +1685,12 @@ export default function MeraConsignmentApp() {
           canSeePayroll
             ? <ProfitPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to profit figures.</div>
+        ) : page === "assignreps" ? (
+          <SalespersonAssignmentPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
+        ) : page === "salesbyperson" ? (
+          canSeePayroll
+            ? <SalesByPersonPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
+            : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to sales by person.</div>
         ) : page === "stockplan" ? (
           <StockForecastPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} canEdit={canSeeAccounting} />
         ) : page === "cashflow" ? (
@@ -2151,7 +2165,7 @@ export default function MeraConsignmentApp() {
                 <input
                   ref={storeInputRef}
                   value={storeQuery}
-                  onChange={(e) => { setStoreQuery(e.target.value); setLogForm({ ...logForm, storeId: "" }); setShowStoreList(true); }}
+                  onChange={(e) => { setStoreQuery(e.target.value); setLogForm({ ...logForm, storeId: "", saleRep: null }); setShowStoreList(true); }}
                   onFocus={() => setShowStoreList(true)}
                   placeholder="Type to search..."
                   style={inputStyle}
@@ -2164,7 +2178,7 @@ export default function MeraConsignmentApp() {
                     ) : storeMatches.map((s) => (
                       <div
                         key={s.id}
-                        onClick={() => { setLogForm({ ...logForm, storeId: s.id }); setStoreQuery(s.name); setShowStoreList(false); }}
+                        onClick={() => { setLogForm({ ...logForm, storeId: s.id, saleRep: null }); setStoreQuery(s.name); setShowStoreList(false); }}
                         style={{ padding: "10px 12px", fontSize: 14, cursor: "pointer", borderBottom: `1px solid ${C.border}` }}
                         onMouseDown={(e) => e.preventDefault()}
                       >
@@ -2202,6 +2216,14 @@ export default function MeraConsignmentApp() {
             <Field label="Visit date">
               <input type="date" value={logForm.date} onChange={(e) => setLogForm({ ...logForm, date: e.target.value })} style={inputStyle} />
             </Field>
+
+            <SalespersonSelect
+              C={C}
+              names={salespeople}
+              value={logForm.saleRep != null ? logForm.saleRep : (stores.find((s) => s.id === logForm.storeId)?.salesperson || "")}
+              onChange={(v) => setLogForm({ ...logForm, saleRep: v })}
+              style={{ marginBottom: 14 }}
+            />
 
             <Field label="Invoice number (optional)">
               <input type="text" value={logForm.invoiceNumber} onChange={(e) => setLogForm({ ...logForm, invoiceNumber: e.target.value })} style={inputStyle} placeholder="e.g. INV-0042" />
@@ -3828,6 +3850,48 @@ function consignRows(store, qtys, payment) {
   });
 }
 
+// Salesperson picker used on every sale form. `value` is always offered as an
+// option even if it isn't in the salespeople list (e.g. an old name).
+function SalespersonSelect({ C, value, onChange, names, label = "Salesperson", style }) {
+  const opts = [...new Set([...(names || []), value].filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  return (
+    <div style={{ marginBottom: 12, minWidth: 0, ...style }}>
+      <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</label>
+      <select value={value || ""} onChange={(e) => onChange(e.target.value)} style={{ width: "100%", boxSizing: "border-box", minWidth: 0, background: C.bg2, border: `1.5px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "9px 10px", fontSize: 14, outline: "none" }}>
+        <option value="">— Not set —</option>
+        {opts.map((n) => <option key={n} value={n}>{n}</option>)}
+      </select>
+    </div>
+  );
+}
+
+// Loads the salespeople names once (sorted). Errors → empty list.
+function useSalespeopleNames(sbFetch) {
+  const [names, setNames] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const rows = await sbFetch("salespeople?select=name&order=name.asc");
+        if (alive) setNames((rows || []).map((r) => r.name).filter(Boolean));
+      } catch (e) { if (alive) setNames([]); }
+    })();
+    return () => { alive = false; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  return names;
+}
+
+// Best-effort: remember the salesperson on the store so it's pre-selected next
+// time. `stores` (consignment) is matched by name, other tables by id.
+async function rememberStoreSalesperson(sbFetch, table, idOrName, name) {
+  const n = String(name || "").trim();
+  if (!n || idOrName == null || idOrName === "") return;
+  try {
+    const filter = table === "stores" ? `name=eq.${encodeURIComponent(idOrName)}` : `id=eq.${encodeURIComponent(idOrName)}`;
+    await sbFetch(`${table}?${filter}`, { method: "PATCH", body: JSON.stringify({ salesperson: n }) });
+  } catch (e) { /* non-critical */ }
+}
+
 // Type-to-search store picker — there are too many stores for a plain list.
 function StoreSearchSelect({ C, stores, value, onChange }) {
   const [q, setQ] = useState("");
@@ -3996,7 +4060,8 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
   const [sales, setSales] = useState([]);
   const [items, setItems] = useState([]); // online_sale_items, all of them, keyed by sale_id client-side
   const [selectedMonth, setSelectedMonth] = useState(currentMonthKey());
-  const [form, setForm] = useState({ date: todayStr(), customer_name: "", description: "", channel: "online", promo: "", paidNow: false });
+  const [form, setForm] = useState({ date: todayStr(), customer_name: "", description: "", channel: "online", promo: "", paidNow: false, saleRep: null });
+  const salespeopleNames = useSalespeopleNames(sbFetch);
   const [payFor, setPayFor] = useState(null); // { id, date, note } while recording a payment
   const [freeMoves, setFreeMoves] = useState([]); // free/promo boxes given with an order (stock_moves reason "sample", ref OS…)
   const [channelFilter, setChannelFilter] = useState("all");
@@ -4038,6 +4103,16 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
     .map((x) => ({ code: x.code, label: x.label, qty: parseFloat(lineForm[x.code]?.qty) || 0, price: parseFloat(lineForm[x.code]?.price) || 0 }))
     .filter((l) => l.qty > 0);
   const draftTotal = activeLines.reduce((a, l) => a + l.qty * l.price, 0);
+  // Default salesperson = whoever made this customer's most recent sale.
+  const lastRepFor = (name) => {
+    const k = String(name || "").trim().toLowerCase();
+    if (!k) return "";
+    const hit = [...sales]
+      .filter((x) => String(x.customer_name || "").trim().toLowerCase() === k && x.sale_rep)
+      .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || String(b.created_at || "").localeCompare(String(a.created_at || "")))[0];
+    return hit ? hit.sale_rep : "";
+  };
+  const formSaleRep = form.saleRep != null ? form.saleRep : lastRepFor(form.customer_name);
 
   async function addSale() {
     if (!form.customer_name.trim()) { setError("Add a customer name or order reference."); return; }
@@ -4059,13 +4134,14 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
           promo_note: freeOnlineLines(lineForm).length ? (form.promo || "").trim() || null : null,
           description: form.description.trim(),
           amount: draftTotal,
+          sale_rep: (formSaleRep || "").trim() || null,
           created_by: authUser?.email || "unknown",
         }),
       });
       const stockOk = await saveOnlineSaleLines(sbFetch, inserted.id, lineForm, true, form.date, authUser?.email);
       if (!stockOk) setError("Sale saved, but the warehouse wasn't updated — is the stock table set up?");
       logActivity?.("Logged online sale", form.customer_name.trim(), `${activeLines.map((l) => `${l.qty} ${l.label}`).join(", ")} — ${money(draftTotal)}`);
-      setForm({ date: form.date, customer_name: "", description: "", channel: form.channel, promo: "", paidNow: false });
+      setForm({ date: form.date, customer_name: "", description: "", channel: form.channel, promo: "", paidNow: false, saleRep: null });
       setLineForm(emptyOnlineLines());
       await reload();
     } catch (e) {
@@ -4084,7 +4160,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
       const stockOk = await saveOnlineSaleLines(sbFetch, editing.id, editing.lines, true, sale?.date, authUser?.email);
       // A sale logged by hand is worth exactly its lines. One that came from a
       // bank payment keeps the amount actually received.
-      await sbFetch(`online_sales?id=eq.${editing.id}`, { method: "PATCH", body: JSON.stringify({ promo_note: freeOnlineLines(editing.lines).length ? (editing.promo || "").trim() || null : null }) });
+      await sbFetch(`online_sales?id=eq.${editing.id}`, { method: "PATCH", body: JSON.stringify({ promo_note: freeOnlineLines(editing.lines).length ? (editing.promo || "").trim() || null : null, sale_rep: (editing.saleRep || "").trim() || null }) });
       if (!editing.keepAmount && act.length) {
         await sbFetch(`online_sales?id=eq.${editing.id}`, { method: "PATCH", body: JSON.stringify({ amount: act.reduce((a, l) => a + l.qty * l.price, 0) }) });
       }
@@ -4218,12 +4294,13 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
           <div style={{ minWidth: 170 }}>
             <label style={{ fontSize: 9, color: C.textFaint }}>{form.channel === "cod" ? "Store name (pick or type new)" : "Customer / order ref"}</label>
             <datalist id="online-cod-names">{form.channel === "cod" && Array.from(new Set(storeNames.concat(sales.filter((x) => x.channel === "cod").map((x) => x.customer_name)))).sort().map((n) => <option key={n} value={n} />)}</datalist>
-            <input type="text" list="online-cod-names" value={form.customer_name} onChange={(e) => setForm({ ...form, customer_name: e.target.value })} placeholder="e.g. FB order #123" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", display: "block" }} />
+            <input type="text" list="online-cod-names" value={form.customer_name} onChange={(e) => setForm({ ...form, customer_name: e.target.value, saleRep: null })} placeholder="e.g. FB order #123" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", display: "block" }} />
           </div>
           <div style={{ flex: 1, minWidth: 170 }}>
             <label style={{ fontSize: 9, color: C.textFaint }}>Notes (optional)</label>
             <input type="text" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="delivery address, etc." style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", display: "block" }} />
           </div>
+          <SalespersonSelect C={C} names={salespeopleNames} value={formSaleRep} onChange={(v) => setForm({ ...form, saleRep: v })} style={{ marginBottom: 0, flex: "1 1 170px" }} />
         </div>
 
         <div style={{ fontSize: 10, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Products</div>
@@ -4289,7 +4366,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
                       <button type="button" onClick={(e) => { e.stopPropagation(); setPayFor({ id: s.id, date: todayStr(), note: "" }); }} style={{ background: C.gold, border: "none", color: "#1A1508", borderRadius: 8, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>Record payment</button>
                     )}
                     <button type="button" onClick={(e) => { e.stopPropagation(); setPrintSale(s); }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "5px 10px", fontSize: 11, cursor: "pointer" }}>Invoice</button>
-                    <button type="button" title="Edit products" onClick={(e) => { e.stopPropagation(); setExpandedId(s.id); setEditing({ id: s.id, lines: onlineLinesFromItems(lines, freeMoves.filter((m) => m.reference === onlineRef(s.id))), keepAmount: lines.length === 0, promo: s.promo_note || "" }); }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.gold, borderRadius: 8, padding: "5px 8px", cursor: "pointer", display: "inline-flex", alignItems: "center" }}><Pencil size={13} /></button>
+                    <button type="button" title="Edit products" onClick={(e) => { e.stopPropagation(); setExpandedId(s.id); setEditing({ id: s.id, lines: onlineLinesFromItems(lines, freeMoves.filter((m) => m.reference === onlineRef(s.id))), keepAmount: lines.length === 0, promo: s.promo_note || "", saleRep: s.sale_rep || "" }); }} style={{ background: "none", border: `1px solid ${C.border}`, color: C.gold, borderRadius: 8, padding: "5px 8px", cursor: "pointer", display: "inline-flex", alignItems: "center" }}><Pencil size={13} /></button>
                     <button type="button" onClick={(e) => { e.stopPropagation(); deleteSale(s.id); }} style={{ background: "none", border: "none", color: C.textFaint, cursor: "pointer" }}><Trash2 size={14} /></button>
                   </div>
                 </div>
@@ -4315,6 +4392,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
                     <div style={{ fontSize: 10, color: C.gold, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700, marginBottom: 8 }}>Edit products</div>
                     <OnlineLinesGrid C={C} lines={editing.lines} setLines={(ls) => setEditing({ ...editing, lines: ls })} />
                     <PromoNoteInput C={C} lines={editing.lines} value={editing.promo} onChange={(v) => setEditing({ ...editing, promo: v })} />
+                    <SalespersonSelect C={C} names={salespeopleNames} value={editing.saleRep} onChange={(v) => setEditing({ ...editing, saleRep: v })} style={{ maxWidth: 320 }} />
                     {(() => {
                       const t = activeOnlineLines(editing.lines).reduce((a, l) => a + l.qty * l.price, 0);
                       const diff = editing.keepAmount && Math.abs(t - Number(s.amount || 0)) > 0.009;
@@ -6156,6 +6234,24 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState(null); // the row currently being assigned, plus its form
+  const [onlineReps, setOnlineReps] = useState([]); // online_sales customer_name/sale_rep/date for the salesperson default
+  const salespeopleNames = useSalespeopleNames(sbFetch);
+  // Salesperson default: consignment → the store's assigned salesperson;
+  // online / COD → whoever made that customer's most recent sale.
+  function defaultDraftRep(d) {
+    if (!d) return "";
+    if (d.type === "consignment") return stores.find((x) => x.id === d.storeId)?.salesperson || "";
+    if (d.type === "online" || d.type === "cod") {
+      const k = String(d.type === "cod" ? d.codStore || "" : d.customerName || "").trim().toLowerCase();
+      if (!k) return "";
+      const hit = onlineReps
+        .filter((x) => x.sale_rep && String(x.customer_name || "").trim().toLowerCase() === k)
+        .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))[0];
+      return hit ? hit.sale_rep : "";
+    }
+    return "";
+  }
+  const draftRep = draft ? (draft.saleRep != null ? draft.saleRep : defaultDraftRep(draft)) : "";
 
   async function reload() {
     try {
@@ -6172,8 +6268,9 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
       setStores(s || []); setBigcoStores(b || []); setCreditStores(c || []);
       setCreditInvoices(ci || []); setBigcoReports(br || []);
       try {
-        const cod = await sbFetch("online_sales?select=customer_name&channel=eq.cod");
-        setCodNames(Array.from(new Set((cod || []).map((x) => x.customer_name).filter(Boolean))));
+        const os = await sbFetch("online_sales?select=customer_name,channel,sale_rep,date");
+        setOnlineReps(os || []);
+        setCodNames(Array.from(new Set((os || []).filter((x) => x.channel === "cod").map((x) => x.customer_name).filter(Boolean))));
       } catch (e) { /* column optional */ }
       setMissing(false);
       onCountChange?.((p || []).length);
@@ -6201,6 +6298,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
       notes: [row.remark, `ABA ${row.transaction_id || ""}`].filter(Boolean).join(" — ").trim(),
       lines: emptyOnlineLines(),
       cqty: {},
+      saleRep: null,
     });
   }
 
@@ -6212,6 +6310,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
     setError("");
     try {
       let summary = "";
+      const saleRep = String(draftRep || "").trim() || null;
       if (draft.type === "consignment") {
         if (!draft.storeId) { setError("Pick a store."); setBusy(false); return; }
         const st = stores.find((s) => s.id === draft.storeId);
@@ -6233,9 +6332,11 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
           body: JSON.stringify(rows.map((r, i) => ({
             date: draft.date, store_name: storeName, product: r.visitKey,
             sold: r.qty, returned: 0, paid: r.paid, owed: r.owed,
-            notes: draft.notes, invoice_number: i === rows.length - 1 ? billNo : null, created_by: authUser?.email || "unknown",
+            notes: draft.notes, invoice_number: i === rows.length - 1 ? billNo : null,
+            sale_rep: rows.some((x) => x.qty > 0) ? saleRep : null, created_by: authUser?.email || "unknown",
           }))),
         });
+        if (saleRep && rows.some((x) => x.qty > 0) && saleRep !== (st?.salesperson || "")) await rememberStoreSalesperson(sbFetch, "stores", storeName, saleRep);
         summary = `Consignment · ${storeName} · ${rows.map((r) => `${r.qty} ${r.label}`).join(", ")}`;
         logActivity?.("Assigned payment", storeName, `$${row.amount} → ${rows.map((r) => `${r.qty} ${r.label}`).join(", ")}`);
       } else if (draft.type === "corporate") {
@@ -6276,7 +6377,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
           body: JSON.stringify({
             date: draft.date, customer_name: custName, channel: isCod ? "cod" : "online",
             promo_note: freeOnlineLines(draft.lines || {}).length ? (draft.promo || "").trim() || null : null,
-            description: draft.notes, amount: parseFloat(draft.paid) || 0, created_by: authUser?.email || "unknown",
+            description: draft.notes, amount: parseFloat(draft.paid) || 0, sale_rep: saleRep, created_by: authUser?.email || "unknown",
           }),
         });
         if (insertedSale?.id) {
@@ -6360,7 +6461,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
                 <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginTop: 12 }}>
                   <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
                     {[["consignment", "Consignment"], ["corporate", "Corporate"], ["credit", "Credit Term"], ["online", "Online Sale"], ["cod", "COD / Paid first"]].map(([k, l]) => (
-                      <button key={k} type="button" onClick={() => setDraft({ ...draft, type: k })}
+                      <button key={k} type="button" onClick={() => setDraft({ ...draft, type: k, saleRep: null })}
                         style={{ padding: "7px 12px", fontSize: 11.5, fontWeight: 700, borderRadius: 8, cursor: "pointer",
                           background: draft.type === k ? C.gold : "none", color: draft.type === k ? "#1A1508" : C.textDim,
                           border: `1px solid ${draft.type === k ? C.gold : C.border}` }}>
@@ -6374,7 +6475,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
                       <label style={{ fontSize: 9, color: C.textFaint }}>Store</label>
                       <StoreSearchSelect C={C} value={draft.storeId}
                         stores={draft.type === "consignment" ? stores : draft.type === "corporate" ? bigcoStores : creditStores}
-                        onChange={(id) => setDraft({ ...draft, storeId: id, invoiceId: "" })} />
+                        onChange={(id) => setDraft({ ...draft, storeId: id, invoiceId: "", saleRep: null })} />
                     </div>
                   )}
 
@@ -6454,7 +6555,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
                         <>
                           <label style={{ fontSize: 9, color: C.textFaint }}>Store name — pick one or type a new store</label>
                           <input type="text" list="cod-store-names" value={draft.codStore || ""} placeholder="Type to search, or type a new store's name"
-                            onChange={(e) => setDraft({ ...draft, codStore: e.target.value })}
+                            onChange={(e) => setDraft({ ...draft, codStore: e.target.value, saleRep: null })}
                             style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "9px 11px", fontSize: 13, width: "100%", boxSizing: "border-box" }} />
                           <datalist id="cod-store-names">
                             {Array.from(new Set([...stores, ...bigcoStores, ...creditStores].map((x) => x.name).concat(codNames))).sort().map((n) => <option key={n} value={n} />)}
@@ -6468,7 +6569,7 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
                       ) : (
                         <label style={{ fontSize: 9, color: C.textFaint }}>Customer / order ref</label>
                       )}
-                      {draft.type === "online" && <input type="text" value={draft.customerName} onChange={(e) => setDraft({ ...draft, customerName: e.target.value })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }} />}
+                      {draft.type === "online" && <input type="text" value={draft.customerName} onChange={(e) => setDraft({ ...draft, customerName: e.target.value, saleRep: null })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }} />}
                       <div style={{ fontSize: 9, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", margin: "12px 0 8px" }}>What did they buy?</div>
                       <OnlineLinesGrid C={C} lines={draft.lines || emptyOnlineLines()} setLines={(ls) => setDraft({ ...draft, lines: ls })} />
                       <PromoNoteInput C={C} lines={draft.lines} value={draft.promo} onChange={(v) => setDraft({ ...draft, promo: v })} />
@@ -6498,6 +6599,9 @@ function PendingPaymentsPage({ authUser, C, sbFetch, logActivity, onCountChange 
                       <input type="text" value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }} />
                     </div>
                   </div>
+                  {(draft.type === "consignment" || draft.type === "online" || draft.type === "cod") && (
+                    <SalespersonSelect C={C} names={salespeopleNames} value={draftRep} onChange={(v) => setDraft({ ...draft, saleRep: v })} style={{ maxWidth: 320 }} />
+                  )}
 
                   {error && <div style={{ fontSize: 11.5, color: C.rose, marginBottom: 10 }}>{error}</div>}
 
@@ -6569,6 +6673,9 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
   const [showPayHistory, setShowPayHistory] = useState(null);
   const [editingPaymentId, setEditingPaymentId] = useState(null);
   const [editPaymentForm, setEditPaymentForm] = useState(null);
+  const salespeopleNames = useSalespeopleNames(sbFetch);
+  // A form's saleRep left unset (null/undefined) means "use the store's assigned salesperson".
+  const repFor = (storeId, form) => (form && form.saleRep != null ? form.saleRep : (stores || []).find((x) => x.id === storeId)?.salesperson || "");
 
   useEffect(() => {
     (async () => {
@@ -6584,6 +6691,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
           nickname: s.nickname || "",
           creditDays: Number(s.credit_days || 30),
           notes: s.notes || "",
+          salesperson: s.salesperson || "",
           invoices: invoiceRows
             .filter((inv) => inv.store_id === s.id)
             .map((inv) => ({
@@ -6598,6 +6706,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
               daySold: Number(inv.day_sold || 0),
               pantSold: Number(inv.pant_sold || 0),
               shortSold: Number(inv.short_sold || 0),
+              saleRep: inv.sale_rep || "",
             })),
           payments: paymentRows
             .filter((p) => p.store_id === s.id)
@@ -6645,6 +6754,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
 
   async function logInvoice(storeId, form) {
     try {
+      const saleRep = String(repFor(storeId, form) || "").trim();
       const [inserted] = await sbFetch("credit_invoices", {
         method: "POST",
         body: JSON.stringify({
@@ -6659,14 +6769,18 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
           day_sold: parseFloat(form.daySold) || 0,
           pant_sold: parseFloat(form.pantSold) || 0,
           short_sold: parseFloat(form.shortSold) || 0,
+          sale_rep: saleRep || null,
           created_by: authUser?.email || "unknown",
         }),
       });
+      const storeBefore = (stores || []).find((x) => x.id === storeId);
+      if (saleRep && saleRep !== (storeBefore?.salesperson || "")) rememberStoreSalesperson(sbFetch, "credit_stores", storeId, saleRep);
       setStores((prev) =>
         prev.map((s) =>
           s.id === storeId
             ? {
                 ...s,
+                salesperson: saleRep || s.salesperson,
                 invoices: [
                   ...s.invoices,
                   {
@@ -6681,6 +6795,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                     daySold: Number(inserted.day_sold || 0),
                     pantSold: Number(inserted.pant_sold || 0),
                     shortSold: Number(inserted.short_sold || 0),
+                    saleRep: inserted.sale_rep || "",
                   },
                 ],
               }
@@ -6758,6 +6873,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
           daySold: form.daySold,
           pantSold: form.pantSold,
           shortSold: form.shortSold,
+          saleRep: form.saleRep,
         });
         ok = ok && invoiceOk;
       }
@@ -6879,8 +6995,13 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
           day_sold: changes.daySold,
           pant_sold: changes.pantSold ?? 0,
           short_sold: changes.shortSold ?? 0,
+          ...(changes.saleRep !== undefined ? { sale_rep: String(changes.saleRep || "").trim() || null } : {}),
         }),
       });
+      if (changes.saleRep && changes.saleRep !== ((stores || []).find((x) => x.id === storeId)?.salesperson || "")) {
+        rememberStoreSalesperson(sbFetch, "credit_stores", storeId, changes.saleRep);
+        setStores((prev) => prev.map((s) => (s.id === storeId ? { ...s, salesperson: changes.saleRep } : s)));
+      }
       setStores((prev) =>
         prev.map((s) =>
           s.id === storeId
@@ -7470,6 +7591,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                           <input type="number" value={paymentForm.shortSold} onChange={(e) => setPaymentForm({ ...paymentForm, shortSold: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} placeholder="0" />
                         </div>
                       </div>
+                      <SalespersonSelect C={C} names={salespeopleNames} value={repFor(s.id, paymentForm)} onChange={(v) => setPaymentForm({ ...paymentForm, saleRep: v })} style={{ marginBottom: 8 }} />
 
                       <div style={{ fontSize: 9, color: C.emerald, marginBottom: 4, fontWeight: 700, textTransform: "uppercase" }}>Payment received (optional)</div>
                       <div style={{ marginBottom: 8 }}>
@@ -7625,6 +7747,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                                 <label style={{ fontSize: 9, color: C.textFaint }}>Notes</label>
                                 <input type="text" value={editInvoiceForm.notes} onChange={(e) => setEditInvoiceForm({ ...editInvoiceForm, notes: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
                               </div>
+                              <SalespersonSelect C={C} names={salespeopleNames} value={editInvoiceForm.saleRep || ""} onChange={(v) => setEditInvoiceForm({ ...editInvoiceForm, saleRep: v })} style={{ marginBottom: 8 }} />
                               <div style={{ display: "flex", gap: 6 }}>
                                 <button
                                   onClick={async () => {
@@ -7639,6 +7762,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                                       daySold: parseFloat(editInvoiceForm.daySold) || 0,
                                       pantSold: parseFloat(editInvoiceForm.pantSold) || 0,
                                       shortSold: parseFloat(editInvoiceForm.shortSold) || 0,
+                                      saleRep: editInvoiceForm.saleRep || "",
                                     });
                                     if (ok) setEditingInvoiceId(null);
                                   }}
@@ -7657,7 +7781,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                             <div
                               style={{ fontSize: 11, color: C.textDim, cursor: "pointer", flex: 1 }}
                               onClick={() => {
-                                setEditInvoiceForm({ invoiceDate: inv.invoiceDate, invoiceNumber: inv.invoiceNumber, amount: inv.amount, paid: inv.paid, notes: inv.notes, plSold: inv.plSold, nightSold: inv.nightSold, daySold: inv.daySold, pantSold: inv.pantSold, shortSold: inv.shortSold });
+                                setEditInvoiceForm({ invoiceDate: inv.invoiceDate, invoiceNumber: inv.invoiceNumber, amount: inv.amount, paid: inv.paid, notes: inv.notes, plSold: inv.plSold, nightSold: inv.nightSold, daySold: inv.daySold, pantSold: inv.pantSold, shortSold: inv.shortSold, saleRep: inv.saleRep || "" });
                                 setEditingInvoiceId(inv.id);
                               }}
                             >
@@ -7761,7 +7885,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                           <button
                             key={s.id}
                             type="button"
-                            onClick={() => { setQuickLogStoreId(s.id); setStoreSearchQuery(""); }}
+                            onClick={() => { setQuickLogStoreId(s.id); setStoreSearchQuery(""); setQuickInvoiceForm((f) => ({ ...f, saleRep: null })); }}
                             style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: `1px solid ${C.border}`, padding: "9px 12px", fontSize: 13, color: C.text, cursor: "pointer" }}
                           >
                             {storeLabel(s)}
@@ -7823,6 +7947,8 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                 </div>
               </div>
             </div>
+
+            <SalespersonSelect C={C} names={salespeopleNames} value={repFor(quickLogStoreId, quickInvoiceForm)} onChange={(v) => setQuickInvoiceForm({ ...quickInvoiceForm, saleRep: v })} style={{ marginTop: 14, marginBottom: 0 }} />
 
             <div style={{ marginBottom: 20, marginTop: 14 }}>
               <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase" }}>Notes (optional)</label>
@@ -7898,6 +8024,7 @@ const NAV = [
     ...(PENDING_PAYMENTS_ENABLED ? [{ label: "Pending Payments",   page: "sales", sub: "pending" }] : []),
     { label: "Province Coverage",  page: "sales", sub: "coverage" },
     { label: "Store Directory",             page: "stores" },
+    { label: "Salesperson Assignment",      page: "assignreps" },
   ]},
   { name: "Warehouse", items: [
     { label: "Stock on Hand",       page: "delivery", tab: "stock" },
@@ -7928,6 +8055,7 @@ const NAV = [
   // report, marketing spend, salaries and expense approval. Rosa and Lita only.
   { name: "Executive Office", needs: "payroll", items: [
     { label: "Profit & Margin", page: "profit" },
+    { label: "Sales by Person", page: "salesbyperson" },
     { label: "Sales Report",    page: "sales", sub: "report", needs: "owner" },
     { label: "Expense Register", page: "expenses", tab: "approve" },
     { label: "KOL & Content",   page: "kol" },
@@ -12657,6 +12785,15 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
   const [showBilledBreakdown, setShowBilledBreakdown] = useState(false);
   const [showMonthOwedBreakdown, setShowMonthOwedBreakdown] = useState(false);
   const [showOutstandingBreakdown, setShowOutstandingBreakdown] = useState(false);
+  const salespeopleNames = useSalespeopleNames(sbFetch);
+  // Default salesperson for a bill: the store's own, else (for a branch) its parent's.
+  // A form's saleRep left unset (null/undefined) means "use that default".
+  const storeRep = (storeId) => {
+    const st = (stores || []).find((x) => x.id === storeId);
+    if (!st) return "";
+    return st.salesperson || (st.parentId ? (stores || []).find((x) => x.id === st.parentId)?.salesperson || "" : "");
+  };
+  const repFor = (storeId, form) => (form && form.saleRep != null ? form.saleRep : storeRep(storeId));
 
   useEffect(() => {
     (async () => {
@@ -12674,6 +12811,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
           paymentDay: s.payment_day || null,
           paymentNote: s.payment_note || "",
           rebatePct: s.rebate_pct != null ? Number(s.rebate_pct) : null,
+          salesperson: s.salesperson || "",
           reports: reportRows
             .filter((r) => r.store_id === s.id)
             .map((r) => ({
@@ -12687,6 +12825,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
               paid: Number(r.paid || 0),
               rebate: Number(r.rebate || 0),
               notes: r.notes || "",
+              saleRep: r.sale_rep || "",
             })),
         }));
         setStores(merged);
@@ -12795,6 +12934,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
 
   async function logReport(storeId, form) {
     try {
+      const saleRep = String(repFor(storeId, form) || "").trim();
       const [inserted] = await sbFetch("bigco_reports", {
         method: "POST",
         body: JSON.stringify({
@@ -12807,14 +12947,18 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
           amount: parseFloat(form.amount) || 0,
           paid: parseFloat(form.paid) || 0,
           notes: form.notes,
+          sale_rep: saleRep || null,
           created_by: authUser?.email || "unknown",
         }),
       });
+      const storeBefore = (stores || []).find((x) => x.id === storeId);
+      if (saleRep && saleRep !== (storeBefore?.salesperson || "")) rememberStoreSalesperson(sbFetch, "bigco_stores", storeId, saleRep);
       setStores((prev) =>
         prev.map((s) =>
           s.id === storeId
             ? {
                 ...s,
+                salesperson: saleRep || s.salesperson,
                 reports: [
                   ...s.reports,
                   {
@@ -12827,6 +12971,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
                     amount: Number(inserted.amount || 0),
                     paid: Number(inserted.paid || 0),
                     notes: inserted.notes || "",
+                    saleRep: inserted.sale_rep || "",
                   },
                 ],
               }
@@ -12857,8 +13002,13 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
           paid: changes.paid,
           rebate: changes.rebate || 0,
           notes: changes.notes,
+          ...(changes.saleRep !== undefined ? { sale_rep: String(changes.saleRep || "").trim() || null } : {}),
         }),
       });
+      if (changes.saleRep && changes.saleRep !== ((stores || []).find((x) => x.id === storeId)?.salesperson || "")) {
+        rememberStoreSalesperson(sbFetch, "bigco_stores", storeId, changes.saleRep);
+        setStores((prev) => prev.map((s) => (s.id === storeId ? { ...s, salesperson: changes.saleRep } : s)));
+      }
       setStores((prev) =>
         prev.map((s) =>
           s.id === storeId
@@ -13539,6 +13689,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
                         <label style={{ fontSize: 9, color: C.textFaint }}>Notes</label>
                         <input type="text" value={reportForm.notes} onChange={(e) => setReportForm({ ...reportForm, notes: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} placeholder="Optional" />
                       </div>
+                      <SalespersonSelect C={C} names={salespeopleNames} value={repFor(s.id, reportForm)} onChange={(v) => setReportForm({ ...reportForm, saleRep: v })} style={{ marginBottom: 8 }} />
                       <div style={{ display: "flex", gap: 6 }}>
                         <button
                           onClick={async () => {
@@ -13623,6 +13774,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
                                 <label style={{ fontSize: 9, color: C.textFaint }}>Notes</label>
                                 <input type="text" value={editReportForm.notes} onChange={(e) => setEditReportForm({ ...editReportForm, notes: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
                               </div>
+                              <SalespersonSelect C={C} names={salespeopleNames} value={editReportForm.saleRep || ""} onChange={(v) => setEditReportForm({ ...editReportForm, saleRep: v })} style={{ marginBottom: 8 }} />
                               <div style={{ display: "flex", gap: 6 }}>
                                 <button
                                   onClick={async () => {
@@ -13637,6 +13789,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
                                       paid: Math.round(((parseFloat(editReportForm.paid) || 0) + (parseFloat(editReportForm.rebate) || 0)) * 100) / 100,
                                       rebate: parseFloat(editReportForm.rebate) || 0,
                                       notes: editReportForm.notes,
+                                      saleRep: editReportForm.saleRep || "",
                                     });
                                     if (ok) setEditingReportId(null);
                                   }}
@@ -13655,7 +13808,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
                             <div
                               style={{ fontSize: 11, color: C.textDim, cursor: "pointer", flex: 1 }}
                               onClick={() => {
-                                setEditReportForm({ reportDate: r.reportDate, invoiceNumber: r.invoiceNumber, plSold: r.plSold, nightSold: r.nightSold, daySold: r.daySold, amount: r.amount, paid: Math.round(((r.paid || 0) - (r.rebate || 0)) * 100) / 100, rebate: r.rebate || "", notes: r.notes });
+                                setEditReportForm({ reportDate: r.reportDate, invoiceNumber: r.invoiceNumber, plSold: r.plSold, nightSold: r.nightSold, daySold: r.daySold, amount: r.amount, paid: Math.round(((r.paid || 0) - (r.rebate || 0)) * 100) / 100, rebate: r.rebate || "", notes: r.notes, saleRep: r.saleRep || "" });
                                 setEditingReportId(r.id);
                               }}
                             >
@@ -13753,7 +13906,7 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
                           <button
                             key={s.id}
                             type="button"
-                            onClick={() => { setQuickLogStoreId(s.id); setStoreSearchQuery(""); }}
+                            onClick={() => { setQuickLogStoreId(s.id); setStoreSearchQuery(""); setQuickReportForm((f) => ({ ...f, saleRep: null })); }}
                             style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: `1px solid ${C.border}`, padding: "9px 12px", fontSize: 13, color: C.text, cursor: "pointer" }}
                           >
                             {storeLabel(s)}
@@ -13807,6 +13960,8 @@ function BigCoPage({ authUser, C, sbFetch, logActivity, focus }) {
                 <input type="number" step="0.01" value={quickReportForm.paid} onChange={(e) => setQuickReportForm({ ...quickReportForm, paid: e.target.value })} placeholder="0.00" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 14, background: C.bg2, color: C.text }} />
               </div>
             </div>
+
+            <SalespersonSelect C={C} names={salespeopleNames} value={repFor(quickLogStoreId, quickReportForm)} onChange={(v) => setQuickReportForm({ ...quickReportForm, saleRep: v })} style={{ marginBottom: 14 }} />
 
             <div style={{ marginBottom: 20 }}>
               <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase" }}>Notes (optional)</label>
@@ -15472,10 +15627,11 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
       // and gets matched when their ABA payment arrives. One entry, not two.
       if (billed && (dn.business_type === "credit" || dn.business_type === "corporate") && dn.store_id) {
         const qty = Object.fromEntries(SKUS.map((x) => [x.soldCol, Number(dn[x.qtyCol]) || 0]));
-        const common = { store_id: dn.store_id, invoice_number: invoiceNumber, amount: grand, paid: 0, notes: `From ${dn.dn_number}`, created_by: authUser?.email || "unknown", ...qty };
+        const common = { store_id: dn.store_id, invoice_number: invoiceNumber, amount: grand, paid: 0, notes: `From ${dn.dn_number}`, sale_rep: dn.sale_rep || null, created_by: authUser?.email || "unknown", ...qty };
         try {
           if (dn.business_type === "credit") await sbFetch("credit_invoices", { method: "POST", body: JSON.stringify({ ...common, invoice_date: dn.sale_date }) });
           else await sbFetch("bigco_reports", { method: "POST", body: JSON.stringify({ ...common, report_date: dn.sale_date }) });
+          if (dn.sale_rep) await rememberStoreSalesperson(sbFetch, dn.business_type === "credit" ? "credit_stores" : "bigco_stores", dn.store_id, dn.sale_rep);
         } catch (e) {
           alert(`Invoice ${invoiceNumber} was created, but it couldn't be added to ${dn.business_type === "credit" ? "Credit Term" : "Corporate Accounts"}. Add it there by hand with number ${invoiceNumber}.`);
         }
@@ -18224,6 +18380,371 @@ function SinglePayslip({ s, month, pageBreak }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// SALES BY PERSON — Executive Office. How much each salesperson billed in a
+// month, split by channel, with a place to record their incentive.
+// A sale counts for the salesperson chosen on it; if none was chosen, it
+// counts for the salesperson assigned to that store (or, for online/COD, the
+// last salesperson used for that customer). Amounts are amounts billed.
+// ============================================================================
+const SBP_CHANNELS = [
+  { key: "consignment", label: "Consignment" },
+  { key: "credit", label: "Credit Term" },
+  { key: "corporate", label: "Corporate" },
+  { key: "online", label: "Online & COD" },
+];
+const SBP_NONE = "__none__";
+
+function SalesByPersonPage({ authUser, C, sbFetch, logActivity }) {
+  const [month, setMonth] = useState(() => monthKey(todayStr()));
+  const [src, setSrc] = useState(null);
+  const [error, setError] = useState("");
+  const [incentives, setIncentives] = useState({}); // name -> { amount, note }
+  const [drafts, setDrafts] = useState({});         // name -> amount string being typed
+  const [savingName, setSavingName] = useState("");
+  const [openName, setOpenName] = useState(null);
+  const [reload, setReload] = useState(0);
+  const names = useSalespeopleNames(sbFetch);
+
+  const monthStart = `${month}-01`;
+  const nextMonth = (() => { const [y, m] = month.split("-").map(Number); const d = new Date(y, m, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`; })();
+
+  useEffect(() => {
+    let alive = true;
+    setSrc(null); setError("");
+    (async () => {
+      try {
+        const range = (col) => `${col}=gte.${monthStart}&${col}=lt.${nextMonth}`;
+        const [vi, st, ci, cs, br, bs, os, osAll, inc] = await Promise.all([
+          sbFetch(`visits?select=id,date,store_name,product,sold,sale_rep&sold=gt.0&${range("date")}`),
+          sbFetch("stores?select=id,name,salesperson,pl_price,night_price,day_price,pant_price,short_price"),
+          sbFetch(`credit_invoices?select=id,store_id,invoice_date,invoice_number,amount,sale_rep&${range("invoice_date")}`),
+          sbFetch("credit_stores?select=id,name,nickname,salesperson"),
+          sbFetch(`bigco_reports?select=id,store_id,report_date,invoice_number,amount,sale_rep&${range("report_date")}`),
+          sbFetch("bigco_stores?select=id,name,nickname,parent_id,salesperson"),
+          sbFetch(`online_sales?select=id,date,customer_name,bill_no,amount,sale_rep&${range("date")}`),
+          sbFetch("online_sales?select=customer_name,date,sale_rep&sale_rep=not.is.null&order=date.desc"),
+          sbFetch(`sales_incentives?select=*&month=eq.${month}`).catch(() => []),
+        ]);
+        if (!alive) return;
+        setSrc({ vi: vi || [], st: st || [], ci: ci || [], cs: cs || [], br: br || [], bs: bs || [], os: os || [], osAll: osAll || [] });
+        const map = Object.fromEntries((inc || []).map((r) => [r.salesperson, { amount: Number(r.amount || 0), note: r.note || "" }]));
+        setIncentives(map);
+        setDrafts(Object.fromEntries(Object.entries(map).map(([k, v]) => [k, String(v.amount)])));
+      } catch (e) {
+        if (alive) setError(friendlyDbError(e));
+      }
+    })();
+    return () => { alive = false; };
+  }, [month, reload]);
+
+  // Every sale in the month, each with the salesperson it counts for.
+  const sales = useMemo(() => {
+    if (!src) return [];
+    const out = [];
+    const custKey = (n) => String(n || "").trim().toLowerCase();
+    const stByName = {}; src.st.forEach((s) => { stByName[s.name] = s; });
+    const skuByVisit = {}; SKUS.forEach((x) => { skuByVisit[x.visitKey] = x; });
+    src.vi.forEach((v) => {
+      const s = stByName[v.store_name] || {};
+      const sku = skuByVisit[v.product];
+      const amount = sku ? Number(v.sold || 0) * Number(s[sku.priceCol] || 0) : 0;
+      out.push({ channel: "consignment", date: v.date, customer: v.store_name, ref: `${Number(v.sold)} × ${v.product}`, amount, rep: v.sale_rep || s.salesperson || "", chosen: !!v.sale_rep, assign: { table: "stores", id: s.id, name: v.store_name } });
+    });
+    const csById = {}; src.cs.forEach((s) => { csById[s.id] = s; });
+    src.ci.forEach((i) => {
+      const s = csById[i.store_id] || {};
+      out.push({ channel: "credit", date: i.invoice_date, customer: s.nickname || s.name || "—", ref: i.invoice_number || "", amount: Number(i.amount || 0), rep: i.sale_rep || s.salesperson || "", chosen: !!i.sale_rep, assign: { table: "credit_stores", id: s.id, name: s.name } });
+    });
+    const bsById = {}; src.bs.forEach((s) => { bsById[s.id] = s; });
+    src.br.forEach((r) => {
+      const b = bsById[r.store_id] || {};
+      const parent = b.parent_id ? bsById[b.parent_id] || {} : {};
+      out.push({ channel: "corporate", date: r.report_date, customer: b.nickname || b.name || "—", ref: r.invoice_number || "", amount: Number(r.amount || 0), rep: r.sale_rep || b.salesperson || parent.salesperson || "", chosen: !!r.sale_rep, assign: { table: "bigco_stores", id: b.id, name: b.name } });
+    });
+    const lastRep = {};
+    src.osAll.forEach((o) => { const k = custKey(o.customer_name); if (k && !lastRep[k]) lastRep[k] = o.sale_rep; });
+    src.os.forEach((o) => {
+      out.push({ channel: "online", date: o.date, customer: (o.customer_name || "").trim() || "—", ref: o.bill_no || "", amount: Number(o.amount || 0), rep: o.sale_rep || lastRep[custKey(o.customer_name)] || "", chosen: !!o.sale_rep, assign: { table: "online_sales", customer: o.customer_name } });
+    });
+    return out.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  }, [src]);
+
+  const people = useMemo(() => {
+    const by = {};
+    const ensure = (n) => (by[n] = by[n] || { name: n, total: 0, count: 0, ...Object.fromEntries(SBP_CHANNELS.map((c) => [c.key, 0])) });
+    names.forEach((n) => ensure(n));
+    sales.forEach((s) => { const p = ensure(s.rep || SBP_NONE); p[s.channel] += s.amount; p.total += s.amount; p.count += 1; });
+    const list = Object.values(by);
+    return [
+      ...list.filter((p) => p.name !== SBP_NONE).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name)),
+      ...list.filter((p) => p.name === SBP_NONE && p.count > 0),
+    ];
+  }, [sales, names]);
+
+  const grand = useMemo(() => {
+    const g = { total: 0, ...Object.fromEntries(SBP_CHANNELS.map((c) => [c.key, 0])) };
+    sales.forEach((s) => { g[s.channel] += s.amount; g.total += s.amount; });
+    return g;
+  }, [sales]);
+  const incentiveTotal = Object.values(incentives).reduce((a, v) => a + Number(v.amount || 0), 0);
+
+  async function saveIncentive(name) {
+    const amount = Math.round((parseFloat(drafts[name]) || 0) * 100) / 100;
+    setSavingName(name);
+    try {
+      await sbFetch("sales_incentives?on_conflict=month,salesperson", {
+        method: "POST",
+        headers: { Prefer: "resolution=merge-duplicates,return=representation" },
+        body: JSON.stringify([{ month, salesperson: name, amount, updated_by: authUser?.email || "unknown", updated_at: new Date().toISOString() }]),
+      });
+      setIncentives((prev) => ({ ...prev, [name]: { ...(prev[name] || {}), amount } }));
+      logActivity?.("Set sales incentive", name, `${monthLabel(month)}: $${amount.toLocaleString("en-US", MONEY2)}`);
+    } catch (e) {
+      alert(friendlyDbError(e));
+    }
+    setSavingName("");
+  }
+
+  const money = (n) => `$${Number(n || 0).toLocaleString("en-US", MONEY2)}`;
+  const card = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 13, padding: "14px 16px", boxSizing: "border-box", minWidth: 0 };
+  const small = { fontSize: 10.5, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 };
+  const chLabel = Object.fromEntries(SBP_CHANNELS.map((c) => [c.key, c.label]));
+
+  return (
+    <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 12, color: C.textFaint }}>Amount billed per salesperson, by channel, for the selected month. Incentives are entered here and kept separately from payroll.</div>
+        </div>
+        <input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)} style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 14 }} />
+      </div>
+
+      {error && <div style={{ background: C.roseBg, color: C.rose, padding: "10px 14px", borderRadius: 8, fontSize: 13, marginBottom: 14 }}>{error}</div>}
+      {!src && !error && <div style={{ padding: 40, textAlign: "center", color: C.textFaint }}>Loading…</div>}
+
+      {src && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 16 }}>
+            {[...SBP_CHANNELS.map((c) => [c.label, grand[c.key]]), ["Total billed", grand.total], ["Incentives", incentiveTotal]].map(([l, v]) => (
+              <div key={l} style={card}>
+                <div style={small}>{l}</div>
+                <div style={{ fontSize: 18, fontWeight: 700, marginTop: 4, color: l === "Total billed" ? C.goldBright : C.text }}>{money(v)}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 12 }}>
+            {people.map((p) => {
+              const none = p.name === SBP_NONE;
+              const mine = sales.filter((s) => (s.rep || SBP_NONE) === p.name);
+              const open = openName === p.name;
+              const saved = incentives[p.name]?.amount;
+              const draft = drafts[p.name] ?? "";
+              const dirty = (parseFloat(draft) || 0) !== Number(saved || 0) && !(draft === "" && saved == null);
+              return (
+                <div key={p.name} style={{ ...card, borderColor: none ? `${C.rose}60` : C.border }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+                    <div style={{ fontWeight: 700, fontSize: 15, color: none ? C.rose : C.text }}>{none ? "No salesperson" : p.name}</div>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: none ? C.rose : C.goldBright }}>{money(p.total)}</div>
+                  </div>
+                  <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 10 }}>{p.count} sale{p.count === 1 ? "" : "s"}{none ? " — staff assign these in Sales → Salesperson Assignment" : ""}</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 12px", marginBottom: 12 }}>
+                    {SBP_CHANNELS.map((c) => (
+                      <div key={c.key} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, gap: 6 }}>
+                        <span style={{ color: C.textDim }}>{c.label}</span>
+                        <span style={{ fontWeight: 600 }}>{money(p[c.key])}</span>
+                      </div>
+                    ))}
+                  </div>
+                  {!none && (
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+                      <label style={{ ...small, whiteSpace: "nowrap" }}>Incentive $</label>
+                      <input type="number" step="0.01" min="0" value={draft} placeholder="0.00"
+                        onChange={(e) => setDrafts({ ...drafts, [p.name]: e.target.value })}
+                        style={{ flex: 1, minWidth: 0, background: C.bg2, border: `1.5px solid ${dirty ? C.gold : C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 14 }} />
+                      <button onClick={() => saveIncentive(p.name)} disabled={!dirty || savingName === p.name}
+                        style={{ background: dirty ? C.gold : "none", color: dirty ? "#1A1508" : C.textFaint, border: `1px solid ${dirty ? C.gold : C.border}`, borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: dirty ? "pointer" : "default" }}>
+                        {savingName === p.name ? "Saving…" : dirty ? "Save" : "Saved"}
+                      </button>
+                    </div>
+                  )}
+                  {p.count > 0 && (
+                    <button onClick={() => setOpenName(open ? null : p.name)} style={{ background: "none", border: "none", color: C.gold, fontSize: 12, fontWeight: 600, cursor: "pointer", padding: 0 }}>
+                      {open ? "Hide sales" : `Show ${p.count} sale${p.count === 1 ? "" : "s"}`}
+                    </button>
+                  )}
+                  {open && (
+                    <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+                      {(none
+                        ? Object.values(mine.reduce((acc, s) => { const k = `${s.channel}|${s.customer}`; (acc[k] = acc[k] || { ...s, amount: 0, n: 0 }); acc[k].amount += s.amount; acc[k].n += 1; return acc; }, {}))
+                        : mine
+                      ).map((s, i) => (
+                        <div key={i} style={{ background: C.bg2, borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                            <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.customer}</span>
+                            <b style={{ whiteSpace: "nowrap" }}>{money(s.amount)}</b>
+                          </div>
+                          <div style={{ color: C.textFaint, fontSize: 11, marginTop: 2 }}>
+                            {chLabel[s.channel]}{none ? ` · ${s.n} sale${s.n === 1 ? "" : "s"}` : ` · ${s.date ? new Date(s.date + "T00:00:00").toLocaleDateString("en-GB") : ""}${s.ref ? ` · ${s.ref}` : ""}${s.chosen ? "" : " · from store's salesperson"}`}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 11, color: C.textFaint, marginTop: 14, lineHeight: 1.6 }}>
+            Consignment = boxes sold on visits × the store's agreed price. Credit Term, Corporate and Online &amp; COD = bill amounts.
+            A sale counts for the salesperson chosen on it; if none was chosen, for the store's assigned salesperson.
+            Staff assign stores to salespeople in Sales → Salesperson Assignment; amounts are shown only here.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// SALESPERSON ASSIGNMENT — any staff member. Assign each store to the
+// salesperson responsible for it; every new bill for that store then picks
+// that person automatically. No sales amounts are shown here — those are only
+// in Executive Office → Sales by Person.
+// ============================================================================
+function SalespersonAssignmentPage({ authUser, C, sbFetch, logActivity }) {
+  const names = useSalespeopleNames(sbFetch);
+  const [rows, setRows] = useState(null);       // stores of all three types
+  const [online, setOnline] = useState([]);     // online/COD customers with sales lacking a salesperson
+  const [error, setError] = useState("");
+  const [filter, setFilter] = useState("unassigned");
+  const [type, setType] = useState("all");
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState("");
+
+  async function load() {
+    setError("");
+    try {
+      const [st, cs, bs, os] = await Promise.all([
+        sbFetch("stores?select=id,name,salesperson"),
+        sbFetch("credit_stores?select=id,name,nickname,salesperson"),
+        sbFetch("bigco_stores?select=id,name,nickname,parent_id,salesperson"),
+        sbFetch("online_sales?select=id,customer_name,sale_rep&sale_rep=is.null"),
+      ]);
+      const bsById = Object.fromEntries((bs || []).map((b) => [b.id, b]));
+      setRows([
+        ...(st || []).map((s) => ({ key: `stores:${s.id}`, table: "stores", id: s.id, name: s.name, type: "consignment", rep: s.salesperson || "" })),
+        ...(cs || []).map((s) => ({ key: `credit_stores:${s.id}`, table: "credit_stores", id: s.id, name: s.nickname ? `${s.nickname} (${s.name})` : s.name, type: "credit", rep: s.salesperson || "" })),
+        ...(bs || []).map((s) => {
+          const parent = s.parent_id ? bsById[s.parent_id] : null;
+          return { key: `bigco_stores:${s.id}`, table: "bigco_stores", id: s.id, name: `${parent ? `${parent.nickname || parent.name} — ` : ""}${s.nickname || s.name}`, type: "corporate", rep: s.salesperson || "", inherited: !s.salesperson && parent?.salesperson ? parent.salesperson : "" };
+        }),
+      ].sort((a, b) => a.name.localeCompare(b.name)));
+      const by = {};
+      (os || []).forEach((o) => { const n = String(o.customer_name || "").trim(); if (!n) return; (by[n] = by[n] || []).push(o.id); });
+      setOnline(Object.entries(by).map(([name, ids]) => ({ name, ids })).sort((a, b) => a.name.localeCompare(b.name)));
+    } catch (e) {
+      setError(friendlyDbError(e));
+    }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function assignStore(r, rep) {
+    setBusy(r.key);
+    try {
+      await sbFetch(`${r.table}?id=eq.${encodeURIComponent(r.id)}`, { method: "PATCH", body: JSON.stringify({ salesperson: rep || null }) });
+      setRows((prev) => prev.map((x) => (x.key === r.key ? { ...x, rep } : x)));
+      logActivity?.("Assigned salesperson", r.name, `${r.rep || "(none)"} → ${rep || "(none)"}`);
+    } catch (e) { alert(friendlyDbError(e)); }
+    setBusy("");
+  }
+
+  async function assignOnline(c, rep) {
+    if (!rep) return;
+    setBusy(`online:${c.name}`);
+    try {
+      for (const id of c.ids) await sbFetch(`online_sales?id=eq.${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ sale_rep: rep }) });
+      setOnline((prev) => prev.filter((x) => x.name !== c.name));
+      logActivity?.("Assigned salesperson", c.name, `${rep} (${c.ids.length} online/COD sale${c.ids.length === 1 ? "" : "s"})`);
+    } catch (e) { alert(friendlyDbError(e)); }
+    setBusy("");
+  }
+
+  const TYPE_LABEL = { consignment: "Consignment", credit: "Credit Term", corporate: "Corporate" };
+  const shown = (rows || []).filter((r) =>
+    (type === "all" || r.type === type) &&
+    (filter === "all" || !(r.rep || r.inherited)) &&
+    (!q.trim() || r.name.toLowerCase().includes(q.trim().toLowerCase()))
+  );
+  const unassignedCount = (rows || []).filter((r) => !(r.rep || r.inherited)).length;
+  const pill = (active) => ({ background: active ? C.gold : "none", color: active ? "#1A1508" : C.textDim, border: `1px solid ${active ? C.gold : C.border}`, borderRadius: 999, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" });
+  const sel = { width: "100%", boxSizing: "border-box", minWidth: 0, background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13.5 };
+
+  return (
+    <div style={{ maxWidth: 900, margin: "0 auto" }}>
+      <div style={{ fontSize: 12.5, color: C.textFaint, marginBottom: 14, lineHeight: 1.5 }}>
+        Assign each store to the salesperson responsible for it. Every new bill and visit for that store is then credited to that person automatically.
+        If the store moves to someone else, change it here — past sales stay with the person who made them.
+      </div>
+      {error && <div style={{ background: C.roseBg, color: C.rose, padding: "10px 14px", borderRadius: 8, fontSize: 13, marginBottom: 14 }}>{error}</div>}
+      {!rows && !error && <div style={{ padding: 40, textAlign: "center", color: C.textFaint }}>Loading…</div>}
+
+      {rows && (
+        <>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+            <button onClick={() => setFilter("unassigned")} style={pill(filter === "unassigned")}>Not assigned ({unassignedCount})</button>
+            <button onClick={() => setFilter("all")} style={pill(filter === "all")}>All stores ({rows.length})</button>
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+            {[["all", "All types"], ["consignment", "Consignment"], ["credit", "Credit Term"], ["corporate", "Corporate"]].map(([k, l]) => (
+              <button key={k} onClick={() => setType(k)} style={{ ...pill(type === k), padding: "5px 10px", fontSize: 11.5 }}>{l}</button>
+            ))}
+          </div>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search store…" style={{ ...sel, marginBottom: 12 }} />
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 22 }}>
+            {shown.length === 0 && <div style={{ padding: 20, textAlign: "center", color: C.textFaint, fontSize: 13 }}>{filter === "unassigned" ? "Every store has a salesperson." : "No stores match."}</div>}
+            {shown.map((r) => (
+              <div key={r.key} style={{ background: C.surface, border: `1px solid ${r.rep || r.inherited ? C.border : `${C.rose}50`}`, borderRadius: 10, padding: "10px 12px", display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(130px, 200px)", gap: 10, alignItems: "center" }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</div>
+                  <div style={{ fontSize: 11, color: C.textFaint }}>{TYPE_LABEL[r.type]}{r.inherited ? ` · uses ${r.inherited} from head office` : ""}</div>
+                </div>
+                <select value={r.rep} disabled={busy === r.key} onChange={(e) => assignStore(r, e.target.value)} style={sel}>
+                  <option value="">{busy === r.key ? "Saving…" : "— Not assigned —"}</option>
+                  {[...new Set([...names, r.rep].filter(Boolean))].map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </div>
+            ))}
+          </div>
+
+          {online.length > 0 && (
+            <>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Online &amp; COD customers without a salesperson</div>
+              <div style={{ fontSize: 11.5, color: C.textFaint, marginBottom: 10 }}>Choose who made these sales. New online sales for the same customer will suggest that person.</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {online.map((c) => (
+                  <div key={c.name} style={{ background: C.surface, border: `1px solid ${C.rose}50`, borderRadius: 10, padding: "10px 12px", display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(130px, 200px)", gap: 10, alignItems: "center" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 13.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</div>
+                      <div style={{ fontSize: 11, color: C.textFaint }}>Online &amp; COD · {c.ids.length} sale{c.ids.length === 1 ? "" : "s"}</div>
+                    </div>
+                    <select value="" disabled={busy === `online:${c.name}`} onChange={(e) => assignOnline(c, e.target.value)} style={sel}>
+                      <option value="">{busy === `online:${c.name}` ? "Saving…" : "Choose…"}</option>
+                      {names.map((n) => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </>
+      )}
     </div>
   );
 }
