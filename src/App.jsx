@@ -1712,9 +1712,9 @@ function MeraConsignmentApp() {
         ) : page === "stockplan" ? (
           <StockForecastPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} canEdit={canSeeAccounting} />
         ) : page === "cashflow" ? (
-          canSeeAccounting
+          canSeePayroll
             ? <CashForecastPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
-            : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>Only the owner or accountant can see the cash forecast.</div>
+            : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>The cash forecast is in the Executive Office.</div>
         ) : page === "close" ? (
           canSeeAccounting
             ? <MonthClosePage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
@@ -4560,7 +4560,7 @@ function MoneyOwedPage({ authUser, C, sbFetch, logActivity }) {
     (async () => {
       const get = async (q) => { try { return (await sbFetch(q)) || []; } catch (e) { return []; } };
       const [cs, ci, cp, bs, br, st, vi, on, cn, un] = await Promise.all([
-        get("credit_stores?select=id,name,nickname,phone,address,vat_tin,credit_days"),
+        get("credit_stores?select=id,name,nickname,phone,address,vat_tin,credit_days,payment_day"),
         get("credit_invoices?select=id,store_id,invoice_date,invoice_number,amount,paid"),
         get("credit_payments?select=store_id,payment_date,amount"),
         get("bigco_stores?select=id,name,nickname,phone,address,vat_tin,parent_id,payment_day"),
@@ -4594,9 +4594,9 @@ function MoneyOwedPage({ authUser, C, sbFetch, logActivity }) {
         const gap = amount - paid;
         if (gap > 0 && pool > 0) { const use = Math.min(gap, pool); paid += use; pool -= use; }
         const left = Math.round((amount - paid) * 100) / 100;
-        if (left > 0.009) bills.push({ no: String(i.invoice_number || "").trim(), date: i.invoice_date, due: moAddDays(i.invoice_date, days), amount, paid, left });
+        if (left > 0.009) bills.push({ no: String(i.invoice_number || "").trim(), date: i.invoice_date, due: s.payment_day ? moPayDayDue(i.invoice_date, Number(s.payment_day)) : moAddDays(i.invoice_date, days), amount, paid, left });
       });
-      if (bills.length) out.push({ key: `credit:${s.id}`, channel: "credit", name: s.name, nickname: s.nickname || "", phone: s.phone || "", address: s.address || "", vat: s.vat_tin || "", terms: `Net ${days} days`, lastPay, bills });
+      if (bills.length) out.push({ key: `credit:${s.id}`, channel: "credit", name: s.name, nickname: s.nickname || "", phone: s.phone || "", address: s.address || "", vat: s.vat_tin || "", terms: s.payment_day ? `Monthly settlement on day ${s.payment_day}` : `Net ${days} days`, lastPay, bills });
     });
     // Corporate — branches roll up to the account that pays.
     const byId = {}; src.bs.forEach((s) => { byId[s.id] = s; });
@@ -5262,7 +5262,7 @@ function CashForecastPage({ authUser, C, sbFetch, logActivity }) {
     const get = async (q) => { try { return (await sbFetch(q)) || []; } catch (e) { return []; } };
     const since = cfAdd(today, -56);
     const [cs, ci, cp, bs, br, os, pr, items, opens, recentOnline, recentVisits] = await Promise.all([
-      get("credit_stores?select=id,name,credit_days"),
+      get("credit_stores?select=id,name,credit_days,payment_day"),
       get("credit_invoices?select=id,store_id,invoice_date,invoice_number,amount,paid"),
       get("credit_payments?select=store_id,amount"),
       get("bigco_stores?select=id,name,parent_id,payment_day"),
@@ -5306,7 +5306,7 @@ function CashForecastPage({ authUser, C, sbFetch, logActivity }) {
       src.ci.filter((i) => i.store_id === s.id && i.invoice_date).sort((a, b) => a.invoice_date.localeCompare(b.invoice_date)).forEach((i) => {
         let left = Number(i.amount || 0) - Number(i.paid || 0);
         if (left > 0 && pool > 0) { const u = Math.min(left, pool); left -= u; pool -= u; }
-        if (left > 0.009) place(cfAdd(i.invoice_date, Number(s.credit_days || 30)), { kind: "customer", label: `${s.name} · ${i.invoice_number || "invoice"}`, amount: left });
+        if (left > 0.009) place(s.payment_day ? moPayDayDue(i.invoice_date, Number(s.payment_day)) : cfAdd(i.invoice_date, Number(s.credit_days || 30)), { kind: "customer", label: `${s.name} · ${i.invoice_number || "invoice"}`, amount: left });
       });
     });
     // Customers — Corporate (monthly pay day if set, otherwise 30 days).
@@ -6673,6 +6673,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
           name: s.name,
           nickname: s.nickname || "",
           creditDays: Number(s.credit_days || 30),
+          paymentDay: s.payment_day ? Number(s.payment_day) : null,
           notes: s.notes || "",
           salesperson: s.salesperson || "",
           invoices: invoiceRows
@@ -6920,6 +6921,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
           name: changes.name,
           nickname: changes.nickname || null,
           credit_days: changes.creditDays,
+          payment_day: changes.paymentDay || null,
           notes: changes.notes,
         }),
       });
@@ -7000,7 +7002,9 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
     }
   }
 
-  function dueDate(invoiceDate, creditDays) {
+  function dueDate(invoiceDate, creditDays, paymentDay) {
+    // A customer with a monthly pay day settles on that day of the following month.
+    if (paymentDay) return moPayDayDue(invoiceDate, paymentDay);
     // Plain calendar maths in local time. (toISOString() converts to UTC,
     // which in Cambodia (UTC+7) moved every due date one day earlier.)
     const d = new Date(invoiceDate + "T00:00:00");
@@ -7043,7 +7047,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
       const monthOwed = Math.max(0, monthBilled - (monthInvoices.reduce((a, inv) => a + (invoiceEffectivePaid[inv.id] ?? inv.paid), 0)));
       const overdueInvoices = s.invoices.filter((inv) => {
         const remaining = inv.amount - (invoiceEffectivePaid[inv.id] ?? inv.paid);
-        return remaining > 0 && dueDate(inv.invoiceDate, s.creditDays) < today;
+        return remaining > 0 && dueDate(inv.invoiceDate, s.creditDays, s.paymentDay) < today;
       });
       // Complete = every invoice fully paid, with at least one invoice logged. Once complete, the
       // store "belongs" to whichever month its last invoice was dated, so it's still findable there.
@@ -7051,7 +7055,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
       // For the card header: when each still-unpaid invoice was released and
       // when it falls due, oldest first, so follow-up is one glance.
       const openInvoices = invoicesByDate
-        .map((inv) => ({ id: inv.id, no: inv.invoiceNumber, date: inv.invoiceDate, due: dueDate(inv.invoiceDate, s.creditDays), remaining: inv.amount - (invoiceEffectivePaid[inv.id] ?? inv.paid) }))
+        .map((inv) => ({ id: inv.id, no: inv.invoiceNumber, date: inv.invoiceDate, due: dueDate(inv.invoiceDate, s.creditDays, s.paymentDay), remaining: inv.amount - (invoiceEffectivePaid[inv.id] ?? inv.paid) }))
         .filter((x) => x.remaining > 0.005);
       const lastInvoiceDate = s.invoices.length ? [...s.invoices].map((inv) => inv.invoiceDate).sort().slice(-1)[0] : null;
       const completionMonth = lastInvoiceDate ? monthKey(lastInvoiceDate) : null;
@@ -7361,7 +7365,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                     <div style={{ fontWeight: 600, fontSize: 15 }}>{s.nickname || s.name}</div>
                     {s.nickname && <div style={{ fontSize: 11, color: C.textDim }}>{s.name}</div>}
                     <div style={{ fontSize: 11, color: C.textFaint }}>
-                      Net {s.creditDays} days{s.overdueCount > 0 ? ` · ${s.overdueCount} overdue` : ""}
+                      {s.paymentDay ? `Pays around day ${s.paymentDay}` : `Net ${s.creditDays} days`}{s.overdueCount > 0 ? ` · ${s.overdueCount} overdue` : ""}
                       {s.isComplete && <span style={{ color: C.emerald }}> · Completed</span>}
                     </div>
                     {/* Invoice release dates → due dates, so you can see at a glance
@@ -7455,7 +7459,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                     onClick={(e) => {
                       e.stopPropagation();
                       if (editingStore !== s.id) {
-                        setEditStoreForm({ name: s.name, nickname: s.nickname || "", creditDays: s.creditDays, notes: s.notes });
+                        setEditStoreForm({ name: s.name, nickname: s.nickname || "", creditDays: s.creditDays, paymentDay: s.paymentDay || "", notes: s.notes });
                       }
                       setEditingStore(editingStore === s.id ? null : s.id);
                     }}
@@ -7479,6 +7483,10 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                         <input type="number" value={editStoreForm.creditDays} onChange={(e) => setEditStoreForm({ ...editStoreForm, creditDays: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
                       </div>
                       <div style={{ marginBottom: 8 }}>
+                        <label style={{ fontSize: 9, color: C.textFaint }}>Usual payment day of month (optional — overrides credit days)</label>
+                        <input type="number" min="1" max="31" placeholder="e.g. 25" value={editStoreForm.paymentDay ?? ""} onChange={(e) => setEditStoreForm({ ...editStoreForm, paymentDay: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
+                      </div>
+                      <div style={{ marginBottom: 8 }}>
                         <label style={{ fontSize: 9, color: C.textFaint }}>Notes</label>
                         <input type="text" value={editStoreForm.notes} onChange={(e) => setEditStoreForm({ ...editStoreForm, notes: e.target.value })} style={{ ...miniInputStyle, width: "100%" }} />
                       </div>
@@ -7489,6 +7497,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                             name: editStoreForm.name,
                             nickname: (editStoreForm.nickname || "").trim(),
                             creditDays: parseInt(editStoreForm.creditDays, 10) || 30,
+                            paymentDay: Math.min(31, Math.max(0, parseInt(editStoreForm.paymentDay, 10) || 0)) || null,
                             notes: editStoreForm.notes,
                           });
                           if (ok) setEditingStore(null);
@@ -7676,7 +7685,7 @@ function CreditTermPage({ authUser, C, sbFetch, logActivity, focus }) {
                       {[...s.invoices].sort((a, b) => b.invoiceDate.localeCompare(a.invoiceDate)).map((inv) => {
                         const remaining = inv.amount - inv.paid;
                         const effectiveRemaining = inv.amount - (s.invoiceEffectivePaid?.[inv.id] ?? inv.paid);
-                        const due = dueDate(inv.invoiceDate, s.creditDays);
+                        const due = dueDate(inv.invoiceDate, s.creditDays, s.paymentDay);
                         const today = new Date().toISOString().slice(0, 10);
                         const isOverdue = effectiveRemaining > 0 && due < today;
 
@@ -8035,7 +8044,6 @@ const NAV = [
     { label: "Reports",       page: "accounting", tab: "reports" },
     { label: "Finance",       page: "accounting", tab: "finance" },
     { label: "Chart of Accounts",      page: "accounting", tab: "accounts" },
-    { label: "Cash Forecast",          page: "cashflow" },
     { label: "Month Close",            page: "close" },
   ]},
   // Executive Office — everything sensitive in one place: profit, sales
@@ -8043,6 +8051,7 @@ const NAV = [
   { name: "Executive Office", needs: "payroll", items: [
     { label: "Profit & Margin", page: "profit" },
     { label: "Sales by Person", page: "salesbyperson" },
+    { label: "Cash Forecast",   page: "cashflow" },
     { label: "Sales Report",    page: "sales", sub: "report", needs: "owner" },
     { label: "Expense Register", page: "expenses", tab: "approve" },
     { label: "KOL & Content",   page: "kol" },
