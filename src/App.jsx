@@ -13872,6 +13872,22 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
   const [selectMode, setSelectMode] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState(() => new Set());
   const [genInvoiceFor, setGenInvoiceFor] = useState(null); // delivery note being turned into an invoice
+  const [editingDoc, setEditingDoc] = useState(null); // { type: 'dn'|'invoice', data }
+  // Credit Term / Corporate records made from invoices — tells us whether an
+  // invoice has been paid (then it can no longer be edited).
+  const [billLinks, setBillLinks] = useState({ credit: [], corporate: [] });
+  const isAccountingUser = ACCOUNTING_EMAILS.includes(String(authUser?.email || "").toLowerCase());
+
+  async function loadBillLinks() {
+    try {
+      const [cr, co] = await Promise.all([
+        sbFetch("credit_invoices?select=id,store_id,invoice_number,amount,paid"),
+        sbFetch("bigco_reports?select=id,store_id,invoice_number,amount,paid"),
+      ]);
+      setBillLinks({ credit: cr || [], corporate: co || [] });
+    } catch (e) { /* leave as is — edit will then be refused safely below */ }
+  }
+  useEffect(() => { loadBillLinks(); }, []);
 
   const emptyDNForm = {
     storeMode: "existing", // "existing" or "new"
@@ -14258,15 +14274,193 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
 
   async function deleteInvoice(id) {
     try {
+      const inv = invoices.find((i) => i.id === id);
+      // Same rule as editing: once anything is paid, the invoice stays.
+      const n = encodeURIComponent(String(inv?.invoice_number || "").trim());
+      const [cr, co] = n ? await Promise.all([
+        sbFetch(`credit_invoices?select=id,paid&invoice_number=eq.${n}`),
+        sbFetch(`bigco_reports?select=id,paid&invoice_number=eq.${n}`),
+      ]) : [[], []];
+      const paid = [...(cr || []), ...(co || [])].reduce((a, r) => a + (Number(r.paid) || 0), 0);
+      if (paid > 0.005) {
+        alert(`${inv.invoice_number} can't be deleted — a payment of $${paid.toLocaleString("en-US", MONEY2)} has already been recorded against it.`);
+        return;
+      }
+      // Remove it from the customer's balance too (Credit Term / Corporate),
+      // otherwise the customer would still show as owing a deleted bill.
+      for (const r of cr || []) await sbFetch(`credit_invoices?id=eq.${encodeURIComponent(r.id)}`, { method: "DELETE" });
+      for (const r of co || []) await sbFetch(`bigco_reports?id=eq.${encodeURIComponent(r.id)}`, { method: "DELETE" });
+      if ((cr || []).length || (co || []).length) loadBillLinks();
       await sbFetch(`sales_invoices?id=eq.${id}`, { method: "DELETE" });
+      logActivity?.("Deleted invoice", inv?.customer_name || "", inv?.invoice_number || "");
       setInvoices((prev) => prev.filter((i) => i.id !== id));
       setSaveError(false);
     } catch (e) {
-      setSaveError(true);
+      setSaveError(friendlyDbError(e));
     }
   }
 
   const invoicesForNote = (dnId) => invoices.filter((i) => i.delivery_note_id === dnId);
+
+  // --- Editing -------------------------------------------------------------
+  // Rules (same as the old system): a delivery note can be edited until an
+  // invoice is issued from it; an invoice can be edited until any payment is
+  // recorded against it.
+  const billNo = (v) => String(v || "").trim();
+  function linkedBillsFor(inv) {
+    const n = billNo(inv.invoice_number);
+    if (!n) return [];
+    return [
+      ...billLinks.credit.filter((r) => billNo(r.invoice_number) === n).map((r) => ({ ...r, table: "credit_invoices", dateCol: "invoice_date" })),
+      ...billLinks.corporate.filter((r) => billNo(r.invoice_number) === n).map((r) => ({ ...r, table: "bigco_reports", dateCol: "report_date" })),
+    ];
+  }
+  const invoicePaid = (inv) => linkedBillsFor(inv).reduce((a, r) => a + (Number(r.paid) || 0), 0);
+
+  function startEdit(type, data) {
+    if (type === "dn") {
+      const invs = invoicesForNote(data.id);
+      if (invs.length) {
+        alert(`${data.dn_number} can't be edited — invoice ${invs.map((i) => i.invoice_number).join(", ")} has already been issued from it. Edit the invoice instead.`);
+        return;
+      }
+    } else if (invoicePaid(data) > 0.005) {
+      alert(`${data.invoice_number} can't be edited — a payment of $${invoicePaid(data).toLocaleString("en-US", MONEY2)} has already been recorded against it.`);
+      return;
+    }
+    setEditingDoc({ type, data });
+  }
+
+  function editRules(doc) {
+    if (!doc) return {};
+    if (doc.type === "dn") return { canChangeAmounts: true };
+    const inv = doc.data;
+    const dn = notes.find((n) => n.id === inv.delivery_note_id);
+    const billed = linkedBillsFor(inv).length > 0;
+    return {
+      canChangeAmounts: !billed || isAccountingUser,
+      amountsLockedReason: billed && !isAccountingUser
+        ? "This bill is already in the customer's balance. Only the owner or the accountant can change its quantities, prices or discount. You can still edit the details above."
+        : "",
+      qtyLockedReason: !dn
+        ? "The delivery note for this invoice no longer exists, so quantities can't be changed here."
+        : invoicesForNote(dn.id).length > 1
+        ? "More than one invoice was issued from this delivery note, so quantities can't be changed here."
+        : "",
+    };
+  }
+
+  async function patchRow(table, id, body) {
+    const rows = await sbFetch(`${table}?id=eq.${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify(body),
+    });
+    if (!Array.isArray(rows) || !rows.length) throw new Error("You don't have permission to change this record.");
+    return rows[0];
+  }
+
+  // Returns an error message, or "" when everything saved.
+  async function saveDocEdit(doc, form) {
+    const isDN = doc.type === "dn";
+    const d = doc.data;
+    const num = (v) => parseFloat(v) || 0;
+    const rules = editRules(doc);
+    try {
+      // Re-check the lock against the database, not just what this screen loaded.
+      if (isDN) {
+        const invs = await sbFetch(`sales_invoices?select=id&delivery_note_id=eq.${encodeURIComponent(d.id)}`);
+        if (invs && invs.length) return "An invoice has just been issued from this delivery note, so it can no longer be edited. Edit the invoice instead.";
+      }
+      let links = [];
+      if (!isDN) {
+        const n = encodeURIComponent(billNo(d.invoice_number));
+        const [cr, co] = await Promise.all([
+          sbFetch(`credit_invoices?select=id,store_id,invoice_number,amount,paid&invoice_number=eq.${n}`),
+          sbFetch(`bigco_reports?select=id,store_id,invoice_number,amount,paid&invoice_number=eq.${n}`),
+        ]);
+        links = [
+          ...(cr || []).map((r) => ({ ...r, table: "credit_invoices", dateCol: "invoice_date" })),
+          ...(co || []).map((r) => ({ ...r, table: "bigco_reports", dateCol: "report_date" })),
+        ];
+        const paid = links.reduce((a, r) => a + (Number(r.paid) || 0), 0);
+        if (paid > 0.005) return `A payment of $${paid.toLocaleString("en-US", MONEY2)} has already been recorded on ${d.invoice_number}, so it can no longer be edited.`;
+      }
+
+      const dn = isDN ? d : notes.find((n) => n.id === d.delivery_note_id);
+      const newQty = Object.fromEntries(SKUS.map((x) => [x.code, num(form[x.formQty])]));
+      const newFree = Object.fromEntries(SKUS.map((x) => [x.code, num(form[x.formFree])]));
+      const qtyChanged = SKUS.some((x) => newQty[x.code] !== (Number(d[x.qtyCol]) || 0) || newFree[x.code] !== (Number(d[x.freeCol]) || 0));
+      const pricesChanged = SKUS.some((x) => num(form[x.formPrice]) !== (Number(d[x.priceCol]) || 0))
+        || (!isDN && (num(form.discountPercent) !== (Number(d.discount_percent) || 0) || num(form.vatPercent) !== (Number(d.vat_percent) || 0)));
+      if ((qtyChanged || pricesChanged) && !rules.canChangeAmounts) return rules.amountsLockedReason;
+      if (qtyChanged && rules.qtyLockedReason) return rules.qtyLockedReason;
+
+      // Stock moves follow the delivery note: how much more (or less) leaves the warehouse.
+      const dQty = dn ? Object.fromEntries(SKUS.map((x) => [x.code, newQty[x.code] - (Number(dn[x.qtyCol]) || 0)])) : {};
+      const dFree = dn ? Object.fromEntries(SKUS.map((x) => [x.code, newFree[x.code] - (Number(dn[x.freeCol]) || 0)])) : {};
+      if (dn && qtyChanged && !stockMissing) {
+        const short = SKUS.filter((x) => (dQty[x.code] || 0) + (dFree[x.code] || 0) > (stock[x.code] || 0));
+        if (short.length) return "Not enough stock: " + short.map((x) => `${stockLabel(x.code)} needs ${(dQty[x.code] || 0) + (dFree[x.code] || 0)} more, only ${stock[x.code] || 0} in stock`).join(" · ");
+      }
+
+      const qtyCols = Object.fromEntries(SKUS.flatMap((x) => [[x.qtyCol, newQty[x.code]], [x.freeCol, newFree[x.code]]]));
+      const priceCols = Object.fromEntries(SKUS.map((x) => [x.priceCol, num(form[x.formPrice])]));
+      const shared = {
+        customer_phone: form.customerPhone, customer_address: form.customerAddress, send_to: form.sendTo,
+        order_no: form.orderNo, issued_by: form.issuedBy, sale_rep: form.saleRep, notes: form.notes,
+      };
+
+      let savedInv = null, savedDN = null;
+      if (!isDN) {
+        const invBody = {
+          ...shared, invoice_date: form.date, vat_tin: form.vatTin, payment_term: form.paymentTerm,
+          discount_percent: num(form.discountPercent),
+          vat_percent: d.invoice_type === "tax" ? num(form.vatPercent) : 0,
+          exchange_rate: num(form.exchangeRate) || 4046,
+          ...(rules.canChangeAmounts ? priceCols : {}),
+          ...(rules.canChangeAmounts && !rules.qtyLockedReason ? qtyCols : {}),
+        };
+        // 1) the customer's balance record (Credit Term / Corporate), if any
+        const grand = invoiceGrandTotal({ ...d, ...invBody });
+        for (const l of links) {
+          await patchRow(l.table, l.id, {
+            [l.dateCol]: form.date,
+            ...(rules.canChangeAmounts ? { amount: grand } : {}),
+            ...(rules.canChangeAmounts && !rules.qtyLockedReason ? Object.fromEntries(SKUS.map((x) => [x.soldCol, newQty[x.code]])) : {}),
+          });
+        }
+        // 2) the invoice itself
+        savedInv = await patchRow("sales_invoices", d.id, invBody);
+        // 3) its delivery note keeps the same quantities
+        if (dn && qtyChanged) savedDN = await patchRow("delivery_notes", dn.id, qtyCols);
+      } else {
+        savedDN = await patchRow("delivery_notes", d.id, {
+          ...shared, sale_date: form.date, payment_method: form.paymentMethod, ...qtyCols, ...priceCols,
+        });
+      }
+
+      // 4) warehouse stock and the consignment store's shelf
+      if (dn && qtyChanged && !stockMissing) {
+        await addStockMove(SKUS.map((x) => ({ product: x.code, qty: -(dQty[x.code] || 0) })), "delivery", `${dn.dn_number} (edited)`);
+        // Free boxes stay filed under the DN number, so deleting the note later still returns them.
+        await addStockMove(SKUS.map((x) => ({ product: x.code, qty: -(dFree[x.code] || 0) })), "sample", dn.dn_number);
+      }
+      if (dn && qtyChanged && dn.business_type === "consignment" && dn.store_id && onStoreDelivered && SKUS.some((x) => dQty[x.code])) {
+        await onStoreDelivered(dn.store_id, Object.fromEntries(SKUS.map((x) => [x.code, dQty[x.code] || 0])));
+      }
+
+      if (savedDN) setNotes((prev) => prev.map((n) => (n.id === savedDN.id ? savedDN : n)));
+      if (savedInv) setInvoices((prev) => prev.map((i) => (i.id === savedInv.id ? savedInv : i)));
+      if (links.length) loadBillLinks();
+      const what = [qtyChanged && "quantities", pricesChanged && "prices/discount", "details"].filter(Boolean).join(", ");
+      logActivity?.(isDN ? "Edited delivery note" : "Edited invoice", d.customer_name, `${isDN ? d.dn_number : d.invoice_number} — ${what}`);
+      setSaveError(false);
+      return "";
+    } catch (e) {
+      return friendlyDbError(e);
+    }
+  }
 
   const toggleSelected = (key) => {
     setSelectedKeys((prev) => {
@@ -14595,12 +14789,19 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                       )}
                     </div>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <button
                       onClick={() => setPrintingDoc({ type: "dn", data: dn })}
                       style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 14px", fontSize: 12, fontWeight: 700, color: C.text, cursor: "pointer" }}
                     >
                       Print DN
+                    </button>
+                    <button
+                      onClick={() => startEdit("dn", dn)}
+                      title={linkedInvoices.length ? "Locked — an invoice has been issued from this note" : "Edit this delivery note"}
+                      style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 14px", fontSize: 12, fontWeight: 700, color: linkedInvoices.length ? C.textFaint : C.text, cursor: "pointer", opacity: linkedInvoices.length ? 0.6 : 1 }}
+                    >
+                      {linkedInvoices.length ? "🔒 Edit" : "Edit"}
                     </button>
                     <button
                       onClick={() => { setGenInvoiceFor(dn); }}
@@ -14639,6 +14840,18 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                           >
                             Print
                           </button>
+                          {(() => {
+                            const paidLocked = invoicePaid(inv) > 0.005;
+                            return (
+                              <button
+                                onClick={() => startEdit("invoice", inv)}
+                                title={paidLocked ? "Locked — payment already recorded" : "Edit this invoice"}
+                                style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 10px", fontSize: 11, color: paidLocked ? C.textFaint : C.text, cursor: "pointer", opacity: paidLocked ? 0.6 : 1 }}
+                              >
+                                {paidLocked ? "🔒 Paid" : "Edit"}
+                              </button>
+                            );
+                          })()}
                           <button
                             onClick={() => { if (window.confirm(`Delete ${inv.invoice_number}?`)) deleteInvoice(inv.id); }}
                             style={{ background: "none", border: "none", color: C.rose, cursor: "pointer" }}
@@ -14990,7 +15203,19 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
           invoices={invoices}
           logActivity={logActivity}
           onClose={() => setGenInvoiceFor(null)}
-          onCreated={(inv) => { setInvoices((prev) => [inv, ...prev]); setGenInvoiceFor(null); }}
+          onCreated={(inv) => { setInvoices((prev) => [inv, ...prev]); setGenInvoiceFor(null); loadBillLinks(); }}
+        />
+      )}
+
+      {editingDoc && (
+        <EditDocumentModal
+          key={`${editingDoc.type}:${editingDoc.data.id}`}
+          doc={editingDoc}
+          C={C}
+          salespeople={salespeople}
+          {...editRules(editingDoc)}
+          onClose={() => setEditingDoc(null)}
+          onSave={(form) => saveDocEdit(editingDoc, form)}
         />
       )}
 
@@ -15010,6 +15235,163 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
           onClose={() => { setPrintingMulti(null); setSelectMode(false); setSelectedKeys(new Set()); }}
         />
       )}
+    </div>
+  );
+}
+
+// Turns "Supabase error 400: {json}" into the plain sentence inside it.
+function friendlyDbError(e) {
+  const raw = String(e?.message || "");
+  const m = /^Supabase error \d+: (.*)$/s.exec(raw);
+  if (m) { try { return String(JSON.parse(m[1]).message || "Couldn't save — try again."); } catch (x) { /* not JSON */ } }
+  return raw || "Couldn't save — try again.";
+}
+
+// What the customer pays on an invoice row — the same figure the printed
+// invoice shows. Each step is rounded to the cent, exactly as printed.
+function invoiceGrandTotal(d) {
+  const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+  const sub = SKUS.reduce((t, x) => t + (Number(d[x.qtyCol]) || 0) * (Number(d[x.priceCol]) || 0), 0);
+  const disc = r2(sub * ((parseFloat(d.discount_percent) || 0) / 100));
+  const after = r2(sub - disc);
+  const vat = d.invoice_type === "tax" ? r2(after * ((parseFloat(d.vat_percent) || 0) / 100)) : 0;
+  return r2(after + vat);
+}
+
+// Edit a delivery note (only while no invoice has been made from it) or an
+// invoice (only while nothing has been paid on it). The parent does the
+// actual saving, because it also has to move stock and customer balances.
+function EditDocumentModal({ doc, C, salespeople, canChangeAmounts, amountsLockedReason, qtyLockedReason, onClose, onSave }) {
+  const isDN = doc.type === "dn";
+  const d = doc.data;
+  const [form, setForm] = useState(() => ({
+    customerPhone: d.customer_phone || "",
+    customerAddress: d.customer_address || "",
+    sendTo: d.send_to || "",
+    orderNo: d.order_no || "",
+    date: (isDN ? d.sale_date : d.invoice_date) || "",
+    issuedBy: d.issued_by || "",
+    saleRep: d.sale_rep || "",
+    paymentMethod: d.payment_method || "",
+    vatTin: d.vat_tin || "",
+    paymentTerm: d.payment_term || "",
+    discountPercent: String(d.discount_percent ?? 0),
+    vatPercent: String(d.vat_percent ?? 10),
+    exchangeRate: String(d.exchange_rate || 4046),
+    notes: d.notes || "",
+    ...Object.fromEntries(SKUS.flatMap((x) => [
+      [x.formQty, String(Number(d[x.qtyCol]) || 0)],
+      [x.formFree, String(Number(d[x.freeCol]) || 0)],
+      [x.formPrice, String(Number(d[x.priceCol]) || 0)],
+    ])),
+  }));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const qtyLocked = !!qtyLockedReason || !canChangeAmounts;
+  const priceLocked = !canChangeAmounts;
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const inp = { width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "9px 11px", fontSize: 13.5, background: C.bg2, color: C.text, boxSizing: "border-box" };
+  const lockedInp = { ...inp, opacity: 0.55, cursor: "not-allowed" };
+  const lbl = { display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 5, textTransform: "uppercase" };
+  const field = (label, k, type = "text", extra = {}) => (
+    <div>
+      <label style={lbl}>{label}</label>
+      <input type={type} value={form[k]} onChange={set(k)} style={inp} {...extra} />
+    </div>
+  );
+  const shownSkus = SKUS.filter((x) => (Number(d[x.qtyCol]) || 0) > 0 || (Number(d[x.freeCol]) || 0) > 0 || ["pl", "night", "day"].includes(x.code));
+
+  const preview = !isDN ? invoiceGrandTotal({
+    ...Object.fromEntries(SKUS.flatMap((x) => [[x.qtyCol, parseFloat(form[x.formQty]) || 0], [x.priceCol, parseFloat(form[x.formPrice]) || 0]])),
+    invoice_type: d.invoice_type, discount_percent: form.discountPercent, vat_percent: form.vatPercent,
+  }) : null;
+
+  async function handleSave() {
+    if (!form.date) { setError("Date is required."); return; }
+    setSaving(true); setError("");
+    const msg = await onSave(form);
+    setSaving(false);
+    if (msg) setError(msg); else onClose();
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(6,7,9,0.7)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 14, zIndex: 50 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 22, width: "100%", maxWidth: 500, maxHeight: "90vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.5)", boxSizing: "border-box" , color: C.text }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontSize: 21, margin: 0, fontWeight: 600 }}>Edit {isDN ? "delivery note" : "invoice"}</h2>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: C.textDim }}><X size={20} /></button>
+        </div>
+        <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 16 }}>
+          {isDN ? d.dn_number : d.invoice_number} · {d.customer_name}
+          <div style={{ fontSize: 11, marginTop: 3 }}>Document number and customer cannot be changed. To change them, delete and re-issue the document.</div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+          {field(isDN ? "Sale date" : "Invoice date", "date", "date")}
+          {field("Order no", "orderNo")}
+          {field("Phone", "customerPhone")}
+          {field("Send to (ផ្ញើទៅ)", "sendTo")}
+        </div>
+        <div style={{ marginBottom: 12 }}>{field("Address", "customerAddress")}</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+          {field("Issued by", "issuedBy")}
+          <div>
+            <label style={lbl}>Sales representative</label>
+            <select value={form.saleRep} onChange={set("saleRep")} style={inp}>
+              <option value="">—</option>
+              {[...new Set([...(salespeople || []), form.saleRep].filter(Boolean))].map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+          {isDN ? field("Payment method", "paymentMethod") : field("Payment term", "paymentTerm")}
+          {!isDN && d.invoice_type !== "consignment" && field("VAT TIN", "vatTin")}
+        </div>
+
+        <div style={{ fontSize: 11, fontWeight: 600, color: C.textDim, margin: "6px 0 8px", textTransform: "uppercase" }}>Products</div>
+        {(qtyLockedReason || amountsLockedReason) && (
+          <div style={{ fontSize: 11.5, color: C.goldBright, background: C.bg2, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
+            {amountsLockedReason || qtyLockedReason}
+          </div>
+        )}
+        <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr 1fr", gap: 6, fontSize: 10, color: C.textFaint, marginBottom: 4 }}>
+          <div>Product</div><div>Boxes</div><div>Free</div><div>Price $</div>
+        </div>
+        {shownSkus.map((x) => (
+          <div key={x.code} style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr 1fr", gap: 6, marginBottom: 6, alignItems: "center" }}>
+            <div style={{ fontSize: 12 }}>{x.label}</div>
+            <input type="number" min="0" value={form[x.formQty]} onChange={set(x.formQty)} disabled={qtyLocked} style={qtyLocked ? lockedInp : inp} />
+            <input type="number" min="0" value={form[x.formFree]} onChange={set(x.formFree)} disabled={qtyLocked} style={qtyLocked ? lockedInp : inp} />
+            <input type="number" min="0" step="0.01" value={form[x.formPrice]} onChange={set(x.formPrice)} disabled={priceLocked} style={priceLocked ? lockedInp : inp} />
+          </div>
+        ))}
+
+        {!isDN && (
+          <div style={{ display: "grid", gridTemplateColumns: d.invoice_type === "tax" ? "1fr 1fr 1fr" : "1fr 1fr", gap: 10, margin: "10px 0 12px" }}>
+            {field("Discount %", "discountPercent", "number", priceLocked ? { disabled: true, style: lockedInp } : {})}
+            {d.invoice_type === "tax" && field("VAT %", "vatPercent", "number", priceLocked ? { disabled: true, style: lockedInp } : {})}
+            {field("Exchange rate (៛)", "exchangeRate", "number")}
+          </div>
+        )}
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={lbl}>Notes</label>
+          <textarea value={form.notes} onChange={set("notes")} rows={2} style={{ ...inp, resize: "vertical", fontFamily: "inherit" }} />
+        </div>
+
+        {!isDN && (
+          <div style={{ fontSize: 13, marginBottom: 12, textAlign: "right" }}>
+            Total Include VAT: <b>$ {preview.toLocaleString("en-US", MONEY2)}</b>
+          </div>
+        )}
+        {error && <div style={{ background: C.roseBg, color: C.rose, padding: "9px 12px", borderRadius: 8, fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onClose} style={{ flex: 1, background: "none", border: `1px solid ${C.border}`, borderRadius: 9, padding: "11px 0", fontSize: 13.5, color: C.textDim, cursor: "pointer" }}>Cancel</button>
+          <button onClick={handleSave} disabled={saving} style={{ flex: 2, background: `linear-gradient(135deg, ${C.goldBright}, ${C.gold})`, color: "#1A1508", border: "none", borderRadius: 9, padding: "11px 0", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
+            {saving ? "Saving…" : "Save changes"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -15042,9 +15424,10 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
         : `invoice-commercial-${year}`;
       const prefix = invoiceType === "consignment" ? "CH" : invoiceType === "tax" ? "INV" : "B";
       // What the customer pays — the same sum the printed invoice shows.
-      const sub = SKUS.reduce((t, x) => t + (Number(dn[x.qtyCol]) || 0) * (parseFloat(form[x.formPrice]) || 0), 0);
-      const afterDisc = sub * (1 - (parseFloat(form.discountPercent) || 0) / 100);
-      const grand = Math.round((afterDisc + (invoiceType === "tax" ? afterDisc * ((parseFloat(form.vatPercent) || 0) / 100) : 0)) * 100) / 100;
+      const grand = invoiceGrandTotal({
+        ...Object.fromEntries(SKUS.flatMap((x) => [[x.qtyCol, Number(dn[x.qtyCol]) || 0], [x.priceCol, parseFloat(form[x.formPrice]) || 0]])),
+        invoice_type: invoiceType, discount_percent: form.discountPercent, vat_percent: form.vatPercent,
+      });
       // Once billing is switched on, Commercial and Tax invoices continue
       // BizAdvisor's B / INV numbers. Before that, the old numbering is used.
       let invoiceNumber = null;
