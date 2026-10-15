@@ -15220,10 +15220,13 @@ function SingleDocument({ d, isDN, pageBreak, catalog }) {
     .filter((p) => p.qty > 0);
 
   const subtotal = products.reduce((a, p) => a + p.qty * p.price, 0);
-  const discountAmt = isDN ? 0 : subtotal * ((Number(d.discount_percent) || 0) / 100);
-  const afterDiscount = subtotal - discountAmt;
-  const vatAmt = !isDN && d.invoice_type === "tax" ? afterDiscount * ((Number(d.vat_percent) || 0) / 100) : 0;
-  const grandTotal = afterDiscount + vatAmt;
+  // Each line is rounded to the cent before the next step, the way the
+  // printed figures read: $21.90 − $0.44 = $21.46, and 21.46 × 4,069 = ៛87,321.
+  const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+  const discountAmt = isDN ? 0 : r2(subtotal * ((Number(d.discount_percent) || 0) / 100));
+  const afterDiscount = r2(subtotal - discountAmt);
+  const vatAmt = !isDN && d.invoice_type === "tax" ? r2(afterDiscount * ((Number(d.vat_percent) || 0) / 100)) : 0;
+  const grandTotal = r2(afterDiscount + vatAmt);
   const rielTotal = !isDN ? grandTotal * (Number(d.exchange_rate) || 4046) : 0;
 
   const title = isDN ? "DELIVERY NOTE" : d.invoice_type === "tax" ? "TAX INVOICE" : d.invoice_type === "consignment" ? "CONSINGNMENT NOTE" : "COMMERCIAL INVOICE";
@@ -15392,13 +15395,13 @@ function SingleDocument({ d, isDN, pageBreak, catalog }) {
           <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 6 }}>
             <table style={{ borderCollapse: "collapse", fontSize: 11, width: 320 }}>
               <tbody>
-                <tr><td style={{ ...cell, padding: "4px 8px" }}>សរុប / Sub-Total :</td><td style={{ ...cell, padding: "4px 8px", textAlign: "right" }}>${subtotal.toLocaleString("en-US", MONEY2)}</td></tr>
-                <tr><td style={{ ...cell, padding: "4px 8px" }}>ចុះថ្លៃ / Discount ({Number(d.discount_percent || 0)}%):</td><td style={{ ...cell, padding: "4px 8px", textAlign: "right" }}>${discountAmt.toLocaleString("en-US", MONEY2)}</td></tr>
+                <tr><td style={{ ...cell, padding: "4px 8px" }}>សរុប / Sub-Total :</td><td style={{ ...cell, padding: "4px 8px", textAlign: "right" }}>$ {subtotal.toLocaleString("en-US", MONEY2)}</td></tr>
+                <tr><td style={{ ...cell, padding: "4px 8px" }}>ចុះថ្លៃ / Discount ({Number(d.discount_percent || 0)}%):</td><td style={{ ...cell, padding: "4px 8px", textAlign: "right" }}>$ {discountAmt.toLocaleString("en-US", MONEY2)}</td></tr>
                 {d.invoice_type === "tax" && (
-                  <tr><td style={{ ...cell, padding: "4px 8px" }}>VAT ({Number(d.vat_percent || 0)}%)</td><td style={{ ...cell, padding: "4px 8px", textAlign: "right" }}>${vatAmt.toLocaleString("en-US", MONEY2)}</td></tr>
+                  <tr><td style={{ ...cell, padding: "4px 8px" }}>អាករ / VAT ({Number(d.vat_percent || 0)}%):</td><td style={{ ...cell, padding: "4px 8px", textAlign: "right" }}>$ {vatAmt.toLocaleString("en-US", MONEY2)}</td></tr>
                 )}
-                <tr style={{ fontWeight: 700 }}><td style={{ ...cell, padding: "4px 8px" }}>សរុបចុងក្រោយ/ Grand Total($):</td><td style={{ ...cell, padding: "4px 8px", textAlign: "right" }}>${grandTotal.toLocaleString("en-US", MONEY2)}</td></tr>
-                <tr style={{ fontWeight: 700 }}><td style={{ ...cell, padding: "4px 8px" }}>សរុបចុងក្រោយ/ Grand Total(៛):</td><td style={{ ...cell, padding: "4px 8px", textAlign: "right" }}>៛{Math.round(rielTotal).toLocaleString()}</td></tr>
+                <tr><td style={{ ...cell, padding: "4px 8px" }}>សរុបរួមទាំងអាករ / Total Include VAT ($):</td><td style={{ ...cell, padding: "4px 8px", textAlign: "right" }}>$ {grandTotal.toLocaleString("en-US", MONEY2)}</td></tr>
+                <tr><td style={{ ...cell, padding: "4px 8px" }}>សរុបរួមទាំងអាករ / Total Include VAT (៛):</td><td style={{ ...cell, padding: "4px 8px", textAlign: "right" }}>៛ {Math.round(rielTotal).toLocaleString("en-US")}</td></tr>
               </tbody>
             </table>
           </div>
