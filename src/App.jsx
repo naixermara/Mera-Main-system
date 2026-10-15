@@ -18745,10 +18745,12 @@ function SalespersonAssignmentPage({ authUser, C, sbFetch, logActivity }) {
 // ============================================================================
 const TG_VISITS_FN = `${SUPABASE_URL}/functions/v1/tg-visits`;
 const VISIT_PURPOSES = [
-  { key: "sale", label: "Sale", icon: "🛒" },
-  { key: "collect", label: "Collect $", icon: "💵" },
-  { key: "followup", label: "Follow-up", icon: "🔁" },
+  { key: "sale", label: "Sale", km: "លក់", icon: "🛒" },
+  { key: "collect", label: "Collect $", km: "ប្រមូលលុយ", icon: "💵" },
+  { key: "followup", label: "Follow-up", km: "តាមដាន", icon: "🔁" },
 ];
+
+const TYPE_KM = { "Consignment": "ផ្ញើលក់", "Credit Term": "Credit", "Corporate": "ក្រុមហ៊ុន" };
 
 function TelegramVisitReportApp() {
   const [wa, setWa] = useState(null);
@@ -18766,7 +18768,7 @@ function TelegramVisitReportApp() {
   useEffect(() => {
     const go = () => {
       const w = window.Telegram?.WebApp;
-      if (!w || !w.initData) { setState({ phase: "error", msg: "Please open this report from the Méra Telegram bot." }); return; }
+      if (!w || !w.initData) { setState({ phase: "error", msg: "សូមបើករបាយការណ៍នេះតាមរយៈ bot Méra ក្នុង Telegram។" }); return; }
       w.ready(); w.expand();
       setWa(w);
     };
@@ -18774,14 +18776,14 @@ function TelegramVisitReportApp() {
     const sc = document.createElement("script");
     sc.src = "https://telegram.org/js/telegram-web-app.js";
     sc.onload = go;
-    sc.onerror = () => setState({ phase: "error", msg: "Couldn't load Telegram. Check your connection and reopen." });
+    sc.onerror = () => setState({ phase: "error", msg: "មិនអាចភ្ជាប់ Telegram បាន។ សូមពិនិត្យអ៊ីនធឺណិត ហើយបើកម្តងទៀត។" });
     document.head.appendChild(sc);
   }, []);
 
   async function call(action, extra = {}) {
     const r = await fetch(TG_VISITS_FN, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, initData: wa.initData, ...extra }) });
-    const j = await r.json().catch(() => ({ error: "Server error — try again." }));
-    if (!r.ok || j.error) throw new Error(j.error || "Server error — try again.");
+    const j = await r.json().catch(() => ({ error: "មានបញ្ហា — សូមព្យាយាមម្តងទៀត។" }));
+    if (!r.ok || j.error) throw new Error(j.error || "មានបញ្ហា — សូមព្យាយាមម្តងទៀត។");
     return j;
   }
 
@@ -18806,7 +18808,7 @@ function TelegramVisitReportApp() {
   useEffect(() => { if (wa) load(); }, [wa]);
 
   async function link(name) {
-    if (!window.confirm(`Link this Telegram account to ${name}? You can't change it yourself later.`)) return;
+    if (!window.confirm(`ភ្ជាប់គណនី Telegram នេះជាមួយ ${name}? អ្នកមិនអាចប្តូរដោយខ្លួនឯងបានទេ។`)) return;
     setBusy(true); setErr("");
     try { await call("link", { salesperson: name }); await load(); } catch (e) { setErr(e.message); }
     setBusy(false);
@@ -18814,9 +18816,9 @@ function TelegramVisitReportApp() {
 
   async function submit() {
     const visits = Object.values(picked);
-    if (!visits.length) { setErr("Tick at least one store."); return; }
+    if (!visits.length) { setErr("សូមជ្រើសរើសហាងយ៉ាងហោចណាស់មួយ។"); return; }
     const missingAmt = visits.find((v) => v.purposes.includes("collect") && !(parseFloat(v.amount) > 0));
-    if (missingAmt) { setErr(`Enter the amount collected at ${missingAmt.name}.`); return; }
+    if (missingAmt) { setErr(`សូមបញ្ចូលចំនួនលុយដែលប្រមូលបាននៅ ${missingAmt.name}។`); return; }
     setBusy(true); setErr("");
     try {
       const r = await call("submit", { visits: visits.map((v) => ({ ...v, amount: parseFloat(v.amount) || 0 })), note });
@@ -18838,22 +18840,22 @@ function TelegramVisitReportApp() {
   };
   const page = { minHeight: "100vh", background: T.bg, color: T.text, fontFamily: "-apple-system, system-ui, 'Segoe UI', Roboto, 'Battambang', sans-serif", fontSize: 15, padding: "14px 14px 120px", boxSizing: "border-box" };
 
-  if (state.phase === "loading") return <div style={{ ...page, display: "flex", alignItems: "center", justifyContent: "center", color: T.hint }}>Loading…</div>;
-  if (state.phase === "error") return <div style={{ ...page, padding: 24, textAlign: "center" }}><div style={{ fontSize: 40, marginBottom: 10 }}>⚠️</div>{state.msg}{wa && <div><button onClick={load} style={{ marginTop: 18, background: T.accent, color: T.accentText, border: "none", borderRadius: 10, padding: "11px 20px", fontSize: 15, fontWeight: 600 }}>Try again</button></div>}</div>;
+  if (state.phase === "loading") return <div style={{ ...page, display: "flex", alignItems: "center", justifyContent: "center", color: T.hint }}>កំពុងផ្ទុក…</div>;
+  if (state.phase === "error") return <div style={{ ...page, padding: 24, textAlign: "center" }}><div style={{ fontSize: 40, marginBottom: 10 }}>⚠️</div>{state.msg}{wa && <div><button onClick={load} style={{ marginTop: 18, background: T.accent, color: T.accentText, border: "none", borderRadius: 10, padding: "11px 20px", fontSize: 15, fontWeight: 600 }}>ព្យាយាមម្តងទៀត</button></div>}</div>;
   if (state.phase === "sent") return (
     <div style={{ ...page, padding: 28, textAlign: "center" }}>
       <div style={{ fontSize: 54, marginBottom: 8 }}>✅</div>
-      <div style={{ fontSize: 19, fontWeight: 700, marginBottom: 6 }}>Report sent</div>
-      <div style={{ color: T.hint, marginBottom: 22 }}>{state.count} store{state.count === 1 ? "" : "s"} saved{state.posted ? " and posted to the group" : ""}.</div>
-      <button onClick={() => wa?.close()} style={{ background: T.accent, color: T.accentText, border: "none", borderRadius: 12, padding: "13px 28px", fontSize: 16, fontWeight: 600 }}>Close</button>
-      <div><button onClick={() => setState({ phase: "form" })} style={{ marginTop: 14, background: "none", border: "none", color: T.accent, fontSize: 14 }}>Edit report</button></div>
+      <div style={{ fontSize: 19, fontWeight: 700, marginBottom: 6 }}>បានផ្ញើរបាយការណ៍ ✓</div>
+      <div style={{ color: T.hint, marginBottom: 22 }}>បានរក្សាទុក {state.count} ហាង{state.posted ? " និងបានផ្ញើទៅក្រុម" : ""}។</div>
+      <button onClick={() => wa?.close()} style={{ background: T.accent, color: T.accentText, border: "none", borderRadius: 12, padding: "13px 28px", fontSize: 16, fontWeight: 600 }}>បិទ</button>
+      <div><button onClick={() => setState({ phase: "form" })} style={{ marginTop: 14, background: "none", border: "none", color: T.accent, fontSize: 14 }}>កែរបាយការណ៍</button></div>
     </div>
   );
 
   if (state.phase === "link") return (
     <div style={page}>
-      <div style={{ fontSize: 19, fontWeight: 700, margin: "6px 0 4px" }}>Who are you?</div>
-      <div style={{ color: T.hint, fontSize: 13.5, marginBottom: 16 }}>Choose your name once. Your reports will be saved under this name.</div>
+      <div style={{ fontSize: 19, fontWeight: 700, margin: "6px 0 4px" }}>តើអ្នកជានរណា?</div>
+      <div style={{ color: T.hint, fontSize: 13.5, marginBottom: 16 }}>សូមជ្រើសរើសឈ្មោះរបស់អ្នក (ម្តងគត់)។ របាយការណ៍របស់អ្នកនឹងរក្សាទុកក្រោមឈ្មោះនេះ។</div>
       {err && <div style={{ background: "rgba(229,57,53,0.12)", color: "#e53935", borderRadius: 10, padding: "10px 12px", fontSize: 14, marginBottom: 12 }}>{err}</div>}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {(boot?.names || []).map((n) => (
@@ -18908,62 +18910,62 @@ function TelegramVisitReportApp() {
         {v && (
           <div style={{ marginTop: 10, paddingLeft: 33 }}>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {VISIT_PURPOSES.map((p) => <button key={p.key} onClick={() => togglePurpose(k, p.key)} style={chip(v.purposes.includes(p.key))}>{p.icon} {p.label}</button>)}
+              {VISIT_PURPOSES.map((p) => <button key={p.key} onClick={() => togglePurpose(k, p.key)} style={chip(v.purposes.includes(p.key))}>{p.icon} {p.km}</button>)}
             </div>
             {v.purposes.includes("collect") && (
-              <input type="number" inputMode="decimal" step="0.01" min="0" placeholder="Amount collected $" value={v.amount} onChange={(e) => setP(k, { amount: e.target.value })} style={{ ...input, marginTop: 8 }} />
+              <input type="number" inputMode="decimal" step="0.01" min="0" placeholder="ចំនួនលុយប្រមូលបាន ($)" value={v.amount} onChange={(e) => setP(k, { amount: e.target.value })} style={{ ...input, marginTop: 8 }} />
             )}
-            <input placeholder="Note (optional)" value={v.note} onChange={(e) => setP(k, { note: e.target.value })} style={{ ...input, marginTop: 8, fontSize: 14 }} />
+            <input placeholder="កំណត់ចំណាំ (មិនចាំបាច់)" value={v.note} onChange={(e) => setP(k, { note: e.target.value })} style={{ ...input, marginTop: 8, fontSize: 14 }} />
           </div>
         )}
       </div>
     );
   };
 
-  const d = new Date(boot.date + "T00:00:00").toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" });
+  const d = (() => { const DAYS = ["អាទិត្យ", "ច័ន្ទ", "អង្គារ", "ពុធ", "ព្រហស្បតិ៍", "សុក្រ", "សៅរ៍"]; const MON = ["មករា", "កុម្ភៈ", "មីនា", "មេសា", "ឧសភា", "មិថុនា", "កក្កដា", "សីហា", "កញ្ញា", "តុលា", "វិច្ឆិកា", "ធ្នូ"]; const t = new Date(boot.date + "T00:00:00Z"); return `ថ្ងៃ${DAYS[t.getUTCDay()]} ទី${t.getUTCDate()} ${MON[t.getUTCMonth()]}`; })();
   const nSale = pickedList.filter(([, v]) => v.purposes.includes("sale")).length;
   const nColl = pickedList.filter(([, v]) => v.purposes.includes("collect")).length;
   const collTotal = pickedList.reduce((a, [, v]) => a + (v.purposes.includes("collect") ? parseFloat(v.amount) || 0 : 0), 0);
 
   return (
     <div style={page}>
-      <div style={{ fontSize: 19, fontWeight: 700, marginTop: 2 }}>Daily visit report</div>
+      <div style={{ fontSize: 19, fontWeight: 700, marginTop: 2 }}>របាយការណ៍ចុះហាងប្រចាំថ្ងៃ</div>
       <div style={{ color: T.hint, fontSize: 13.5, marginBottom: 12 }}>{me} · {d}</div>
-      {boot.today && <div style={{ background: T.bg2, borderRadius: 10, padding: "9px 12px", fontSize: 13, marginBottom: 12 }}>You already sent today's report. Sending again replaces it.</div>}
+      {boot.today && <div style={{ background: T.bg2, borderRadius: 10, padding: "9px 12px", fontSize: 13, marginBottom: 12 }}>អ្នកបានផ្ញើរបាយការណ៍ថ្ងៃនេះរួចហើយ។ ការផ្ញើម្តងទៀតនឹងជំនួសរបាយការណ៍ចាស់។</div>}
 
-      <input placeholder="🔍 Search store…" value={q} onChange={(e) => setQ(e.target.value)} style={{ ...input, background: T.bg2, marginBottom: 12 }} />
+      <input placeholder="🔍 ស្វែងរកហាង…" value={q} onChange={(e) => setQ(e.target.value)} style={{ ...input, background: T.bg2, marginBottom: 12 }} />
 
-      <div style={{ fontSize: 12, fontWeight: 700, color: T.hint, textTransform: "uppercase", letterSpacing: "0.05em", margin: "4px 0 8px" }}>My stores ({mine.length})</div>
+      <div style={{ fontSize: 12, fontWeight: 700, color: T.hint, textTransform: "uppercase", letterSpacing: "0.05em", margin: "4px 0 8px" }}>ហាងរបស់ខ្ញុំ ({mine.length})</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 7, marginBottom: 16 }}>
-        {mine.length === 0 && <div style={{ color: T.hint, fontSize: 13.5 }}>{ql ? "No match." : "No stores assigned to you yet — search below."}</div>}
-        {mine.map((s) => row(keyOf(s), s, s.type))}
+        {mine.length === 0 && <div style={{ color: T.hint, fontSize: 13.5 }}>{ql ? "រកមិនឃើញ។" : "មិនទាន់មានហាងកំណត់ឲ្យអ្នកនៅឡើយ — សូមស្វែងរកខាងក្រោម។"}</div>}
+        {mine.map((s) => row(keyOf(s), s, TYPE_KM[s.type] || s.type))}
       </div>
 
-      <div style={{ fontSize: 12, fontWeight: 700, color: T.hint, textTransform: "uppercase", letterSpacing: "0.05em", margin: "4px 0 8px" }}>Other stores</div>
-      {!ql && !showAll && <button onClick={() => setShowAll(true)} style={{ background: "none", border: "none", color: T.accent, fontSize: 14, padding: 0, marginBottom: 12 }}>Show all {others.length} stores</button>}
+      <div style={{ fontSize: 12, fontWeight: 700, color: T.hint, textTransform: "uppercase", letterSpacing: "0.05em", margin: "4px 0 8px" }}>ហាងផ្សេងទៀត</div>
+      {!ql && !showAll && <button onClick={() => setShowAll(true)} style={{ background: "none", border: "none", color: T.accent, fontSize: 14, padding: 0, marginBottom: 12 }}>បង្ហាញហាងទាំងអស់ ({others.length})</button>}
       <div style={{ display: "flex", flexDirection: "column", gap: 7, marginBottom: 16 }}>
-        {shownOthers.map((s) => row(keyOf(s), s, `${s.type}${s.rep ? ` · ${s.rep}` : ""}`))}
-        {(ql || showAll) && shownOthers.length === 0 && <div style={{ color: T.hint, fontSize: 13.5 }}>No match.</div>}
+        {shownOthers.map((s) => row(keyOf(s), s, `${TYPE_KM[s.type] || s.type}${s.rep ? ` · ${s.rep}` : ""}`))}
+        {(ql || showAll) && shownOthers.length === 0 && <div style={{ color: T.hint, fontSize: 13.5 }}>រកមិនឃើញ។</div>}
       </div>
 
-      <div style={{ fontSize: 12, fontWeight: 700, color: T.hint, textTransform: "uppercase", letterSpacing: "0.05em", margin: "4px 0 8px" }}>New store not in the list</div>
+      <div style={{ fontSize: 12, fontWeight: 700, color: T.hint, textTransform: "uppercase", letterSpacing: "0.05em", margin: "4px 0 8px" }}>ហាងថ្មី (មិនមានក្នុងបញ្ជី)</div>
       <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-        <input placeholder="Store name" value={extraName} onChange={(e) => setExtraName(e.target.value)} style={{ ...input, background: T.bg2 }} />
-        <button onClick={addExtra} style={{ background: T.accent, color: T.accentText, border: "none", borderRadius: 9, padding: "0 16px", fontSize: 15, fontWeight: 600 }}>Add</button>
+        <input placeholder="ឈ្មោះហាង" value={extraName} onChange={(e) => setExtraName(e.target.value)} style={{ ...input, background: T.bg2 }} />
+        <button onClick={addExtra} style={{ background: T.accent, color: T.accentText, border: "none", borderRadius: 9, padding: "0 16px", fontSize: 15, fontWeight: 600 }}>បន្ថែម</button>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 7, marginBottom: 16 }}>
-        {extras.map(([k]) => row(k, null, "New store"))}
+        {extras.map(([k]) => row(k, null, "ហាងថ្មី"))}
       </div>
 
-      <textarea placeholder="Note for today (optional)" value={note} onChange={(e) => setNote(e.target.value)} rows={2} style={{ ...input, background: T.bg2, fontFamily: "inherit", resize: "vertical" }} />
+      <textarea placeholder="កំណត់ចំណាំសម្រាប់ថ្ងៃនេះ (មិនចាំបាច់)" value={note} onChange={(e) => setNote(e.target.value)} rows={2} style={{ ...input, background: T.bg2, fontFamily: "inherit", resize: "vertical" }} />
 
       <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, background: T.bg, borderTop: `1px solid ${T.border}`, padding: "10px 14px calc(10px + env(safe-area-inset-bottom))" }}>
         {err && <div style={{ color: "#e53935", fontSize: 13.5, marginBottom: 8 }}>{err}</div>}
         <div style={{ fontSize: 12.5, color: T.hint, marginBottom: 7 }}>
-          {pickedList.length} store{pickedList.length === 1 ? "" : "s"} · 🛒 {nSale} · 💵 {nColl}{collTotal > 0 ? ` ($${collTotal.toLocaleString("en-US", MONEY2)})` : ""}
+          {pickedList.length} ហាង · 🛒 {nSale} · 💵 {nColl}{collTotal > 0 ? ` ($${collTotal.toLocaleString("en-US", MONEY2)})` : ""}
         </div>
         <button onClick={submit} disabled={busy || !pickedList.length} style={{ width: "100%", background: T.accent, color: T.accentText, border: "none", borderRadius: 12, padding: "14px 0", fontSize: 16, fontWeight: 700, opacity: busy || !pickedList.length ? 0.55 : 1 }}>
-          {busy ? "Sending…" : boot.today ? "Send updated report" : "Send report"}
+          {busy ? "កំពុងផ្ញើ…" : boot.today ? "ផ្ញើរបាយការណ៍ថ្មី" : "ផ្ញើរបាយការណ៍"}
         </button>
       </div>
     </div>
