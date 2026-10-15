@@ -575,7 +575,14 @@ function BackupModal({ C, sbFetch, authUser, onClose }) {
   );
 }
 
-export default function MeraConsignmentApp() {
+// The Telegram mini app (salespeople's daily visit report) opens this same
+// site with ?tg=report — it shows only the report form, no login.
+export default function AppRoot() {
+  const isTgReport = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("tg") === "report";
+  return isTgReport ? <TelegramVisitReportApp /> : <MeraConsignmentApp />;
+}
+
+function MeraConsignmentApp() {
   useEffect(() => {
     if (document.getElementById("battambang-font-link")) return;
     const preconnect1 = document.createElement("link");
@@ -618,7 +625,7 @@ export default function MeraConsignmentApp() {
   const [navMobile, setNavMobile] = useState(false);
   const [consignmentSubView, setConsignmentSubView] = useState(() => loadSavedNav()?.consignmentSubView || "regular");
   // One title for both the page header and the browser tab.
-  const pageTitle = page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : childTab === "invoices" ? "Invoices" : childTab === "notes" ? "Delivery Notes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "salesbyperson" ? "Sales by Person" : page === "assignreps" ? "Salesperson Assignment" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "close" ? "Month Close" : page === "stockplan" ? "Stock Forecast" : page === "cashflow" ? "Cash Forecast" : page === "expenses" ? (childTab === "approve" ? "Expense Register" : "Expenses") : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Term" : salesSubPage === "online" ? "Online & COD" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : (consignmentSubView === "bigco" ? "Corporate Accounts" : "Consignment")) : "Operations";
+  const pageTitle = page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : childTab === "invoices" ? "Invoices" : childTab === "notes" ? "Delivery Notes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "salesbyperson" ? "Sales by Person" : page === "fieldvisits" ? "Field Visits" : page === "assignreps" ? "Salesperson Assignment" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "close" ? "Month Close" : page === "stockplan" ? "Stock Forecast" : page === "cashflow" ? "Cash Forecast" : page === "expenses" ? (childTab === "approve" ? "Expense Register" : "Expenses") : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Term" : salesSubPage === "online" ? "Online & COD" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "cash" ? "Cash Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : (consignmentSubView === "bigco" ? "Corporate Accounts" : "Consignment")) : "Operations";
   useEffect(() => { document.title = `Mèra — ${pageTitle}`; }, [pageTitle]);
 
   // Remembers which page/tab was open, purely so a browser refresh lands
@@ -1567,7 +1574,7 @@ export default function MeraConsignmentApp() {
         mobileOpen={navMobile}
         onCloseMobile={() => setNavMobile(false)}
         pendingCount={PENDING_PAYMENTS_ENABLED ? pendingPaymentCount : 0}
-        badges={{ "Pending Payments": PENDING_PAYMENTS_ENABLED ? pendingPaymentCount : 0, "Corporate Accounts": corpPaymentDueCount, "Payments received": newPaymentCount }}
+        badges={{ "Pending Payments": PENDING_PAYMENTS_ENABLED ? pendingPaymentCount : 0, "Corporate Accounts": corpPaymentDueCount, "Payments Received": newPaymentCount }}
       />
 
       <div className="mera-shell" style={{ maxWidth: 920, margin: "0 auto", padding: "40px 20px 0" }}>
@@ -1687,6 +1694,10 @@ export default function MeraConsignmentApp() {
             : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to profit figures.</div>
         ) : page === "assignreps" ? (
           <SalespersonAssignmentPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
+        ) : page === "fieldvisits" ? (
+          canSeePayroll
+            ? <FieldVisitsPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
+            : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to field visits.</div>
         ) : page === "salesbyperson" ? (
           canSeePayroll
             ? <SalesByPersonPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
@@ -1711,7 +1722,7 @@ export default function MeraConsignmentApp() {
             : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to payroll.</div>
         ) : page === "sales" ? (
           <>
-            <div className="mera-subtabs" style={{ display: "flex", gap: 6, marginBottom: 18, marginTop: 4, flexWrap: "wrap" }}>
+            {!["payments", "cash", "owed", "pending", "coverage"].includes(salesSubPage) && <div className="mera-subtabs" style={{ display: "flex", gap: 6, marginBottom: 18, marginTop: 4, flexWrap: "wrap" }}>
               <button
                 onClick={() => setSalesSubPage("total")}
                 style={{
@@ -1763,26 +1774,6 @@ export default function MeraConsignmentApp() {
                 Online &amp; COD
               </button>
               <button
-                onClick={() => setSalesSubPage("payments")}
-                style={{
-                  background: "none", border: "none", padding: "6px 2px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginLeft: 14,
-                  color: salesSubPage === "payments" ? C.gold : C.textFaint,
-                  borderBottom: `2px solid ${salesSubPage === "payments" ? C.gold : "transparent"}`,
-                }}
-              >
-                Payments{newPaymentCount > 0 ? ` (${newPaymentCount})` : ""}
-              </button>
-              <button
-                onClick={() => setSalesSubPage("owed")}
-                style={{
-                  background: "none", border: "none", padding: "6px 2px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginLeft: 14,
-                  color: salesSubPage === "owed" ? C.gold : C.textFaint,
-                  borderBottom: `2px solid ${salesSubPage === "owed" ? C.gold : "transparent"}`,
-                }}
-              >
-                Receivables
-              </button>
-              <button
                 onClick={() => setSalesSubPage("retention")}
                 style={{
                   background: "none", border: "none", padding: "6px 2px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginLeft: 14,
@@ -1792,27 +1783,7 @@ export default function MeraConsignmentApp() {
               >
                 Retention
               </button>
-              {PENDING_PAYMENTS_ENABLED && <button
-                onClick={() => setSalesSubPage("pending")}
-                style={{
-                  background: "none", border: "none", padding: "6px 2px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginLeft: 14,
-                  color: salesSubPage === "pending" ? C.gold : C.textFaint,
-                  borderBottom: `2px solid ${salesSubPage === "pending" ? C.gold : "transparent"}`,
-                }}
-              >
-                Pending Payments
-              </button>}
-              <button
-                onClick={() => setSalesSubPage("coverage")}
-                style={{
-                  background: "none", border: "none", padding: "6px 2px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginLeft: 14,
-                  color: salesSubPage === "coverage" ? C.gold : C.textFaint,
-                  borderBottom: `2px solid ${salesSubPage === "coverage" ? C.gold : "transparent"}`,
-                }}
-              >
-                Province Coverage
-              </button>
-            </div>
+            </div>}
             {salesSubPage === "total" ? (
               <SalesTotalPage
                 authUser={authUser}
@@ -1831,7 +1802,9 @@ export default function MeraConsignmentApp() {
             ) : salesSubPage === "online" ? (
               <OnlineSalesPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             ) : salesSubPage === "payments" ? (
-              <PaymentsReceivedPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} onSeen={() => setNewPaymentCount(0)} />
+              <PaymentsReceivedPage key="bank" authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} onSeen={() => setNewPaymentCount(0)} />
+            ) : salesSubPage === "cash" ? (
+              <PaymentsReceivedPage key="cash" mode="cash" authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             ) : salesSubPage === "retention" ? (
               <CustomerRetentionPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             ) : salesSubPage === "owed" ? (
@@ -5916,7 +5889,8 @@ function ApplyPaymentPanel({ r, h, ctx, C, sbFetch, authUser, logActivity, onDon
   );
 }
 
-function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
+function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen, mode = "bank" }) {
+  const cashMode = mode === "cash";
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState([]);
   const [links, setLinks] = useState([]);
@@ -5926,7 +5900,7 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
   const [tagging, setTagging] = useState(null); // { payer, customer, channel }
   const [ask, setAsk] = useState({}); // payer key -> typed name, for the inline "Who is …?" question
   const [applying, setApplying] = useState(null); // payment id being applied to bills
-  const [cash, setCash] = useState(null); // "+ Cash received" form
+  const [cash, setCash] = useState(() => (mode === "cash" ? { customer: "", amount: "", date: todayStr(), from: "", ref: "" } : null)); // cash form (Cash Received tab only)
   const [error, setError] = useState("");
   const [lastSeen] = useState(() => { try { return Number(localStorage.getItem(PR_LAST_SEEN_KEY) || 0); } catch (e) { return 0; } });
 
@@ -6046,7 +6020,7 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
         raw_message: `Cash $${amt.toFixed(2)} received at the office from ${cash.from?.trim() || "—"} for ${cash.customer.trim()}${cash.ref?.trim() ? ` (${cash.ref.trim()})` : ""}`,
       }) });
       logActivity?.("Cash received", cash.customer.trim(), `$${amt.toFixed(2)}${cash.from ? ` from ${cash.from}` : ""}`);
-      setCash(null);
+      setCash({ customer: "", amount: "", date: todayStr(), from: "", ref: "" });
       await reload();
       if (ins?.id) setApplying(ins.id);
     } catch (e) { setError("Couldn't save the cash payment: " + e.message); }
@@ -6054,14 +6028,17 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
 
   if (loading) return <div style={{ padding: 40, color: C.textFaint }}>Loading…</div>;
 
-  const months = Array.from(new Set([currentMonthKey(), ...rows.map((r) => String(r.paid_at || "").slice(0, 7))])).filter(Boolean).sort().reverse();
-  const inMonth = rows.filter((r) => String(r.paid_at || "").slice(0, 7) === month && r.status !== "ignored");
+  // Payments Received = bank (ABA) payments; Cash Received = cash brought to the office.
+  const isCashRow = (r) => String(r.channel || "").toLowerCase() === "cash";
+  const rowsM = rows.filter((r) => (cashMode ? isCashRow(r) : !isCashRow(r)));
+  const months = Array.from(new Set([currentMonthKey(), ...rowsM.map((r) => String(r.paid_at || "").slice(0, 7))])).filter(Boolean).sort().reverse();
+  const inMonth = rowsM.filter((r) => String(r.paid_at || "").slice(0, 7) === month && r.status !== "ignored");
   const withHints = inMonth.map((r) => ({ r, h: hintFor(r) }));
   const toApply = withHints.filter((x) => x.r.status === "pending");
   const shown = filter === "unknown" ? withHints.filter((x) => !x.h) : filter === "apply" ? toApply : withHints;
   const total = inMonth.reduce((a, r) => a + Number(r.amount || 0), 0);
   const today = todayStr();
-  const todayRows = rows.filter((r) => new Date(r.paid_at).toLocaleDateString("en-CA") === today);
+  const todayRows = rowsM.filter((r) => new Date(r.paid_at).toLocaleDateString("en-CA") === today);
   const todayTotal = todayRows.reduce((a, r) => a + Number(r.amount || 0), 0);
   const unknownCount = withHints.filter((x) => !x.h).length;
   const fm = (n) => `$${Number(n || 0).toLocaleString("en-US", MONEY2)}`;
@@ -6083,7 +6060,9 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
   return (
     <div>
       <div style={{ marginBottom: 14 }}>
-        <div style={{ fontSize: 12, color: C.textFaint }}>Every payment received — ABA (from the Telegram feed) and cash brought to the office. Press <b>Apply</b> to put a payment on the customer's bill; the app suggests the customer and the bill.</div>
+        <div style={{ fontSize: 12, color: C.textFaint }}>{cashMode
+          ? <>Cash handed in at the office. Record it here, then put it on the customer's bill. Only office staff record money — salespeople's Telegram reports are not payments.</>
+          : <>ABA payments from the Telegram feed. Press <b>Apply</b> to put a payment on the customer's bill; the app suggests the customer and the bill. Cash is recorded under Office → Cash Received.</>}</div>
       </div>
 
       {error && <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, color: C.amber, borderRadius: 9, padding: "10px 14px", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
@@ -6092,10 +6071,10 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
         {tile("Today", fm(todayTotal), `${todayRows.length} payment${todayRows.length === 1 ? "" : "s"}`)}
         {tile(monthLabel(month), fm(total), `${inMonth.length} payment${inMonth.length === 1 ? "" : "s"}`)}
         {tile("To apply", String(toApply.length), toApply.length ? fm(toApply.reduce((a, x) => a + Number(x.r.amount || 0), 0)) + " not yet on a bill" : "Every payment is on a bill")}
-        {tile("Unidentified payers", String(unknownCount), unknownCount ? "Identify once — remembered thereafter" : "All payers identified")}
+        {!cashMode && tile("Unidentified payers", String(unknownCount), unknownCount ? "Identify once — remembered thereafter" : "All payers identified")}
       </div>
 
-      {cash ? (
+      {cashMode && cash && (
         <div style={{ background: C.surface, border: `1px solid ${C.gold}`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
           <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>Cash received at the office</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -6107,19 +6086,16 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen }) {
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
             <button type="button" onClick={saveCash} style={{ background: C.gold, border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>Save and apply to bill</button>
-            <button type="button" onClick={() => setCash(null)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
+            <button type="button" onClick={() => setCash({ customer: "", amount: "", date: todayStr(), from: "", ref: "" })} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, cursor: "pointer" }}>Clear</button>
           </div>
         </div>
-      ) : (
-        <button type="button" onClick={() => setCash({ customer: "", amount: "", date: todayStr(), from: "", ref: "" })}
-          style={{ background: "none", border: `1px solid ${C.gold}`, color: C.goldBright, borderRadius: 8, padding: "7px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", marginBottom: 14 }}>+ Cash received</button>
       )}
 
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
         <select value={month} onChange={(e) => setMonth(e.target.value)} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "7px 10px", fontSize: 13 }}>
           {months.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
         </select>
-        {[["all", "All"], ["apply", `To apply (${toApply.length})`], ["unknown", `Unidentified (${unknownCount})`]].map(([k, l]) => (
+        {[["all", "All"], ["apply", `To apply (${toApply.length})`], ...(cashMode ? [] : [["unknown", `Unidentified (${unknownCount})`]])].map(([k, l]) => (
           <button key={k} type="button" onClick={() => setFilter(k)} style={{ padding: "7px 12px", fontSize: 12, fontWeight: 700, borderRadius: 8, cursor: "pointer", background: filter === k ? C.gold : "none", color: filter === k ? "#1A1508" : C.textDim, border: `1px solid ${filter === k ? C.gold : C.border}` }}>{l}</button>
         ))}
       </div>
@@ -8018,13 +7994,8 @@ const NAV = [
     { label: "Corporate Accounts", page: "sales", sub: "consignment", view: "bigco" },
     { label: "Credit Term",        page: "sales", sub: "credit" },
     { label: "Online & COD",       page: "sales", sub: "online" },
-    { label: "Payments Received",  page: "sales", sub: "payments" },
-    { label: "Accounts Receivable",         page: "sales", sub: "owed" },
     { label: "Customer Retention",          page: "sales", sub: "retention" },
-    ...(PENDING_PAYMENTS_ENABLED ? [{ label: "Pending Payments",   page: "sales", sub: "pending" }] : []),
-    { label: "Province Coverage",  page: "sales", sub: "coverage" },
     { label: "Store Directory",             page: "stores" },
-    { label: "Salesperson Assignment",      page: "assignreps" },
   ]},
   { name: "Warehouse", items: [
     { label: "Stock on Hand",       page: "delivery", tab: "stock" },
@@ -8036,8 +8007,16 @@ const NAV = [
     { label: "Invoices",       page: "delivery", tab: "invoices" },
     { label: "Bill Register",   page: "bills" },
   ]},
+  // Office — back-office work: money in, what customers owe, expenses and
+  // who looks after which store. Salespeople only report; the office records money.
   { name: "Office", items: [
-    { label: "Expenses", page: "expenses" },
+    { label: "Payments Received",      page: "sales", sub: "payments" },
+    { label: "Cash Received",          page: "sales", sub: "cash" },
+    { label: "Accounts Receivable",    page: "sales", sub: "owed" },
+    ...(PENDING_PAYMENTS_ENABLED ? [{ label: "Pending Payments", page: "sales", sub: "pending" }] : []),
+    { label: "Expenses",               page: "expenses" },
+    { label: "Salesperson Assignment", page: "assignreps" },
+    { label: "Province Coverage",      page: "sales", sub: "coverage" },
   ]},
   { name: "Accounting", needs: "accounting", items: [
     { label: "Post Entry",          page: "accounting", tab: "post" },
@@ -8056,6 +8035,7 @@ const NAV = [
   { name: "Executive Office", needs: "payroll", items: [
     { label: "Profit & Margin", page: "profit" },
     { label: "Sales by Person", page: "salesbyperson" },
+    { label: "Field Visits",    page: "fieldvisits" },
     { label: "Sales Report",    page: "sales", sub: "report", needs: "owner" },
     { label: "Expense Register", page: "expenses", tab: "approve" },
     { label: "KOL & Content",   page: "kol" },
@@ -18744,6 +18724,510 @@ function SalespersonAssignmentPage({ authUser, C, sbFetch, logActivity }) {
             </>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// TELEGRAM MINI APP — salesperson's end-of-day store visit report.
+// Opened inside Telegram from the visit bot. Talks only to the tg-visits
+// edge function, which checks Telegram's signature on every request.
+// ============================================================================
+const TG_VISITS_FN = `${SUPABASE_URL}/functions/v1/tg-visits`;
+const VISIT_PURPOSES = [
+  { key: "sale", label: "Sale", icon: "🛒" },
+  { key: "collect", label: "Collect $", icon: "💵" },
+  { key: "followup", label: "Follow-up", icon: "🔁" },
+];
+
+function TelegramVisitReportApp() {
+  const [wa, setWa] = useState(null);
+  const [state, setState] = useState({ phase: "loading" }); // loading | error | link | form | sent
+  const [boot, setBoot] = useState(null);
+  const [picked, setPicked] = useState({}); // key -> { table,id,name,purposes,amount,note }
+  const [q, setQ] = useState("");
+  const [showAll, setShowAll] = useState(false);
+  const [extraName, setExtraName] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  // Load Telegram's WebApp script, then start.
+  useEffect(() => {
+    const go = () => {
+      const w = window.Telegram?.WebApp;
+      if (!w || !w.initData) { setState({ phase: "error", msg: "Please open this report from the Méra Telegram bot." }); return; }
+      w.ready(); w.expand();
+      setWa(w);
+    };
+    if (window.Telegram?.WebApp) { go(); return; }
+    const sc = document.createElement("script");
+    sc.src = "https://telegram.org/js/telegram-web-app.js";
+    sc.onload = go;
+    sc.onerror = () => setState({ phase: "error", msg: "Couldn't load Telegram. Check your connection and reopen." });
+    document.head.appendChild(sc);
+  }, []);
+
+  async function call(action, extra = {}) {
+    const r = await fetch(TG_VISITS_FN, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, initData: wa.initData, ...extra }) });
+    const j = await r.json().catch(() => ({ error: "Server error — try again." }));
+    if (!r.ok || j.error) throw new Error(j.error || "Server error — try again.");
+    return j;
+  }
+
+  async function load() {
+    setState({ phase: "loading" });
+    try {
+      const b = await call("bootstrap");
+      setBoot(b);
+      if (!b.me) { setState({ phase: "link" }); return; }
+      if (b.today?.visits?.length) {
+        const pre = {};
+        b.today.visits.forEach((v) => {
+          const key = v.store_table ? `${v.store_table}:${v.store_id}` : `extra:${v.store_name}`;
+          pre[key] = { table: v.store_table, id: v.store_id, name: v.store_name, purposes: v.purposes || [], amount: v.amount_collected ? String(v.amount_collected) : "", note: v.note || "" };
+        });
+        setPicked(pre);
+        setNote(b.today.note || "");
+      }
+      setState({ phase: "form" });
+    } catch (e) { setState({ phase: "error", msg: e.message }); }
+  }
+  useEffect(() => { if (wa) load(); }, [wa]);
+
+  async function link(name) {
+    if (!window.confirm(`Link this Telegram account to ${name}? You can't change it yourself later.`)) return;
+    setBusy(true); setErr("");
+    try { await call("link", { salesperson: name }); await load(); } catch (e) { setErr(e.message); }
+    setBusy(false);
+  }
+
+  async function submit() {
+    const visits = Object.values(picked);
+    if (!visits.length) { setErr("Tick at least one store."); return; }
+    const missingAmt = visits.find((v) => v.purposes.includes("collect") && !(parseFloat(v.amount) > 0));
+    if (missingAmt) { setErr(`Enter the amount collected at ${missingAmt.name}.`); return; }
+    setBusy(true); setErr("");
+    try {
+      const r = await call("submit", { visits: visits.map((v) => ({ ...v, amount: parseFloat(v.amount) || 0 })), note });
+      wa?.HapticFeedback?.notificationOccurred?.("success");
+      setState({ phase: "sent", count: r.count, posted: r.posted });
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  }
+
+  const dark = wa?.colorScheme === "dark";
+  const T = {
+    bg: "var(--tg-theme-bg-color, " + (dark ? "#17212b" : "#ffffff") + ")",
+    bg2: "var(--tg-theme-secondary-bg-color, " + (dark ? "#232e3c" : "#f1f1f4") + ")",
+    text: "var(--tg-theme-text-color, " + (dark ? "#f5f5f5" : "#111") + ")",
+    hint: "var(--tg-theme-hint-color, #8a8f98)",
+    accent: "var(--tg-theme-button-color, #2ea6ff)",
+    accentText: "var(--tg-theme-button-text-color, #fff)",
+    border: dark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.09)",
+  };
+  const page = { minHeight: "100vh", background: T.bg, color: T.text, fontFamily: "-apple-system, system-ui, 'Segoe UI', Roboto, 'Battambang', sans-serif", fontSize: 15, padding: "14px 14px 120px", boxSizing: "border-box" };
+
+  if (state.phase === "loading") return <div style={{ ...page, display: "flex", alignItems: "center", justifyContent: "center", color: T.hint }}>Loading…</div>;
+  if (state.phase === "error") return <div style={{ ...page, padding: 24, textAlign: "center" }}><div style={{ fontSize: 40, marginBottom: 10 }}>⚠️</div>{state.msg}{wa && <div><button onClick={load} style={{ marginTop: 18, background: T.accent, color: T.accentText, border: "none", borderRadius: 10, padding: "11px 20px", fontSize: 15, fontWeight: 600 }}>Try again</button></div>}</div>;
+  if (state.phase === "sent") return (
+    <div style={{ ...page, padding: 28, textAlign: "center" }}>
+      <div style={{ fontSize: 54, marginBottom: 8 }}>✅</div>
+      <div style={{ fontSize: 19, fontWeight: 700, marginBottom: 6 }}>Report sent</div>
+      <div style={{ color: T.hint, marginBottom: 22 }}>{state.count} store{state.count === 1 ? "" : "s"} saved{state.posted ? " and posted to the group" : ""}.</div>
+      <button onClick={() => wa?.close()} style={{ background: T.accent, color: T.accentText, border: "none", borderRadius: 12, padding: "13px 28px", fontSize: 16, fontWeight: 600 }}>Close</button>
+      <div><button onClick={() => setState({ phase: "form" })} style={{ marginTop: 14, background: "none", border: "none", color: T.accent, fontSize: 14 }}>Edit report</button></div>
+    </div>
+  );
+
+  if (state.phase === "link") return (
+    <div style={page}>
+      <div style={{ fontSize: 19, fontWeight: 700, margin: "6px 0 4px" }}>Who are you?</div>
+      <div style={{ color: T.hint, fontSize: 13.5, marginBottom: 16 }}>Choose your name once. Your reports will be saved under this name.</div>
+      {err && <div style={{ background: "rgba(229,57,53,0.12)", color: "#e53935", borderRadius: 10, padding: "10px 12px", fontSize: 14, marginBottom: 12 }}>{err}</div>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {(boot?.names || []).map((n) => (
+          <button key={n} disabled={busy} onClick={() => link(n)} style={{ textAlign: "left", background: T.bg2, color: T.text, border: `1px solid ${T.border}`, borderRadius: 12, padding: "14px 14px", fontSize: 16, fontWeight: 600 }}>{n}</button>
+        ))}
+      </div>
+    </div>
+  );
+
+  // ---- form
+  const me = boot.me;
+  const keyOf = (s) => `${s.table}:${s.id}`;
+  const ql = q.trim().toLowerCase();
+  const match = (s) => !ql || s.name.toLowerCase().includes(ql);
+  const mine = boot.stores.filter((s) => s.rep === me && match(s));
+  const others = boot.stores.filter((s) => s.rep !== me && match(s));
+  const shownOthers = ql || showAll ? others : [];
+  const pickedList = Object.entries(picked);
+  const extras = pickedList.filter(([k]) => k.startsWith("extra:"));
+
+  const toggle = (s) => setPicked((prev) => {
+    const n = { ...prev }; const k = keyOf(s);
+    if (n[k]) delete n[k]; else n[k] = { table: s.table, id: s.id, name: s.name, purposes: ["sale"], amount: "", note: "" };
+    return n;
+  });
+  const setP = (k, patch) => setPicked((prev) => ({ ...prev, [k]: { ...prev[k], ...patch } }));
+  const togglePurpose = (k, p) => setPicked((prev) => {
+    const cur = prev[k].purposes;
+    const next = cur.includes(p) ? cur.filter((x) => x !== p) : [...cur.filter((x) => p === "followup" ? false : x !== "followup"), p];
+    return { ...prev, [k]: { ...prev[k], purposes: next.length ? next : ["followup"] } };
+  });
+  const addExtra = () => {
+    const n = extraName.trim(); if (!n) return;
+    setPicked((prev) => ({ ...prev, [`extra:${n}`]: { table: null, id: null, name: n, purposes: ["followup"], amount: "", note: "" } }));
+    setExtraName("");
+  };
+
+  const chip = (on) => ({ border: `1px solid ${on ? T.accent : T.border}`, background: on ? T.accent : "transparent", color: on ? T.accentText : T.text, borderRadius: 999, padding: "6px 11px", fontSize: 13, fontWeight: 600 });
+  const input = { width: "100%", boxSizing: "border-box", background: T.bg, color: T.text, border: `1px solid ${T.border}`, borderRadius: 9, padding: "9px 11px", fontSize: 15 };
+
+  const row = (k, s, typeLabel) => {
+    const v = picked[k];
+    return (
+      <div key={k} style={{ background: T.bg2, borderRadius: 12, padding: "11px 12px", border: `1.5px solid ${v ? T.accent : "transparent"}` }}>
+        <div onClick={() => (s ? toggle(s) : setPicked((prev) => { const n = { ...prev }; delete n[k]; return n; }))} style={{ display: "flex", alignItems: "center", gap: 11, cursor: "pointer" }}>
+          <div style={{ width: 22, height: 22, borderRadius: 7, flexShrink: 0, border: `2px solid ${v ? T.accent : T.hint}`, background: v ? T.accent : "transparent", color: T.accentText, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 800 }}>{v ? "✓" : ""}</div>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s ? s.name : v.name}</div>
+            <div style={{ fontSize: 12, color: T.hint }}>{typeLabel}</div>
+          </div>
+        </div>
+        {v && (
+          <div style={{ marginTop: 10, paddingLeft: 33 }}>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {VISIT_PURPOSES.map((p) => <button key={p.key} onClick={() => togglePurpose(k, p.key)} style={chip(v.purposes.includes(p.key))}>{p.icon} {p.label}</button>)}
+            </div>
+            {v.purposes.includes("collect") && (
+              <input type="number" inputMode="decimal" step="0.01" min="0" placeholder="Amount collected $" value={v.amount} onChange={(e) => setP(k, { amount: e.target.value })} style={{ ...input, marginTop: 8 }} />
+            )}
+            <input placeholder="Note (optional)" value={v.note} onChange={(e) => setP(k, { note: e.target.value })} style={{ ...input, marginTop: 8, fontSize: 14 }} />
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const d = new Date(boot.date + "T00:00:00").toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" });
+  const nSale = pickedList.filter(([, v]) => v.purposes.includes("sale")).length;
+  const nColl = pickedList.filter(([, v]) => v.purposes.includes("collect")).length;
+  const collTotal = pickedList.reduce((a, [, v]) => a + (v.purposes.includes("collect") ? parseFloat(v.amount) || 0 : 0), 0);
+
+  return (
+    <div style={page}>
+      <div style={{ fontSize: 19, fontWeight: 700, marginTop: 2 }}>Daily visit report</div>
+      <div style={{ color: T.hint, fontSize: 13.5, marginBottom: 12 }}>{me} · {d}</div>
+      {boot.today && <div style={{ background: T.bg2, borderRadius: 10, padding: "9px 12px", fontSize: 13, marginBottom: 12 }}>You already sent today's report. Sending again replaces it.</div>}
+
+      <input placeholder="🔍 Search store…" value={q} onChange={(e) => setQ(e.target.value)} style={{ ...input, background: T.bg2, marginBottom: 12 }} />
+
+      <div style={{ fontSize: 12, fontWeight: 700, color: T.hint, textTransform: "uppercase", letterSpacing: "0.05em", margin: "4px 0 8px" }}>My stores ({mine.length})</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 7, marginBottom: 16 }}>
+        {mine.length === 0 && <div style={{ color: T.hint, fontSize: 13.5 }}>{ql ? "No match." : "No stores assigned to you yet — search below."}</div>}
+        {mine.map((s) => row(keyOf(s), s, s.type))}
+      </div>
+
+      <div style={{ fontSize: 12, fontWeight: 700, color: T.hint, textTransform: "uppercase", letterSpacing: "0.05em", margin: "4px 0 8px" }}>Other stores</div>
+      {!ql && !showAll && <button onClick={() => setShowAll(true)} style={{ background: "none", border: "none", color: T.accent, fontSize: 14, padding: 0, marginBottom: 12 }}>Show all {others.length} stores</button>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 7, marginBottom: 16 }}>
+        {shownOthers.map((s) => row(keyOf(s), s, `${s.type}${s.rep ? ` · ${s.rep}` : ""}`))}
+        {(ql || showAll) && shownOthers.length === 0 && <div style={{ color: T.hint, fontSize: 13.5 }}>No match.</div>}
+      </div>
+
+      <div style={{ fontSize: 12, fontWeight: 700, color: T.hint, textTransform: "uppercase", letterSpacing: "0.05em", margin: "4px 0 8px" }}>New store not in the list</div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <input placeholder="Store name" value={extraName} onChange={(e) => setExtraName(e.target.value)} style={{ ...input, background: T.bg2 }} />
+        <button onClick={addExtra} style={{ background: T.accent, color: T.accentText, border: "none", borderRadius: 9, padding: "0 16px", fontSize: 15, fontWeight: 600 }}>Add</button>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 7, marginBottom: 16 }}>
+        {extras.map(([k]) => row(k, null, "New store"))}
+      </div>
+
+      <textarea placeholder="Note for today (optional)" value={note} onChange={(e) => setNote(e.target.value)} rows={2} style={{ ...input, background: T.bg2, fontFamily: "inherit", resize: "vertical" }} />
+
+      <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, background: T.bg, borderTop: `1px solid ${T.border}`, padding: "10px 14px calc(10px + env(safe-area-inset-bottom))" }}>
+        {err && <div style={{ color: "#e53935", fontSize: 13.5, marginBottom: 8 }}>{err}</div>}
+        <div style={{ fontSize: 12.5, color: T.hint, marginBottom: 7 }}>
+          {pickedList.length} store{pickedList.length === 1 ? "" : "s"} · 🛒 {nSale} · 💵 {nColl}{collTotal > 0 ? ` ($${collTotal.toLocaleString("en-US", MONEY2)})` : ""}
+        </div>
+        <button onClick={submit} disabled={busy || !pickedList.length} style={{ width: "100%", background: T.accent, color: T.accentText, border: "none", borderRadius: 12, padding: "14px 0", fontSize: 16, fontWeight: 700, opacity: busy || !pickedList.length ? 0.55 : 1 }}>
+          {busy ? "Sending…" : boot.today ? "Send updated report" : "Send report"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// FIELD VISITS — Executive Office. Salespeople's daily visit reports sent
+// from the Telegram mini app: per day, per month, and stores not visited.
+// ============================================================================
+function FieldVisitsPage({ authUser, C, sbFetch, logActivity }) {
+  const todayPP = () => new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
+  const [tab, setTab] = useState("day");
+  const [day, setDay] = useState(todayPP);
+  const [month, setMonth] = useState(() => todayPP().slice(0, 7));
+  const [person, setPerson] = useState("all");
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [reload, setReload] = useState(0);
+  const names = useSalespeopleNames(sbFetch);
+
+  const range = tab === "day" ? [day, day] : (() => { const [y, m] = month.split("-").map(Number); const e = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10); return [`${month}-01`, e]; })();
+
+  useEffect(() => {
+    let alive = true; setData(null); setError("");
+    (async () => {
+      try {
+        const plus1 = (() => { const d = new Date(range[1] + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + 1); return d.toISOString().slice(0, 10); })();
+        const plus4 = (() => { const d = new Date(range[1] + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + 4); return d.toISOString().slice(0, 10); })();
+        const between = (col) => `${col}=gte.${range[0]}&${col}=lte.${plus1}`;
+        const [visits, reports, st, cs, bs, last, links, ciB, brB, viB, dnB, pays] = await Promise.all([
+          sbFetch(`sales_visits?select=*&visit_date=gte.${range[0]}&visit_date=lte.${range[1]}&order=visit_date.desc`),
+          sbFetch(`sales_visit_reports?select=*&report_date=gte.${range[0]}&report_date=lte.${range[1]}`),
+          sbFetch("stores?select=id,name,salesperson"),
+          sbFetch("credit_stores?select=id,name,nickname,salesperson"),
+          sbFetch("bigco_stores?select=id,name,nickname,parent_id,salesperson"),
+          sbFetch("sales_visits?select=store_table,store_id,visit_date,salesperson&store_table=not.is.null&order=visit_date.desc"),
+          sbFetch("salesperson_telegram?select=*").catch(() => []),
+          sbFetch(`credit_invoices?select=store_id,invoice_date&${between("invoice_date")}`).catch(() => []),
+          sbFetch(`bigco_reports?select=store_id,report_date&${between("report_date")}`).catch(() => []),
+          sbFetch(`visits?select=store_name,date&sold=gt.0&${between("date")}`).catch(() => []),
+          sbFetch(`delivery_notes?select=store_id,business_type,sale_date&${between("sale_date")}`).catch(() => []),
+          sbFetch(`pending_payments?select=amount,paid_at,created_at,channel,status,assigned_type,assigned_note,raw_message&created_at=gte.${range[0]}&created_at=lt.${plus4}`).catch(() => []),
+        ]);
+        if (!alive) return;
+        // Bills by store and date — a "sale" visit should have one the same day or the next.
+        const billDates = {};
+        const addBill = (k, d) => { if (k && d) (billDates[k] = billDates[k] || new Set()).add(d); };
+        (ciB || []).forEach((r) => addBill(`credit_stores:${r.store_id}`, r.invoice_date));
+        (brB || []).forEach((r) => addBill(`bigco_stores:${r.store_id}`, r.report_date));
+        (dnB || []).forEach((r) => addBill(`${r.business_type === "credit" ? "credit_stores" : r.business_type === "corporate" ? "bigco_stores" : "stores"}:${r.store_id}`, r.sale_date));
+        const stIdByName = Object.fromEntries((st || []).map((x) => [x.name, x.id]));
+        (viB || []).forEach((r) => addBill(stIdByName[r.store_name] != null ? `stores:${stIdByName[r.store_name]}` : null, r.date));
+        const bById = Object.fromEntries((bs || []).map((b) => [b.id, b]));
+        const stores = [
+          ...(st || []).map((s) => ({ key: `stores:${s.id}`, name: s.name, type: "Consignment", rep: s.salesperson || "" })),
+          ...(cs || []).map((s) => ({ key: `credit_stores:${s.id}`, name: s.nickname || s.name, type: "Credit Term", rep: s.salesperson || "" })),
+          ...(bs || []).map((s) => { const p = s.parent_id ? bById[s.parent_id] : null; return { key: `bigco_stores:${s.id}`, name: `${p ? `${p.nickname || p.name} — ` : ""}${s.nickname || s.name}`, type: "Corporate", rep: s.salesperson || p?.salesperson || "" }; }),
+        ];
+        const lastBy = {};
+        (last || []).forEach((v) => { const k = `${v.store_table}:${v.store_id}`; if (!lastBy[k]) lastBy[k] = v; });
+        // Names each store can appear under in Payments Received.
+        const norm = (x) => String(x || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+        const namesByKey = {};
+        (st || []).forEach((x) => { namesByKey[`stores:${x.id}`] = [x.name]; });
+        (cs || []).forEach((x) => { namesByKey[`credit_stores:${x.id}`] = [x.name, x.nickname]; });
+        (bs || []).forEach((x) => { const p = x.parent_id ? bById[x.parent_id] : null; namesByKey[`bigco_stores:${x.id}`] = [x.name, x.nickname, p?.name, p?.nickname]; });
+        // Each payment recorded in Payments Received: the customer it was for and its day.
+        const payments = (pays || []).map((r) => {
+          let who = "";
+          if (r.assigned_note) { const parts = String(r.assigned_note).split(" · "); who = r.assigned_type === "consignment" ? parts[0] : parts[parts.length - 1]; }
+          if (!who) { const m = /\bfor (.+?)(?: \(|$)/.exec(String(r.raw_message || "")); if (m) who = m[1]; }
+          return { who: norm(who), amount: Number(r.amount || 0), day: String(r.paid_at || r.created_at || "").slice(0, 10) };
+        }).filter((x) => x.who);
+        setData({ visits: visits || [], reports: reports || [], stores, lastBy, links: links || [], billDates, payments, namesByKey, norm });
+      } catch (e) { if (alive) setError(friendlyDbError(e)); }
+    })();
+    return () => { alive = false; };
+  }, [tab, day, month, reload]);
+
+  const people = [...new Set([...names, ...(data?.visits || []).map((v) => v.salesperson)])].sort();
+  const shownPeople = person === "all" ? people : [person];
+  const money = (n) => `$${Number(n || 0).toLocaleString("en-US", MONEY2)}`;
+  const icons = (p) => (p || []).map((x) => (VISIT_PURPOSES.find((y) => y.key === x) || {}).icon).join(" ");
+  const nextDay = (d) => { const x = new Date(d + "T00:00:00Z"); x.setUTCDate(x.getUTCDate() + 1); return x.toISOString().slice(0, 10); };
+  // A reported sale with no bill for that store on the day or the day after.
+  const saleNoBill = (v) => !!(v.purposes?.includes("sale") && v.store_table && !((data?.billDates || {})[`${v.store_table}:${v.store_id}`] || new Set([])).has(v.visit_date) && !((data?.billDates || {})[`${v.store_table}:${v.store_id}`] || new Set([])).has(nextDay(v.visit_date)));
+  // Collection vs money actually recorded in Payments Received for that
+  // customer, from the visit day up to 3 days later.
+  const addDays = (d, n) => { const x = new Date(d + "T00:00:00Z"); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+  const recordedFor = (v) => {
+    if (!data?.payments) return 0;
+    const nm = data.norm;
+    const names = (v.store_table ? data.namesByKey[`${v.store_table}:${v.store_id}`] : null) || [v.store_name];
+    const keys = names.filter(Boolean).map(nm).filter((x) => x.length >= 3);
+    const end = addDays(v.visit_date, 3);
+    return data.payments.filter((p) => p.day >= v.visit_date && p.day <= end && keys.some((k) => p.who === k || p.who.includes(k) || k.includes(p.who)))
+      .reduce((a, p) => a + p.amount, 0);
+  };
+  const collStatus = (v) => {
+    if (!v.purposes?.includes("collect")) return null;
+    const got = recordedFor(v);
+    if (got + 0.005 >= Number(v.amount_collected || 0)) return "ok";
+    if (got > 0.005) return "short";
+    return addDays(v.visit_date, 2) < todayPP() ? "missing" : "pending";
+  };
+  const tag = (txt, color) => <span style={{ fontSize: 10.5, fontWeight: 700, color, border: `1px solid ${color}60`, borderRadius: 999, padding: "1px 7px", marginLeft: 6, whiteSpace: "nowrap" }}>{txt}</span>;
+  const daysSince = (d) => Math.round((new Date(todayPP() + "T00:00:00") - new Date(d + "T00:00:00")) / 86400000);
+  const card = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 13, padding: "14px 16px", boxSizing: "border-box", minWidth: 0 };
+  const small = { fontSize: 10.5, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 };
+  const pill = (on) => ({ background: on ? C.gold : "none", color: on ? "#1A1508" : C.textDim, border: `1px solid ${on ? C.gold : C.border}`, borderRadius: 999, padding: "6px 13px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" });
+  const ctl = { background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 14 };
+
+  async function unlink(l) {
+    if (!window.confirm(`Reset the Telegram link for ${l.salesperson}? They will choose their name again next time they open the report.`)) return;
+    try {
+      await sbFetch(`salesperson_telegram?telegram_user_id=eq.${l.telegram_user_id}`, { method: "DELETE" });
+      logActivity?.("Reset Telegram link", l.salesperson, l.telegram_name || "");
+      setReload((n) => n + 1);
+    } catch (e) { alert(friendlyDbError(e)); }
+  }
+
+  const stat = (label, value, accent) => (
+    <div style={{ background: C.bg2, borderRadius: 9, padding: "8px 10px", minWidth: 0 }}>
+      <div style={{ ...small, fontSize: 9.5 }}>{label}</div>
+      <div style={{ fontSize: 16, fontWeight: 700, color: accent || C.text, marginTop: 2 }}>{value}</div>
+    </div>
+  );
+
+  return (
+    <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+      <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>Store visits reported by salespeople through the Telegram daily report.</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+        {[["day", "Daily"], ["month", "Monthly"], ["skipped", "Not visited"]].map(([k, l]) => <button key={k} onClick={() => setTab(k)} style={pill(tab === k)}>{l}</button>)}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+        {tab === "day"
+          ? <input type="date" value={day} onChange={(e) => e.target.value && setDay(e.target.value)} style={ctl} />
+          : <input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)} style={ctl} />}
+        <select value={person} onChange={(e) => setPerson(e.target.value)} style={ctl}>
+          <option value="all">All salespeople</option>
+          {people.map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+      </div>
+
+      {error && <div style={{ background: C.roseBg, color: C.rose, padding: "10px 14px", borderRadius: 8, fontSize: 13, marginBottom: 14 }}>{error}</div>}
+      {!data && !error && <div style={{ padding: 40, textAlign: "center", color: C.textFaint }}>Loading…</div>}
+
+      {data && tab === "day" && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 12 }}>
+          {shownPeople.map((n) => {
+            const rep = data.reports.find((r) => r.salesperson === n);
+            const vs = data.visits.filter((v) => v.salesperson === n);
+            const coll = vs.reduce((a, v) => a + Number(v.amount_collected || 0), 0);
+            return (
+              <div key={n} style={{ ...card, opacity: rep ? 1 : 0.75 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 8 }}>
+                  <div style={{ fontWeight: 700, fontSize: 15 }}>{n}</div>
+                  {rep
+                    ? <div style={{ fontSize: 11, color: C.textFaint }}>sent {new Date(rep.submitted_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}{rep.times_sent > 1 ? ` · edited ${rep.times_sent - 1}×` : ""}</div>
+                    : <div style={{ fontSize: 11.5, color: C.rose, fontWeight: 700 }}>No report</div>}
+                </div>
+                {rep && (
+                  <>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6, marginBottom: 10 }}>
+                      {stat("Stores", vs.length, C.goldBright)}
+                      {stat("🛒 Sale", vs.filter((v) => v.purposes?.includes("sale")).length)}
+                      {stat("💵 Collect", vs.filter((v) => v.purposes?.includes("collect")).length)}
+                      {stat("🔁 Follow", vs.filter((v) => v.purposes?.length === 1 && v.purposes[0] === "followup").length)}
+                    </div>
+                    {coll > 0 && <div style={{ fontSize: 12.5, marginBottom: 8 }}>Collected: <b>{money(coll)}</b></div>}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      {vs.map((v) => (
+                        <div key={v.id} style={{ fontSize: 12.5, display: "flex", justifyContent: "space-between", gap: 8, background: C.bg2, borderRadius: 7, padding: "6px 9px" }}>
+                          <span style={{ minWidth: 0 }}>{icons(v.purposes)} {v.store_name}{!v.store_table && <span style={{ color: C.goldBright }}> · new</span>}{v.note ? <span style={{ color: C.textFaint }}> — {v.note}</span> : null}
+                            {saleNoBill(v) && tag("no bill", C.rose)}
+                            {collStatus(v) === "pending" && tag("not in Payments yet", C.amber)}
+                            {collStatus(v) === "missing" && tag("not recorded in Payments", C.rose)}
+                            {collStatus(v) === "ok" && tag("payment recorded ✓", C.emerald)}
+                            {collStatus(v) === "short" && tag(`only ${money(recordedFor(v))} recorded`, C.rose)}
+                          </span>
+                          {Number(v.amount_collected) > 0 && <b style={{ whiteSpace: "nowrap", color: collStatus(v) === "short" ? C.rose : C.text }}>{money(v.amount_collected)}</b>}
+                        </div>
+                      ))}
+                    </div>
+                    {rep.note && <div style={{ fontSize: 12, color: C.textDim, marginTop: 8 }}>📝 {rep.note}</div>}
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {data && tab === "month" && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 12 }}>
+          {shownPeople.map((n) => {
+            const vs = data.visits.filter((v) => v.salesperson === n);
+            const distinct = new Set(vs.map((v) => (v.store_table ? `${v.store_table}:${v.store_id}` : `new:${v.store_name.toLowerCase()}`))).size;
+            const days = data.reports.filter((r) => r.salesperson === n).length;
+            const assigned = data.stores.filter((s) => s.rep === n);
+            const visitedKeys = new Set(data.visits.filter((v) => v.store_table).map((v) => `${v.store_table}:${v.store_id}`));
+            const coveredMine = assigned.filter((s) => visitedKeys.has(s.key)).length;
+            const coll = vs.reduce((a, v) => a + Number(v.amount_collected || 0), 0);
+            return (
+              <div key={n} style={card}>
+                <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 10 }}>{n}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginBottom: 6 }}>
+                  {stat("Days reported", days)}
+                  {stat("Visits", vs.length)}
+                  {stat("Different stores", distinct, C.goldBright)}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginBottom: 6 }}>
+                  {stat("🛒 Sale visits", vs.filter((v) => v.purposes?.includes("sale")).length)}
+                  {stat("💵 Collections", vs.filter((v) => v.purposes?.includes("collect")).length)}
+                  {stat("🔁 Follow-ups", vs.filter((v) => v.purposes?.length === 1 && v.purposes[0] === "followup").length)}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginBottom: 6 }}>
+                  {stat("Sales without bill", vs.filter(saleNoBill).length, vs.some(saleNoBill) ? C.rose : C.text)}
+                  {stat("Collections short", vs.filter((v) => collStatus(v) === "short").length, vs.some((v) => collStatus(v) === "short") ? C.rose : C.text)}
+                  {stat("Not in Payments", vs.filter((v) => ["missing", "pending"].includes(collStatus(v))).length, vs.some((v) => collStatus(v) === "missing") ? C.rose : vs.some((v) => collStatus(v) === "pending") ? C.amber : C.text)}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  {stat("Collected", money(coll))}
+                  {stat("My stores covered", assigned.length ? `${coveredMine} / ${assigned.length}` : "—", assigned.length && coveredMine < assigned.length ? C.rose : C.text)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {data && tab === "skipped" && (() => {
+        const visitedKeys = new Set(data.visits.filter((v) => v.store_table).map((v) => `${v.store_table}:${v.store_id}`));
+        const groups = [...shownPeople.filter((n) => person !== "all" || true), ...(person === "all" ? [""] : [])];
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ fontSize: 12, color: C.textFaint }}>Stores with no visit reported in {monthLabel(month)}, grouped by the salesperson they're assigned to. A store counts as visited if anyone reported it.</div>
+            {groups.map((n) => {
+              const list = data.stores.filter((s) => s.rep === n && !visitedKeys.has(s.key))
+                .map((s) => ({ ...s, last: data.lastBy[s.key]?.visit_date || null }))
+                .sort((a, b) => (a.last || "0").localeCompare(b.last || "0"));
+              if (!list.length) return n ? <div key={n} style={{ ...card, fontSize: 13 }}><b>{n}</b> — every assigned store visited ✓</div> : null;
+              return (
+                <div key={n || "none"} style={card}>
+                  <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 8, color: n ? C.text : C.textDim }}>{n || "Not assigned to anyone"} <span style={{ color: C.rose, fontSize: 13 }}>· {list.length} not visited</span></div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 5 }}>
+                    {list.map((s) => (
+                      <div key={s.key} style={{ background: C.bg2, borderRadius: 7, padding: "6px 9px", fontSize: 12.5, display: "flex", justifyContent: "space-between", gap: 8 }}>
+                        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name} <span style={{ color: C.textFaint }}>· {s.type}</span></span>
+                        <span style={{ whiteSpace: "nowrap", color: s.last ? C.textDim : C.rose }}>{s.last ? `${daysSince(s.last)}d ago` : "never"}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
+
+      {data && (
+        <div style={{ ...card, marginTop: 22 }}>
+          <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 6 }}>Telegram accounts</div>
+          <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 10 }}>Each salesperson links their Telegram account once, the first time they open the report. Reset a link if someone picked the wrong name or changed phone.</div>
+          {data.links.length === 0 && <div style={{ fontSize: 12.5, color: C.textFaint }}>No one has linked yet.</div>}
+          {data.links.map((l) => (
+            <div key={l.telegram_user_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "6px 0", borderTop: `1px solid ${C.border}`, fontSize: 13 }}>
+              <span style={{ minWidth: 0 }}><b>{l.salesperson}</b> <span style={{ color: C.textFaint }}>· {l.telegram_name || l.telegram_user_id}</span></span>
+              <button onClick={() => unlink(l)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 6, padding: "4px 10px", fontSize: 11.5, cursor: "pointer" }}>Reset</button>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
