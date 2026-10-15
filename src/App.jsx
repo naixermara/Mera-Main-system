@@ -14210,6 +14210,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
     try {
       let storeId = dnForm.storeId;
       let storeName = "";
+      let branchName = "";
       if (dnForm.storeMode === "new") {
         storeId = await createNewStoreFor(dnForm.businessType, dnForm);
         if (!storeId) return false;
@@ -14218,6 +14219,15 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
         const list = storeListFor(dnForm.businessType);
         const found = list.find((s) => s.id === storeId);
         storeName = found ? found.name : "";
+        // A corporate branch: documents carry the legal company (the head
+        // account) as the customer, and the branch goes in "Send to".
+        if (found && found.parent_id) {
+          const head = list.find((s) => s.id === found.parent_id);
+          if (head) {
+            branchName = found.name;
+            storeName = head.name;
+          }
+        }
       }
       if (!storeId || !storeName) return false;
 
@@ -14256,7 +14266,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
           customer_phone: dnForm.customerPhone,
           customer_email: dnForm.customerEmail,
           customer_address: dnForm.customerAddress,
-          send_to: dnForm.sendTo,
+          send_to: (dnForm.sendTo || "").trim() || branchName,
           business_type: dnForm.businessType,
           store_id: storeId,
           issued_date: dnForm.issuedDate,
