@@ -18618,18 +18618,18 @@ function SalespersonAssignmentPage({ authUser, C, sbFetch, logActivity }) {
     setError("");
     try {
       const [st, cs, bs, os] = await Promise.all([
-        sbFetch("stores?select=id,name,salesperson"),
-        sbFetch("credit_stores?select=id,name,nickname,salesperson"),
-        sbFetch("bigco_stores?select=id,name,nickname,parent_id,salesperson"),
+        sbFetch("stores?select=id,name,salesperson,active"),
+        sbFetch("credit_stores?select=id,name,nickname,salesperson,active"),
+        sbFetch("bigco_stores?select=id,name,nickname,parent_id,salesperson,active"),
         sbFetch("online_sales?select=id,customer_name,sale_rep&sale_rep=is.null"),
       ]);
       const bsById = Object.fromEntries((bs || []).map((b) => [b.id, b]));
       setRows([
-        ...(st || []).map((s) => ({ key: `stores:${s.id}`, table: "stores", id: s.id, name: s.name, type: "consignment", rep: s.salesperson || "" })),
-        ...(cs || []).map((s) => ({ key: `credit_stores:${s.id}`, table: "credit_stores", id: s.id, name: s.nickname ? `${s.nickname} (${s.name})` : s.name, type: "credit", rep: s.salesperson || "" })),
+        ...(st || []).map((s) => ({ key: `stores:${s.id}`, table: "stores", id: s.id, name: s.name, type: "consignment", rep: s.salesperson || "", active: s.active !== false })),
+        ...(cs || []).map((s) => ({ key: `credit_stores:${s.id}`, table: "credit_stores", id: s.id, name: s.nickname ? `${s.nickname} (${s.name})` : s.name, type: "credit", rep: s.salesperson || "", active: s.active !== false })),
         ...(bs || []).map((s) => {
           const parent = s.parent_id ? bsById[s.parent_id] : null;
-          return { key: `bigco_stores:${s.id}`, table: "bigco_stores", id: s.id, name: `${parent ? `${parent.nickname || parent.name} — ` : ""}${s.nickname || s.name}`, type: "corporate", rep: s.salesperson || "", inherited: !s.salesperson && parent?.salesperson ? parent.salesperson : "" };
+          return { key: `bigco_stores:${s.id}`, table: "bigco_stores", id: s.id, name: `${parent ? `${parent.nickname || parent.name} — ` : ""}${s.nickname || s.name}`, type: "corporate", rep: s.salesperson || "", active: s.active !== false, inherited: !s.salesperson && parent?.salesperson ? parent.salesperson : "" };
         }),
       ].sort((a, b) => a.name.localeCompare(b.name)));
       const by = {};
@@ -18651,6 +18651,18 @@ function SalespersonAssignmentPage({ authUser, C, sbFetch, logActivity }) {
     setBusy("");
   }
 
+  async function toggleActive(r) {
+    const next = !r.active;
+    if (!next && !window.confirm(`Mark "${r.name}" as inactive? It will be hidden from the salespeople's report and from "Not visited". You can reactivate it any time.`)) return;
+    setBusy(`act:${r.key}`);
+    try {
+      await sbFetch(`${r.table}?id=eq.${encodeURIComponent(r.id)}`, { method: "PATCH", body: JSON.stringify({ active: next }) });
+      setRows((prev) => prev.map((x) => (x.key === r.key ? { ...x, active: next } : x)));
+      logActivity?.(next ? "Store reactivated" : "Store marked inactive", r.name, "");
+    } catch (e) { alert(friendlyDbError(e)); }
+    setBusy("");
+  }
+
   async function assignOnline(c, rep) {
     if (!rep) return;
     setBusy(`online:${c.name}`);
@@ -18665,17 +18677,19 @@ function SalespersonAssignmentPage({ authUser, C, sbFetch, logActivity }) {
   const TYPE_LABEL = { consignment: "Consignment", credit: "Credit Term", corporate: "Corporate" };
   const shown = (rows || []).filter((r) =>
     (type === "all" || r.type === type) &&
-    (filter === "all" || !(r.rep || r.inherited)) &&
+    (filter === "inactive" ? !r.active : r.active) &&
+    (filter !== "unassigned" || !(r.rep || r.inherited)) &&
     (!q.trim() || r.name.toLowerCase().includes(q.trim().toLowerCase()))
   );
-  const unassignedCount = (rows || []).filter((r) => !(r.rep || r.inherited)).length;
+  const unassignedCount = (rows || []).filter((r) => r.active && !(r.rep || r.inherited)).length;
+  const inactiveCount = (rows || []).filter((r) => !r.active).length;
   const pill = (active) => ({ background: active ? C.gold : "none", color: active ? "#1A1508" : C.textDim, border: `1px solid ${active ? C.gold : C.border}`, borderRadius: 999, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" });
   const sel = { width: "100%", boxSizing: "border-box", minWidth: 0, background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13.5 };
 
   return (
     <div style={{ maxWidth: 900, margin: "0 auto" }}>
       <div style={{ fontSize: 12.5, color: C.textFaint, marginBottom: 14, lineHeight: 1.5 }}>
-        Assign each store to the salesperson responsible for it. Every new bill and visit for that store is then credited to that person automatically.
+        Assign each store to the salesperson responsible for it, and mark stores that no longer buy as inactive. Every new bill and visit for that store is then credited to that person automatically.
         If the store moves to someone else, change it here — past sales stay with the person who made them.
       </div>
       {error && <div style={{ background: C.roseBg, color: C.rose, padding: "10px 14px", borderRadius: 8, fontSize: 13, marginBottom: 14 }}>{error}</div>}
@@ -18685,7 +18699,8 @@ function SalespersonAssignmentPage({ authUser, C, sbFetch, logActivity }) {
         <>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
             <button onClick={() => setFilter("unassigned")} style={pill(filter === "unassigned")}>Not assigned ({unassignedCount})</button>
-            <button onClick={() => setFilter("all")} style={pill(filter === "all")}>All stores ({rows.length})</button>
+            <button onClick={() => setFilter("all")} style={pill(filter === "all")}>All active ({rows.length - inactiveCount})</button>
+            <button onClick={() => setFilter("inactive")} style={pill(filter === "inactive")}>Inactive ({inactiveCount})</button>
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
             {[["all", "All types"], ["consignment", "Consignment"], ["credit", "Credit Term"], ["corporate", "Corporate"]].map(([k, l]) => (
@@ -18695,12 +18710,14 @@ function SalespersonAssignmentPage({ authUser, C, sbFetch, logActivity }) {
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search store…" style={{ ...sel, marginBottom: 12 }} />
 
           <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 22 }}>
-            {shown.length === 0 && <div style={{ padding: 20, textAlign: "center", color: C.textFaint, fontSize: 13 }}>{filter === "unassigned" ? "Every store has a salesperson." : "No stores match."}</div>}
+            {shown.length === 0 && <div style={{ padding: 20, textAlign: "center", color: C.textFaint, fontSize: 13 }}>{filter === "unassigned" ? "Every active store has a salesperson." : filter === "inactive" ? "No inactive stores." : "No stores match."}</div>}
             {shown.map((r) => (
               <div key={r.key} style={{ background: C.surface, border: `1px solid ${r.rep || r.inherited ? C.border : `${C.rose}50`}`, borderRadius: 10, padding: "10px 12px", display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(130px, 200px)", gap: 10, alignItems: "center" }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 13.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</div>
-                  <div style={{ fontSize: 11, color: C.textFaint }}>{TYPE_LABEL[r.type]}{r.inherited ? ` · uses ${r.inherited} from head office` : ""}</div>
+                  <div style={{ fontSize: 11, color: C.textFaint }}>{TYPE_LABEL[r.type]}{r.inherited ? ` · uses ${r.inherited} from head office` : ""}
+                    {" · "}<button disabled={busy === `act:${r.key}`} onClick={() => toggleActive(r)} style={{ background: "none", border: "none", padding: 0, fontSize: 11, color: r.active ? C.textDim : C.emerald, textDecoration: "underline", cursor: "pointer" }}>{r.active ? "Mark inactive" : "Reactivate"}</button>
+                  </div>
                 </div>
                 <select value={r.rep} disabled={busy === r.key} onChange={(e) => assignStore(r, e.target.value)} style={sel}>
                   <option value="">{busy === r.key ? "Saving…" : "— Not assigned —"}</option>
@@ -18999,9 +19016,9 @@ function FieldVisitsPage({ authUser, C, sbFetch, logActivity, canManage }) {
         const [visits, reports, st, cs, bs, last, links, ciB, brB, viB, dnB, pays] = await Promise.all([
           sbFetch(`sales_visits?select=*&visit_date=gte.${range[0]}&visit_date=lte.${range[1]}&order=visit_date.desc`),
           sbFetch(`sales_visit_reports?select=*&report_date=gte.${range[0]}&report_date=lte.${range[1]}`),
-          sbFetch("stores?select=id,name,salesperson"),
-          sbFetch("credit_stores?select=id,name,nickname,salesperson"),
-          sbFetch("bigco_stores?select=id,name,nickname,parent_id,salesperson"),
+          sbFetch("stores?select=id,name,salesperson&active=is.true"),
+          sbFetch("credit_stores?select=id,name,nickname,salesperson&active=is.true"),
+          sbFetch("bigco_stores?select=id,name,nickname,parent_id,salesperson,active"),
           sbFetch("sales_visits?select=store_table,store_id,visit_date,salesperson&store_table=not.is.null&order=visit_date.desc"),
           sbFetch("salesperson_telegram?select=*").catch(() => []),
           sbFetch(`credit_invoices?select=store_id,invoice_date&${between("invoice_date")}`).catch(() => []),
@@ -19023,7 +19040,7 @@ function FieldVisitsPage({ authUser, C, sbFetch, logActivity, canManage }) {
         const stores = [
           ...(st || []).map((s) => ({ key: `stores:${s.id}`, name: s.name, type: "Consignment", rep: s.salesperson || "" })),
           ...(cs || []).map((s) => ({ key: `credit_stores:${s.id}`, name: s.nickname || s.name, type: "Credit Term", rep: s.salesperson || "" })),
-          ...(bs || []).map((s) => { const p = s.parent_id ? bById[s.parent_id] : null; return { key: `bigco_stores:${s.id}`, name: `${p ? `${p.nickname || p.name} — ` : ""}${s.nickname || s.name}`, type: "Corporate", rep: s.salesperson || p?.salesperson || "" }; }),
+          ...(bs || []).filter((s) => s.active !== false).map((s) => { const p = s.parent_id ? bById[s.parent_id] : null; return { key: `bigco_stores:${s.id}`, name: `${p ? `${p.nickname || p.name} — ` : ""}${s.nickname || s.name}`, type: "Corporate", rep: s.salesperson || p?.salesperson || "" }; }),
         ];
         const lastBy = {};
         (last || []).forEach((v) => { const k = `${v.store_table}:${v.store_id}`; if (!lastBy[k]) lastBy[k] = v; });
@@ -19259,7 +19276,7 @@ function FieldVisitsPage({ authUser, C, sbFetch, logActivity, canManage }) {
         const groups = [...shownPeople.filter((n) => person !== "all" || true), ...(person === "all" ? [""] : [])];
         return (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ fontSize: 12, color: C.textFaint }}>Stores with no visit reported in {monthLabel(month)}, grouped by the salesperson they're assigned to. A store counts as visited if anyone reported it.</div>
+            <div style={{ fontSize: 12, color: C.textFaint }}>Stores with no visit reported in {monthLabel(month)}, grouped by the salesperson they're assigned to. A store counts as visited if anyone reported it. Inactive stores are left out — mark them in Office → Salesperson Assignment.</div>
             {groups.map((n) => {
               const list = data.stores.filter((s) => s.rep === n && !visitedKeys.has(s.key))
                 .map((s) => ({ ...s, last: data.lastBy[s.key]?.visit_date || null }))
