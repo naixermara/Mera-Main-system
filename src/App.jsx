@@ -341,6 +341,15 @@ function isThisMonth(dateStr) {
   const now = new Date();
   return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
 }
+// How a consignment payment was received. Payments are stored on a visit row
+// (which always carries a product), but the product means nothing for money.
+function payKindLabel(v) {
+  const n = String(v?.notes || "");
+  if (/^Payment received — ABA/i.test(n)) return "ABA payment";
+  if (/^Payment received — Cash/i.test(n)) return "Cash payment (office)";
+  if (/^Payment received/i.test(n)) return "Payment received";
+  return "Collected on visit";
+}
 function monthKey(dateStr) {
   return String(dateStr || "").slice(0, 7); // "YYYY-MM" ("" when a row has no date, instead of crashing the page)
 }
@@ -16911,7 +16920,7 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
               <div style={{ fontSize: 10, color: C.textDim, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>This month's payments</div>
               {store.paymentHistory.map((v) => (
                 <div key={v.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0", borderTop: `1px solid ${C.border}` }}>
-                  <span style={{ color: C.textDim }}>{fmtDate(v.date)} · {v.product}</span>
+                  <span style={{ color: C.textDim }}>{fmtDate(v.date)} · {payKindLabel(v)}</span>
                   <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: C.emerald, fontWeight: 600 }}>${v.paid.toLocaleString("en-US", MONEY2)}</span>
                 </div>
               ))}
@@ -16923,7 +16932,7 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
               <div style={{ fontSize: 10, color: C.textDim, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>All-time payment history</div>
               {store.allTimePaymentHistory.map((v) => (
                 <div key={v.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0", borderTop: `1px solid ${C.border}` }}>
-                  <span style={{ color: C.textDim }}>{fmtDate(v.date)} · {v.product}</span>
+                  <span style={{ color: C.textDim }}>{fmtDate(v.date)} · {payKindLabel(v)}</span>
                   <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: C.textDim, fontWeight: 600 }}>${v.paid.toLocaleString("en-US", MONEY2)}</span>
                 </div>
               ))}
