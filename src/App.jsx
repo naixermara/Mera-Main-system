@@ -1704,9 +1704,7 @@ function MeraConsignmentApp() {
         ) : page === "assignreps" ? (
           <SalespersonAssignmentPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
         ) : page === "fieldvisits" ? (
-          canSeePayroll
-            ? <FieldVisitsPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
-            : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to field visits.</div>
+          <FieldVisitsPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} canManage={canSeePayroll} />
         ) : page === "salesbyperson" ? (
           canSeePayroll
             ? <SalesByPersonPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
@@ -8024,6 +8022,7 @@ const NAV = [
     { label: "Accounts Receivable",    page: "sales", sub: "owed" },
     ...(PENDING_PAYMENTS_ENABLED ? [{ label: "Pending Payments", page: "sales", sub: "pending" }] : []),
     { label: "Expenses",               page: "expenses" },
+    { label: "Field Visits",           page: "fieldvisits" },
     { label: "Salesperson Assignment", page: "assignreps" },
     { label: "Province Coverage",      page: "sales", sub: "coverage" },
   ]},
@@ -8044,7 +8043,6 @@ const NAV = [
   { name: "Executive Office", needs: "payroll", items: [
     { label: "Profit & Margin", page: "profit" },
     { label: "Sales by Person", page: "salesbyperson" },
-    { label: "Field Visits",    page: "fieldvisits" },
     { label: "Sales Report",    page: "sales", sub: "report", needs: "owner" },
     { label: "Expense Register", page: "expenses", tab: "approve" },
     { label: "KOL & Content",   page: "kol" },
@@ -18976,7 +18974,9 @@ function TelegramVisitReportApp() {
 // FIELD VISITS — Executive Office. Salespeople's daily visit reports sent
 // from the Telegram mini app: per day, per month, and stores not visited.
 // ============================================================================
-function FieldVisitsPage({ authUser, C, sbFetch, logActivity }) {
+function FieldVisitsPage({ authUser, C, sbFetch, logActivity, canManage }) {
+  const [onlyMany, setOnlyMany] = useState(false);
+  const TOO_MANY = 3; // visits to one store in a month that are worth a second look
   const todayPP = () => new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
   const [tab, setTab] = useState("day");
   const [day, setDay] = useState(todayPP);
@@ -19099,7 +19099,7 @@ function FieldVisitsPage({ authUser, C, sbFetch, logActivity }) {
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
       <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>Store visits reported by salespeople through the Telegram daily report.</div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-        {[["day", "Daily"], ["month", "Monthly"], ["skipped", "Not visited"]].map(([k, l]) => <button key={k} onClick={() => setTab(k)} style={pill(tab === k)}>{l}</button>)}
+        {[["day", "Daily"], ["month", "Monthly"], ["stores", "Visited stores"], ["skipped", "Not visited"]].map(([k, l]) => <button key={k} onClick={() => setTab(k)} style={pill(tab === k)}>{l}</button>)}
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
         {tab === "day"
@@ -19198,6 +19198,62 @@ function FieldVisitsPage({ authUser, C, sbFetch, logActivity }) {
         </div>
       )}
 
+      {data && tab === "stores" && (() => {
+        // One row per store visited this month: how often, by whom, and why.
+        const by = {};
+        data.visits.filter((v) => person === "all" || v.salesperson === person).forEach((v) => {
+          const k = v.store_table ? `${v.store_table}:${v.store_id}` : `new:${String(v.store_name).toLowerCase()}`;
+          const r = by[k] || (by[k] = { k, name: v.store_name, isNew: !v.store_table, visits: [], people: new Set() });
+          r.visits.push(v); r.people.add(v.salesperson);
+        });
+        const stInfo = Object.fromEntries(data.stores.map((x) => [x.key, x]));
+        const rows = Object.values(by).map((r) => ({
+          ...r,
+          type: stInfo[r.k]?.type || (r.isNew ? "New store" : ""),
+          count: r.visits.length,
+          sale: r.visits.filter((v) => v.purposes?.includes("sale")).length,
+          coll: r.visits.filter((v) => v.purposes?.includes("collect")).length,
+          fol: r.visits.filter((v) => v.purposes?.length === 1 && v.purposes[0] === "followup").length,
+          dates: r.visits.map((v) => v.visit_date).sort(),
+        })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+        const many = rows.filter((r) => r.count >= TOO_MANY);
+        const shown = onlyMany ? many : rows;
+        const fmtD = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+        return (
+          <div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+              <div style={{ fontSize: 12.5, color: C.textDim }}><b style={{ color: C.text }}>{rows.length}</b> stores visited in {monthLabel(month)} · <b style={{ color: many.length ? C.rose : C.text }}>{many.length}</b> visited {TOO_MANY}+ times</div>
+              <button onClick={() => setOnlyMany(!onlyMany)} style={pill(onlyMany)}>Only {TOO_MANY}+ visits</button>
+            </div>
+            {shown.length === 0 && <div style={{ padding: 30, textAlign: "center", color: C.textFaint, fontSize: 13 }}>{onlyMany ? `No store visited ${TOO_MANY}+ times.` : "No visits reported this month."}</div>}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {shown.map((r) => {
+                const hot = r.count >= TOO_MANY;
+                return (
+                  <div key={r.k} style={{ ...card, padding: "10px 13px", borderColor: hot ? `${C.rose}70` : C.border }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, fontSize: 13.5 }}>{r.name}{r.isNew && <span style={{ color: C.goldBright, fontSize: 11 }}> · new</span>}</div>
+                        <div style={{ fontSize: 11.5, color: C.textFaint }}>{r.type}{r.type ? " · " : ""}{[...r.people].join(", ")}</div>
+                      </div>
+                      <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                        <div style={{ fontSize: 18, fontWeight: 700, color: hot ? C.rose : C.text }}>{r.count}×</div>
+                        {hot && <div style={{ fontSize: 10.5, color: C.rose, fontWeight: 700 }}>check</div>}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 11.5, color: C.textDim, marginTop: 6, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                      <span>🛒 {r.sale}</span><span>💵 {r.coll}</span><span>🔁 {r.fol}</span>
+                      <span style={{ color: C.textFaint }}>{r.dates.map(fmtD).join(" · ")}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 11, color: C.textFaint, marginTop: 12 }}>A store visited {TOO_MANY} or more times in a month is flagged. Collection-only visits (💵) are often normal; many 🔁 follow-ups with no 🛒 sale are worth asking about.</div>
+          </div>
+        );
+      })()}
+
       {data && tab === "skipped" && (() => {
         const visitedKeys = new Set(data.visits.filter((v) => v.store_table).map((v) => `${v.store_table}:${v.store_id}`));
         const groups = [...shownPeople.filter((n) => person !== "all" || true), ...(person === "all" ? [""] : [])];
@@ -19227,7 +19283,7 @@ function FieldVisitsPage({ authUser, C, sbFetch, logActivity }) {
         );
       })()}
 
-      {data && (
+      {data && canManage && (
         <div style={{ ...card, marginTop: 22 }}>
           <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 6 }}>Telegram accounts</div>
           <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 10 }}>Each salesperson links their Telegram account once, the first time they open the report. Reset a link if someone picked the wrong name or changed phone.</div>
