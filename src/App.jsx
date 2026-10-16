@@ -10789,7 +10789,7 @@ function ChainSelloutPage({ authUser, C, sbFetch, logActivity, mode = "analysis"
   useEffect(() => { load(); }, []);
 
   const all = rows || [];
-  const chains = Array.from(new Set(["Chipmong", ...all.map((r) => r.chain)]));
+  const chains = Array.from(new Set(["Chipmong", ...all.map((r) => r.chain), ...reports.map((r) => r.chain)].filter(Boolean)));
   const periods = Array.from(new Set(all.filter((r) => r.chain === chain).map((r) => r.period))).sort().reverse();
   const cur = period && periods.includes(period) ? period : periods[0] || "";
   const prev = periods[periods.indexOf(cur) + 1] || "";
@@ -10848,6 +10848,7 @@ function ChainSelloutPage({ authUser, C, sbFetch, logActivity, mode = "analysis"
   const [reading, setReading] = useState(false);
   const [aiNote, setAiNote] = useState("");
   const skuFor = (it) => {
+    if (it.product && SKUS.some((x) => x.code === it.product)) return it.product;
     const bc = String(it.barcode || "").replace(/\D/g, "");
     const byBc = SKUS.find((x) => x.barcode && bc && x.barcode === bc);
     if (byBc) return byBc.code;
