@@ -4494,7 +4494,7 @@ function BillNumbersPage({ C, sbFetch, showAmounts }) {
   const cell = { padding: "8px 10px", borderTop: `1px solid ${C.border}`, fontSize: 12.5 };
   return (
     <div>
-      <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>Complete register of B and INV numbers issued, continuing the BizAdvisor sequence. Entries cannot be deleted; cancelled bills remain listed as VOID with the user and date of cancellation.</div>
+      <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>Complete register of every invoice number issued (B, INV and CH consignment). Numbers are never reused and entries cannot be deleted; a cancelled invoice stays listed as VOID with who cancelled it and when, so the sequence has no unexplained gaps for tax.</div>
       {!started ? (
         <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, color: C.amber, borderRadius: 10, padding: "12px 14px", fontSize: 13, marginBottom: 14 }}>
           In-app billing is <b>not yet active</b>. Bills are currently issued in BizAdvisor. On go-live, the starting numbers will be set and the system will take over numbering.
