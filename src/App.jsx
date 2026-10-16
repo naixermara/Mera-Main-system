@@ -591,6 +591,24 @@ export default function AppRoot() {
   return isTgReport ? <TelegramVisitReportApp /> : <MeraConsignmentApp />;
 }
 
+// National Bank of Cambodia official USD→KHR rate. The database refreshes it
+// several times every morning (exchange_rates table, filled by a scheduled
+// job). Invoices use the rate of their own date (or the latest before it).
+const NBC_RATE_FALLBACK = 4046;
+let NBC_RATES = []; // [{ rate_date, usd_khr }] newest first
+async function loadNbcRates() {
+  try {
+    const rows = await sbFetch("exchange_rates?select=rate_date,usd_khr&order=rate_date.desc&limit=400");
+    if (Array.isArray(rows) && rows.length) NBC_RATES = rows.map((r) => ({ rate_date: r.rate_date, usd_khr: Number(r.usd_khr) }));
+  } catch (e) { /* table missing or offline: keep the fallback */ }
+}
+// Returns { rate, date } for an ISO date (YYYY-MM-DD), or today when omitted.
+function nbcRateFor(dateStr) {
+  const d = dateStr || todayStr();
+  const hit = NBC_RATES.find((r) => r.rate_date <= d) || NBC_RATES[NBC_RATES.length - 1];
+  return hit ? { rate: hit.usd_khr, date: hit.rate_date } : { rate: NBC_RATE_FALLBACK, date: null };
+}
+
 function MeraConsignmentApp() {
   useEffect(() => {
     if (document.getElementById("battambang-font-link")) return;
@@ -611,6 +629,8 @@ function MeraConsignmentApp() {
   }, []);
 
   const [authUser, setAuthUser] = useState(undefined); // undefined = checking, null = logged out, object = logged in
+  const [nbcToday, setNbcToday] = useState({ rate: NBC_RATE_FALLBACK, date: null });
+  useEffect(() => { if (authUser) loadNbcRates().then(() => setNbcToday(nbcRateFor())); }, [authUser]);
   const [authError, setAuthError] = useState(null);
   const [authLoading, setAuthLoading] = useState(false);
   const canSeePayroll = PAYROLL_EMAILS.includes(String(authUser?.email || "").toLowerCase());
@@ -1609,6 +1629,11 @@ function MeraConsignmentApp() {
               {pageTitle}
             </h1>
             <div style={{ height: 2, width: 46, background: `linear-gradient(90deg, ${C.gold}, transparent)`, marginTop: 10 }} />
+            {nbcToday.date && (
+              <div style={{ fontSize: 11.5, color: C.textDim, marginTop: 8 }}>
+                NBC rate: <b style={{ color: C.goldBright }}>1$ = {nbcToday.rate.toLocaleString("en-US")}៛</b> <span style={{ color: C.textFaint }}>({new Date(nbcToday.date + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })})</span>
+              </div>
+            )}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             {page === "sales" && salesSubPage === "consignment" && consignmentSubView !== "bigco" && (
@@ -4216,7 +4241,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
       invoice_type: "commercial",
       discount_percent: 0,
       vat_percent: 0,
-      exchange_rate: 4046,
+      exchange_rate: nbcRateFor(sale.date).rate,
     };
   }
 
@@ -15563,7 +15588,7 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
     ...Object.fromEntries(SKUS.map((x) => [x.formPrice, dn[x.priceCol] ? String(dn[x.priceCol]) : ""])),
     discountPercent: "0",
     vatPercent: "10",
-    exchangeRate: "4046",
+    exchangeRate: String(nbcRateFor(dn.sale_date).rate),
     vatTin: "",
     paymentTerm: "",
   });
@@ -15730,6 +15755,7 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
             <div>
               <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase" }}>Exchange rate (៛)</label>
               <input type="number" value={form.exchangeRate} onChange={(e) => setForm({ ...form, exchangeRate: e.target.value })} style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 14, background: C.bg2, color: C.text }} />
+              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>{nbcRateFor(dn.sale_date).date ? `NBC official rate of ${new Date(nbcRateFor(dn.sale_date).date + "T00:00:00").toLocaleDateString("en-GB")}` : "NBC rate not loaded — check it"}</div>
             </div>
           </div>
         )}
