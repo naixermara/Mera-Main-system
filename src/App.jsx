@@ -4165,8 +4165,8 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
       ]);
       setSales(s || []); setItems(i || []);
       try {
-        const [a1, b1, c1] = await Promise.all([sbFetch("stores?select=name"), sbFetch("bigco_stores?select=name"), sbFetch("credit_stores?select=name")]);
-        setStoreNames([...(a1 || []), ...(b1 || []), ...(c1 || [])].map((x) => x.name));
+        const [a1, b1, c1, d1] = await Promise.all([sbFetch("stores?select=name"), sbFetch("bigco_stores?select=name"), sbFetch("credit_stores?select=name"), sbFetch("online_customers?select=name").catch(() => [])]);
+        setStoreNames([...(a1 || []), ...(b1 || []), ...(c1 || []), ...(d1 || [])].map((x) => x.name));
       } catch (e) { /* optional */ }
       try {
         const mv = await sbFetch(`stock_moves?select=reference&reason=eq.${encodeURIComponent("online sale")}`);
@@ -4221,6 +4221,12 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
           created_by: authUser?.email || "unknown",
         }),
       });
+      // New customer → add them to Store Directory › COD / Online (ignored if already there).
+      sbFetch("online_customers?on_conflict=name", {
+        method: "POST",
+        headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+        body: JSON.stringify({ name: form.customer_name.trim(), salesperson: (formSaleRep || "").trim() || null }),
+      }).catch(() => {});
       const stockOk = await saveOnlineSaleLines(sbFetch, inserted.id, lineForm, true, form.date, authUser?.email);
       if (!stockOk) setError("Sale saved, but the warehouse wasn't updated — is the stock table set up?");
       logActivity?.("Logged online sale", form.customer_name.trim(), `${activeLines.map((l) => `${l.qty} ${l.label}`).join(", ")} — ${money(draftTotal)}`);
@@ -4377,7 +4383,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
           </div>
           <div style={{ minWidth: 170 }}>
             <label style={{ fontSize: 9, color: C.textFaint }}>{form.channel === "cod" ? "Store name (pick or type new)" : "Customer / order ref"}</label>
-            <datalist id="online-cod-names">{form.channel === "cod" && Array.from(new Set(storeNames.concat(sales.filter((x) => x.channel === "cod").map((x) => x.customer_name)))).sort().map((n) => <option key={n} value={n} />)}</datalist>
+            <datalist id="online-cod-names">{Array.from(new Set(storeNames.concat(sales.filter((x) => x.channel === "cod").map((x) => x.customer_name)))).sort().map((n) => <option key={n} value={n} />)}</datalist>
             <input type="text" list="online-cod-names" value={form.customer_name} onChange={(e) => setForm({ ...form, customer_name: e.target.value, saleRep: null })} placeholder="e.g. FB order #123" style={{ background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%", display: "block" }} />
           </div>
           <div style={{ flex: 1, minWidth: 170 }}>
@@ -16237,6 +16243,7 @@ function StoresPage({ authUser, C, sbFetch, logActivity }) {
   const [consignmentStores, setConsignmentStores] = useState([]);
   const [creditStores, setCreditStores] = useState([]);
   const [bigcoStores, setBigcoStores] = useState([]);
+  const [onlineCustomers, setOnlineCustomers] = useState([]);
   const [saveError, setSaveError] = useState(false);
   const [showNewStore, setShowNewStore] = useState(false);
   const [editingStoreId, setEditingStoreId] = useState(null);
@@ -16255,12 +16262,14 @@ function StoresPage({ authUser, C, sbFetch, logActivity }) {
   useEffect(() => {
     (async () => {
       try {
-        const [storeRows, creditRows, bigcoRows, salespeopleRows] = await Promise.all([
+        const [storeRows, creditRows, bigcoRows, salespeopleRows, onlineRows] = await Promise.all([
           sbFetch("stores?select=*&order=name.asc"),
           sbFetch("credit_stores?select=*&order=name.asc"),
           sbFetch("bigco_stores?select=*&order=name.asc"),
           sbFetch("salespeople?select=*&order=name.asc"),
+          sbFetch("online_customers?select=*&order=name.asc").catch(() => []),
         ]);
+        setOnlineCustomers(onlineRows || []);
         setConsignmentStores(storeRows || []);
         setCreditStores(creditRows || []);
         setBigcoStores(bigcoRows || []);
@@ -16274,11 +16283,13 @@ function StoresPage({ authUser, C, sbFetch, logActivity }) {
   }, []);
 
   function storesFor(type) {
+    if (type === "online") return onlineCustomers;
     if (type === "credit") return creditStores;
     if (type === "corporate") return bigcoStores;
     return consignmentStores;
   }
   function setStoresFor(type, updater) {
+    if (type === "online") return setOnlineCustomers(updater);
     if (type === "credit") return setCreditStores(updater);
     if (type === "corporate") return setBigcoStores(updater);
     return setConsignmentStores(updater);
@@ -16297,6 +16308,7 @@ function StoresPage({ authUser, C, sbFetch, logActivity }) {
   }
 
   function tableFor(type) {
+    if (type === "online") return "online_customers";
     if (type === "credit") return "credit_stores";
     if (type === "corporate") return "bigco_stores";
     return "stores";
@@ -16311,7 +16323,7 @@ function StoresPage({ authUser, C, sbFetch, logActivity }) {
       const sp = await addSalesperson(form.salesperson);
       if (activeType === "credit") {
         body = { name: trimmed, credit_days: parseInt(form.creditDays, 10) || 30, notes: form.notes, salesperson: sp || null, ...contactInfo };
-      } else if (activeType === "corporate") {
+      } else if (activeType === "corporate" || activeType === "online") {
         body = { name: trimmed, notes: form.notes, salesperson: sp || null, ...contactInfo };
       } else {
         body = { name: trimmed, day: parseInt(form.day, 10) || 1, first_sent: form.firstSent, pl_initial: 0, night_initial: 0, day_initial: 0, salesperson: sp || null, ...contactInfo };
@@ -16321,7 +16333,7 @@ function StoresPage({ authUser, C, sbFetch, logActivity }) {
       setShowNewStore(false);
       setForm(emptyForm);
       setSaveError(false);
-      logActivity?.(`Added ${activeType === "credit" ? "Credit Term" : activeType === "corporate" ? "Corporate Account" : "Consignment"} store`, inserted.name, form.vatTin ? `VAT TIN: ${form.vatTin}` : "");
+      logActivity?.(`Added ${activeType === "credit" ? "Credit Term" : activeType === "corporate" ? "Corporate Account" : activeType === "online" ? "COD / Online" : "Consignment"} store`, inserted.name, form.vatTin ? `VAT TIN: ${form.vatTin}` : "");
     } catch (e) {
       setSaveError(true);
     }
@@ -16333,7 +16345,7 @@ function StoresPage({ authUser, C, sbFetch, logActivity }) {
       const sp = await addSalesperson(changes.salesperson);
       const body = activeType === "credit"
         ? { name: changes.name, phone: changes.phone, email: changes.email, address: changes.address, vat_tin: changes.vatTin, credit_days: parseInt(changes.creditDays, 10) || 30, salesperson: sp || null, notes: changes.notes }
-        : activeType === "corporate"
+        : activeType === "corporate" || activeType === "online"
         ? { name: changes.name, phone: changes.phone, email: changes.email, address: changes.address, vat_tin: changes.vatTin, salesperson: sp || null, notes: changes.notes }
         : { name: changes.name, phone: changes.phone, email: changes.email, address: changes.address, vat_tin: changes.vatTin, day: parseInt(changes.day, 10) || 1, salesperson: sp || null, notes: changes.notes };
       await sbFetch(`${tableFor(activeType)}?id=eq.${storeId}`, { method: "PATCH", body: JSON.stringify(body) });
@@ -16386,6 +16398,7 @@ function StoresPage({ authUser, C, sbFetch, logActivity }) {
           { key: "consignment", label: "Consignment" },
           { key: "credit", label: "Credit Term" },
           { key: "corporate", label: "Corporate Accounts" },
+          { key: "online", label: "COD / Online" },
         ].map((t) => (
           <button
             key={t.key}
@@ -16491,7 +16504,7 @@ function StoresPage({ authUser, C, sbFetch, logActivity }) {
         <div onClick={() => setShowNewStore(false)} style={{ position: "fixed", inset: 0, background: "rgba(6,7,9,0.7)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18, zIndex: 50 }}>
           <div onClick={(e) => e.stopPropagation()} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 26, width: "100%", maxWidth: 460, maxHeight: "90vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
-              <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontSize: 22, margin: 0, fontWeight: 600 }}>New {activeType === "credit" ? "Credit Term" : activeType === "corporate" ? "Corporate Account" : "Consignment"} store</h2>
+              <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontSize: 22, margin: 0, fontWeight: 600 }}>New {activeType === "credit" ? "Credit Term" : activeType === "corporate" ? "Corporate Account" : activeType === "online" ? "COD / Online" : "Consignment"} {activeType === "online" ? "customer" : "store"}</h2>
               <button onClick={() => setShowNewStore(false)} style={{ background: "none", border: "none", color: C.textDim }}><X size={20} /></button>
             </div>
             <StoreFormFields form={form} setForm={setForm} activeType={activeType} C={C} salespeople={salespeople} showName />
