@@ -4216,7 +4216,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
             : { payment_status: "paid", paid_at: form.date, paid_by: authUser?.email || null }),
           promo_note: freeOnlineLines(lineForm).length ? (form.promo || "").trim() || null : null,
           description: form.description.trim(),
-          amount: draftTotal,
+          amount: Math.round(draftTotal * 100) / 100,
           sale_rep: (formSaleRep || "").trim() || null,
           created_by: authUser?.email || "unknown",
         }),
@@ -5916,6 +5916,30 @@ function ApplyPaymentPanel({ r, h, ctx, C, sbFetch, authUser, logActivity, onDon
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
+  // Online/COD sales the office already recorded as "paid" (money came first)
+  // with exactly this amount, around this date, and no ABA payment linked yet.
+  // The payment most likely belongs to one of these — link it instead of
+  // recording the sale a second time.
+  const dayNum = (d) => (d ? new Date(String(d).slice(0, 10) + "T00:00:00Z").getTime() / 86400000 : NaN);
+  const recordedMatches = (ctx.online || []).filter((o) => o.payment_status === "paid"
+    && Math.abs(Number(o.amount || 0) - amount) < 0.01
+    && !/ABA|Cash/i.test(String(o.paid_note || ""))
+    && Math.abs(dayNum(o.date) - dayNum(day)) <= 7);
+  async function linkRecorded(o) {
+    setErr(""); setBusy(true);
+    const who_ = authUser?.email || "unknown";
+    try {
+      await sbFetch(`online_sales?id=eq.${o.id}`, { method: "PATCH", body: JSON.stringify({ paid_note: ref }) });
+      const note = `${o.bill_no || prBills(o.description)[0] || "online sale"} · ${o.customer_name} (already recorded)`;
+      await sbFetch(`pending_payments?id=eq.${r.id}`, { method: "PATCH", body: JSON.stringify({ status: "assigned", assigned_type: "online", assigned_note: note, assigned_by: who_, assigned_at: new Date().toISOString() }) });
+      logActivity?.("Linked payment to recorded sale", o.customer_name, `${fm(amount)} → ${note}`);
+      onDone();
+    } catch (e) {
+      setErr("Couldn't link — try again.");
+      setBusy(false);
+    }
+  }
+
   const custBills = channel === "consignment" ? [] : openBills.filter((b) => b.channel === channel && (!who || prNorm(b.who) === prNorm(who)));
   const chosen = custBills.filter((b) => picked.includes(b.key));
   // Oldest first: fill each chosen bill until the money runs out.
@@ -5991,6 +6015,18 @@ function ApplyPaymentPanel({ r, h, ctx, C, sbFetch, authUser, logActivity, onDon
           </div>
         )
       )}
+      {recordedMatches.length > 0 && (
+        <div style={{ background: `${C.emerald}14`, border: `1px solid ${C.emerald}55`, borderRadius: 8, padding: "8px 10px", marginBottom: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.emerald, marginBottom: 4 }}>This payment matches a sale already recorded as paid</div>
+          {recordedMatches.map((o) => (
+            <div key={o.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 12.5, padding: "3px 0", flexWrap: "wrap" }}>
+              <span>{o.customer_name} · {fmtDate(o.date)} · <b>{fm(o.amount)}</b>{o.channel === "cod" ? " · COD" : " · Online"}</span>
+              <button type="button" disabled={busy} onClick={() => linkRecorded(o)} style={{ background: C.emerald, border: "none", borderRadius: 7, padding: "5px 11px", fontSize: 11.5, fontWeight: 700, color: "#0B1A12", cursor: "pointer" }}>Link to this sale</button>
+            </div>
+          ))}
+          <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 3 }}>Linking doesn't record the sale again — it just marks this money as that sale's payment.</div>
+        </div>
+      )}
       {channel === "consignment" && <div style={{ fontSize: 11.5, color: C.textFaint, marginBottom: 8 }}>Recorded as a payment from this store. Boxes sold are still logged by the visit.</div>}
       {channel !== "consignment" && chosen.length > 0 && (
         <div style={{ fontSize: 11.5, color: leftover > 0.01 ? C.amber : C.textDim, marginBottom: 8 }}>
@@ -6032,7 +6068,7 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen, mode 
         get("bigco_reports?select=id,store_id,invoice_number,amount,paid,report_date"),
         get("bigco_stores?select=id,name"),
         get("visits?select=store_name,date,invoice_number&invoice_number=not.is.null"),
-        get("online_sales?select=id,date,customer_name,amount,description,bill_no,payment_status"),
+        get("online_sales?select=id,date,customer_name,amount,description,bill_no,payment_status,paid_note,channel"),
         get("stores?select=name"),
         get("credit_payments?select=invoice_id,amount"),
       ]);
