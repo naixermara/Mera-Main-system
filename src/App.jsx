@@ -595,6 +595,15 @@ export default function AppRoot() {
 // National Bank of Cambodia official USD→KHR rate. The database refreshes it
 // several times every morning (exchange_rates table, filled by a scheduled
 // job). Invoices use the rate of their own date (or the latest before it).
+// Which payment-term box is ticked on a printed invoice.
+function payKindFor(d, dn) {
+  if (d.pay_kind) return d.pay_kind;
+  const bt = d.business_type || dn?.business_type;
+  if (d.invoice_type === "consignment" || bt === "consignment") return "Consignment";
+  if (bt === "credit" || bt === "corporate") return "Credit";
+  if (bt === "cod") return "COD";
+  return "";
+}
 const CONSIGN_VAT = 10; // VAT % added on a tax invoice for consignment sales
 // Builds a printable invoice (same shape as a sales_invoices row) for the boxes
 // a consignment store sold on one visit. Nothing extra is saved — the visit
@@ -4308,6 +4317,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
       customer_name: sale.customer_name,
       send_to: sale.description || "",
       invoice_type: "commercial",
+      pay_kind: sale.channel === "cod" ? "COD" : "",
       discount_percent: 0,
       vat_percent: 0,
       exchange_rate: nbcRateFor(sale.date).rate,
@@ -14493,6 +14503,13 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
   }
 
   async function deleteDeliveryNote(id) {
+    // An invoice issued from this note must be deleted first — otherwise the
+    // invoice is left behind, hidden but still counted as issued.
+    const linked = invoices.filter((i) => i.delivery_note_id === id);
+    if (linked.length) {
+      alert(`Delete the invoice first (${linked.map((i) => i.invoice_number).join(", ")}), then delete this delivery note.`);
+      return;
+    }
     try {
       const note = notes.find((n) => n.id === id);
       await sbFetch(`delivery_notes?id=eq.${id}`, { method: "DELETE" });
@@ -14549,6 +14566,19 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
       await sbFetch(`sales_invoices?id=eq.${id}`, { method: "DELETE" });
       logActivity?.("Deleted invoice", inv?.customer_name || "", inv?.invoice_number || "");
       setInvoices((prev) => prev.filter((i) => i.id !== id));
+      // If it was the most recent number, the owner/accountant can give the
+      // number back so the next invoice reuses it (no gap). Only when it was
+      // never handed to the customer.
+      const no = String(inv?.invoice_number || "").trim();
+      if (no) {
+        try {
+          const canRelease = await sbFetch("rpc/release_bill_number", { method: "POST", body: JSON.stringify({ p_number: no, p_dry: true }) });
+          if (canRelease === true && window.confirm(`${no} was the latest number.\n\nUse ${no} again for the next invoice?\n\nOnly press OK if this invoice was never printed or given to the customer. Press Cancel to keep it as VOID.`)) {
+            const ok = await sbFetch("rpc/release_bill_number", { method: "POST", body: JSON.stringify({ p_number: no, p_dry: false }) });
+            if (ok === true) { logActivity?.("Released invoice number", inv?.customer_name || "", no); alert(`Done — the next invoice will be ${no}.`); }
+          }
+        } catch (e) { /* releasing is optional */ }
+      }
       setSaveError(false);
     } catch (e) {
       setSaveError(friendlyDbError(e));
@@ -14994,6 +15024,29 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
           )
         )}
       </div>
+
+      {(() => {
+        const noteIds = new Set(notes.map((n) => n.id));
+        const orphans = invoices.filter((i) => !i.delivery_note_id || !noteIds.has(i.delivery_note_id));
+        if (!orphans.length) return null;
+        return (
+          <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, borderRadius: 12, padding: "12px 14px", marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.amber, marginBottom: 4 }}>Invoices whose delivery note was deleted ({orphans.length})</div>
+            <div style={{ fontSize: 11.5, color: C.textDim, marginBottom: 8 }}>These still count as issued. Keep the ones that are real; delete the ones that were mistakes — they'll show as VOID in the Bill Register.</div>
+            {orphans.map((inv) => (
+              <div key={inv.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "7px 0", borderTop: `1px solid ${C.border}`, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 12.5 }}>
+                  <b style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{inv.invoice_number}</b> · {inv.customer_name} · {fmtDate(inv.invoice_date)} · ${invoiceGrandTotal(inv).toLocaleString("en-US", MONEY2)}
+                </span>
+                <span style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => setPrintingDoc({ type: "invoice", data: inv })} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 10px", fontSize: 11.5, fontWeight: 700, color: C.text, cursor: "pointer" }}>Print</button>
+                  <button onClick={() => { if (window.confirm(`Delete ${inv.invoice_number}? It will stay in the Bill Register as VOID.`)) deleteInvoice(inv.id); }} style={{ background: C.roseBg, border: "none", borderRadius: 7, padding: "6px 10px", fontSize: 11.5, fontWeight: 700, color: C.rose, cursor: "pointer" }}>Delete</button>
+                </span>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {stockError && (
         <div style={{ background: C.roseBg, color: C.rose, padding: "12px 14px", borderRadius: 9, fontSize: 13, marginBottom: 16, border: `1px solid ${C.rose}30` }}>
@@ -15952,7 +16005,9 @@ function SingleDocument({ d, isDN, pageBreak, catalog }) {
                   <div style={{ marginTop: 2 }}>
                     <b>ការទូទាត់តាមកាលកំណត់:</b>{" "}
                     {["COD", "Credit", "Consignment"].map((opt) => (
-                      <span key={opt} style={{ marginRight: 8 }}>{d.pay_kind === opt ? "☑" : "☐"} {opt}</span>
+                      <span key={opt} style={{ marginRight: 10, whiteSpace: "nowrap", fontWeight: payKindFor(d) === opt ? 800 : 400 }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 13, height: 13, border: payKindFor(d) === opt ? "2px solid #000" : "1px solid #000", marginRight: 4, verticalAlign: "-2px", fontSize: 13, fontWeight: 900, lineHeight: 1, background: "#fff" }}>{payKindFor(d) === opt ? "✔" : ""}</span>{opt}
+                      </span>
                     ))}
                   </div>
                 )}
@@ -16130,7 +16185,7 @@ function DocumentPrintView({ doc, onClose, linkedDN, catalog }) {
       </div>
 
       {showBothPages && <SingleDocument d={linkedDN} isDN={true} pageBreak={true} catalog={catalog} />}
-      <SingleDocument d={invoiceData} isDN={isDN} pageBreak={false} catalog={catalog} />
+      <SingleDocument d={isDN ? invoiceData : { ...invoiceData, pay_kind: payKindFor(invoiceData, linkedDN) }} isDN={isDN} pageBreak={false} catalog={catalog} />
     </div>,
     document.body
   );
@@ -16167,7 +16222,7 @@ function MultiDocumentPrintView({ docs, onClose, catalog }) {
         return (
           <React.Fragment key={`${doc.type}-${doc.data.id}`}>
             {showLinked && <SingleDocument d={doc.linkedDN} isDN={true} pageBreak={true} catalog={catalog} />}
-            <SingleDocument d={doc.data} isDN={isDN} pageBreak={!isLast} catalog={catalog} />
+            <SingleDocument d={isDN ? doc.data : { ...doc.data, pay_kind: payKindFor(doc.data, doc.linkedDN) }} isDN={isDN} pageBreak={!isLast} catalog={catalog} />
           </React.Fragment>
         );
       })}
