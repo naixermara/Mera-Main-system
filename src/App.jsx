@@ -18,6 +18,9 @@ const PAYROLL_EMAILS = ["rosamaramfi@gmail.com", "kimlychea116@gmail.com"];
 // also giving them payroll. Keep it in step with is_accounting_user() in SQL.
 // The Sales Report (all sales, customers, channels) is for the owner and Kimly only.
 const SALES_REPORT_EMAILS = ["rosamaramfi@gmail.com", "kimlychea116@gmail.com"];
+// The real (management) profit, margin and product cost per box: Rosa and Lita only.
+// The accountant still sees the declared books (P&L for tax), which is her job.
+const PROFIT_EMAILS = ["rosamaramfi@gmail.com", "kimlychea116@gmail.com"];
 const ACCOUNTING_EMAILS = ["rosamaramfi@gmail.com", "kimlychea116@gmail.com", "acc@rolyamfi.com.kh"];
 
 let currentAccessToken = null;
@@ -694,6 +697,7 @@ function MeraConsignmentApp() {
   const canSeePayroll = PAYROLL_EMAILS.includes(String(authUser?.email || "").toLowerCase());
   const canSeeAccounting = ACCOUNTING_EMAILS.includes(String(authUser?.email || "").toLowerCase());
   const canSeeSalesReport = SALES_REPORT_EMAILS.includes(String(authUser?.email || "").toLowerCase());
+  const canSeeProfit = PROFIT_EMAILS.includes(String(authUser?.email || "").toLowerCase());
 
   const [page, setPage] = useState(() => loadSavedNav()?.page || "sales");
   // Set when "+ New delivery note" is pressed on a consignment store. Delivery &
@@ -1555,8 +1559,12 @@ function MeraConsignmentApp() {
   if (authUser && !canSeeSalesReport && salesSubPage === "report") setSalesSubPage("consignment");
 
   const visibleNav = NAV.filter((g) =>
-    g.needs === "payroll" ? canSeePayroll : g.needs === "accounting" ? canSeeAccounting : true
-  ).map((g) => ({ ...g, items: g.items.filter((it) => (it.needs !== "owner" || canSeeSalesReport) && (it.needs !== "accounting" || canSeeAccounting)) }));
+    g.needs === "payroll" ? (canSeePayroll || canSeeProfit) : g.needs === "accounting" ? canSeeAccounting : true
+  ).map((g) => ({ ...g, items: g.items.filter((it) =>
+    it.needs === "profit" ? canSeeProfit
+      : (g.needs === "payroll" && !canSeePayroll) ? false
+      : (it.needs !== "owner" || canSeeSalesReport) && (it.needs !== "accounting" || canSeeAccounting)) }))
+    .filter((g) => g.items.length > 0);
 
   // One place that moves the app, so the sidebar, the overview cards and any
   // future shortcut all land in the same state.
@@ -1782,10 +1790,10 @@ function MeraConsignmentApp() {
           <StoresPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
         ) : page === "accounting" ? (
           canSeeAccounting
-            ? <AccountingPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} openTab={childTab} />
+            ? <AccountingPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} openTab={childTab} canSeeProfit={canSeeProfit} />
             : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to accounting.</div>
         ) : page === "profit" ? (
-          canSeePayroll
+          canSeeProfit
             ? <ProfitPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to profit figures.</div>
         ) : page === "assignreps" ? (
@@ -8195,7 +8203,7 @@ const NAV = [
   // Executive Office — everything sensitive in one place: profit, sales
   // report, marketing spend, salaries and expense approval. Rosa and Lita only.
   { name: "Executive Office", needs: "payroll", items: [
-    { label: "Profit & Margin", page: "profit" },
+    { label: "Profit & Margin", page: "profit", needs: "profit" },
     { label: "Sales by Person", page: "salesbyperson" },
     { label: "Cash Forecast",   page: "cashflow" },
     { label: "Sales Report",    page: "sales", sub: "report", needs: "owner" },
@@ -8394,7 +8402,7 @@ function LedgerPostingPanel({ C, sbFetch, accounts, logActivity, onPosted }) {
   );
 }
 
-function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
+function AccountingPage({ authUser, C, sbFetch, logActivity, openTab, canSeeProfit }) {
   const [tab, setTab] = useState(openTab || "post");
   // The sidebar can point straight at an inner tab.
   useEffect(() => { if (openTab) setTab(openTab); }, [openTab]);
@@ -9912,6 +9920,8 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab }) {
           </>
         );
       })()}
+      {tab === "tax" && <TaxPackPage C={C} sbFetch={sbFetch} />}
+
       {/* ---------------- chart of accounts ---------------- */}
       {tab === "accounts" && (
         <>
@@ -10570,6 +10580,177 @@ function SideNav({ C, nav, active, openGroup, onOpenGroup, onPick, mobileOpen, o
         </div>
       )}
     </>
+  );
+}
+
+// Tax Pack — everything the monthly GDT tax return needs, pulled from the
+// declared books (Accounting) in one place: sales book, purchase book, VAT,
+// 1% prepayment, withholding tax and an estimate of salary tax.
+function TaxPackPage({ C, sbFetch }) {
+  const prevMonth = (() => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 7); })();
+  const [month, setMonth] = useState(prevMonth);
+  const [data, setData] = useState(null);
+  const [unposted, setUnposted] = useState([]);
+  const [err, setErr] = useState("");
+  const [open, setOpen] = useState({ sales: false, purchases: false, wht: false, salary: false, voids: false });
+  const [narrow, setNarrow] = useState(typeof window !== "undefined" && window.innerWidth < 640);
+  useEffect(() => { const f = () => setNarrow(window.innerWidth < 640); window.addEventListener("resize", f); return () => window.removeEventListener("resize", f); }, []);
+
+  useEffect(() => {
+    let live = true;
+    setData(null); setErr("");
+    (async () => {
+      try {
+        const [j, u] = await Promise.all([
+          sbFetch("rpc/tax_pack", { method: "POST", body: JSON.stringify({ p_month: month }) }),
+          sbFetch("rpc/tax_pack_unposted", { method: "POST", body: JSON.stringify({ p_month: month }) }).catch(() => []),
+        ]);
+        if (live) { setData(j); setUnposted(Array.isArray(u) ? u : []); }
+      } catch (e) { if (live) setErr("Couldn't load the tax pack — only the owner, Lita and the accountant can open it."); }
+    })();
+    return () => { live = false; };
+  }, [month]);
+
+  const months = (() => { const out = []; const d = new Date(); d.setDate(1); for (let i = 0; i < 18; i++) { out.push(d.toISOString().slice(0, 7)); d.setMonth(d.getMonth() - 1); } return out; })();
+  const usd = (n) => `$${Number(n || 0).toLocaleString("en-US", MONEY2)}`;
+  const khr = (n) => `៛${Math.round(Number(n || 0)).toLocaleString("en-US")}`;
+  const s = data?.summary || {};
+  const rate = Number(data?.rate || 0);
+  const sales = data?.sales || [];
+  const purchases = data?.purchases || [];
+  const wht = data?.wht || [];
+  const salary = data?.salary || [];
+  const voids = data?.voids || [];
+  const noName = sales.filter((x) => !x.customer).length;
+  const invNoTin = sales.filter((x) => String(x.no || "").startsWith("INV") && !x.tin).length;
+  const salaryTax = Number(s.salary_tax_books || 0) > 0 ? Number(s.salary_tax_books) : Number(s.salary_tax_estimate || 0);
+  const vatPay = Number(s.vat_payable || 0);
+  const totalDue = Math.max(vatPay, 0) + Number(s.prepayment || 0) + Number(s.wht || 0) + salaryTax;
+
+  function download() {
+    if (!data) return;
+    const book = {
+      Summary: [
+        { Item: "Month", Value: monthLabel(month) },
+        { Item: "NBC rate used (USD→KHR)", Value: rate },
+        { Item: "Sales before VAT (turnover)", Value: Number(s.turnover || 0) },
+        { Item: "Output VAT (on sales)", Value: Number(s.output_vat || 0) },
+        { Item: "Input VAT (on purchases)", Value: Number(s.input_vat || 0) },
+        { Item: vatPay >= 0 ? "VAT payable" : "VAT credit carried forward", Value: Math.abs(vatPay) },
+        { Item: "Prepayment of profit tax 1%", Value: Number(s.prepayment || 0) },
+        { Item: "Withholding tax", Value: Number(s.wht || 0) },
+        { Item: Number(s.salary_tax_books || 0) > 0 ? "Salary tax (from books)" : "Salary tax (estimate)", Value: salaryTax },
+        { Item: "Estimated total to pay (USD)", Value: Math.round(totalDue * 100) / 100 },
+        { Item: "Estimated total to pay (KHR)", Value: Math.round(totalDue * rate) },
+      ],
+      "Sales book": sales.map((x) => ({ Date: x.date, "Invoice no": x.no, Type: x.type, Customer: x.customer || "", "VAT TIN": x.tin || "", "Amount before VAT": Number(x.net), VAT: Number(x.vat), Total: Number(x.total), "Total KHR": Math.round(Number(x.total) * rate) })),
+      "Purchase book": purchases.map((x) => ({ Date: x.date, "Doc no": x.no || "", Supplier: x.vendor || "", "VAT TIN": x.tin || "", Description: x.memo || "", "Amount before VAT": Number(x.net), VAT: Number(x.vat), Total: Number(x.total) })),
+      "Withholding tax": wht.map((x) => ({ Date: x.date, "Doc no": x.no || "", Paid_to: x.who || "", Type: x.type, Amount: Number(x.amount) })),
+      "Salary tax": salary.map((x) => ({ Staff: x.name, Position: x.position || "", "Gross USD": Number(x.gross), "Gross KHR": Number(x.gross_khr), "Tax KHR": Number(x.tax_khr), "Tax USD": Number(x.tax_usd) })),
+      "Void invoices": voids.map((x) => ({ Number: x.no, Customer: x.customer || "", "Cancelled on": String(x.voided_at || "").slice(0, 10), "Cancelled by": x.by || "" })),
+    };
+    downloadBlob(`mera-tax-pack-${month}.xls`, buildWorkbook(book), "application/vnd.ms-excel");
+  }
+
+  const card = (label, value, sub, tone) => (
+    <div style={{ background: C.surface, border: `1px solid ${tone ? tone + "66" : C.border}`, borderRadius: 12, padding: "12px 14px" }}>
+      <div style={{ fontSize: 10.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</div>
+      <div style={{ fontSize: 19, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", color: tone || C.text, marginTop: 4 }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: C.textFaint, marginTop: 3 }}>{sub}</div>}
+    </div>
+  );
+  const th = { padding: "7px 9px", fontSize: 10.5, color: C.textFaint, textAlign: "left", fontWeight: 700, whiteSpace: "nowrap" };
+  const td = { padding: "7px 9px", borderTop: `1px solid ${C.border}`, fontSize: 12.5, color: C.text };
+  const num = { ...td, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", whiteSpace: "nowrap" };
+  const section = (key, title, count, total, body) => (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, marginBottom: 10, overflow: "hidden" }}>
+      <button type="button" onClick={() => setOpen({ ...open, [key]: !open[key] })} style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, background: "none", border: "none", padding: "12px 14px", cursor: "pointer", color: C.text, textAlign: "left" }}>
+        <span style={{ fontSize: 13.5, fontWeight: 700 }}>{open[key] ? "▾" : "▸"} {title} <span style={{ color: C.textFaint, fontWeight: 500 }}>({count})</span></span>
+        {total != null && <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 700 }}>{total}</span>}
+      </button>
+      {open[key] && <div style={{ overflowX: "auto", borderTop: `1px solid ${C.border}` }}>{body}</div>}
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+        <div style={{ minWidth: 0 }}>
+          <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: 0 }}>Tax Pack</h2>
+          <div style={{ fontSize: 12, color: C.textFaint, marginTop: 4, maxWidth: 620 }}>Monthly tax return figures for the General Department of Taxation, taken from the declared books. Review, then file. Figures are prepared for checking — the filed return is the responsibility of whoever submits it.</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <select value={month} onChange={(e) => setMonth(e.target.value)} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 9, padding: "9px 10px", fontSize: 13, fontWeight: 600 }}>
+            {months.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
+          </select>
+          <button onClick={download} disabled={!data} style={{ background: C.gold, border: "none", borderRadius: 9, padding: "9px 14px", fontSize: 13, fontWeight: 700, color: "#1A1508", cursor: data ? "pointer" : "default" }}>Download Excel</button>
+        </div>
+      </div>
+
+      {err && <div style={{ background: C.roseBg, color: C.rose, padding: "10px 12px", borderRadius: 9, fontSize: 13, marginBottom: 12 }}>{err}</div>}
+      {!data && !err && <div style={{ padding: 30, color: C.textFaint }}>Loading…</div>}
+
+      {data && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr 1fr" : "repeat(4, 1fr)", gap: 10, marginBottom: 12 }}>
+            {card("Sales before VAT", usd(s.turnover), `${sales.length} invoices · incl. VAT ${usd(s.gross_sales)}`)}
+            {card(vatPay >= 0 ? "VAT payable" : "VAT credit", usd(Math.abs(vatPay)), `Output ${usd(s.output_vat)} − Input ${usd(s.input_vat)}`, vatPay >= 0 ? C.goldBright : C.emerald)}
+            {card("Prepayment 1%", usd(s.prepayment), "1% of sales before VAT")}
+            {card("Withholding tax", usd(s.wht), `${wht.length} payment${wht.length === 1 ? "" : "s"}`)}
+            {card(Number(s.salary_tax_books || 0) > 0 ? "Salary tax" : "Salary tax (est.)", usd(salaryTax), Number(s.salary_tax_books || 0) > 0 ? "From the books" : `${salary.length} staff · estimate`)}
+            {card("Total to pay", usd(totalDue), `≈ ${khr(totalDue * rate)} at NBC ${rate.toLocaleString("en-US")}`, C.goldBright)}
+          </div>
+
+          {(unposted.length > 0 || noName > 0 || invNoTin > 0 || purchases.length === 0) && (
+            <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, borderRadius: 12, padding: "11px 14px", marginBottom: 12, fontSize: 12.5, color: C.text }}>
+              <div style={{ fontWeight: 700, color: C.amber, marginBottom: 4 }}>Check before filing</div>
+              {unposted.length > 0 && <div>• <b>{unposted.length}</b> bill{unposted.length === 1 ? "" : "s"} issued this month {unposted.length === 1 ? "is" : "are"} not yet posted to the books ({unposted.slice(0, 6).map((u) => u.no).join(", ")}{unposted.length > 6 ? "…" : ""}) — post them in Accounting › Post Sales &amp; Payments.</div>}
+              {purchases.length === 0 && <div>• No purchase VAT this month — if suppliers gave VAT invoices, record them under Accounting › Vendors so the input VAT is claimed.</div>}
+              {invNoTin > 0 && <div>• <b>{invNoTin}</b> tax invoice{invNoTin === 1 ? " has" : "s have"} no customer VAT TIN — add it in Store Directory.</div>}
+              {noName > 0 && <div>• <b>{noName}</b> sale{noName === 1 ? "" : "s"} from the old system have no customer name on record.</div>}
+            </div>
+          )}
+
+          {section("sales", "Sales book", sales.length, usd(s.gross_sales), (
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 680 }}>
+              <thead><tr><th style={th}>Date</th><th style={th}>Invoice</th><th style={th}>Customer</th><th style={th}>VAT TIN</th><th style={{ ...th, textAlign: "right" }}>Before VAT</th><th style={{ ...th, textAlign: "right" }}>VAT</th><th style={{ ...th, textAlign: "right" }}>Total</th></tr></thead>
+              <tbody>{sales.map((x, i) => (
+                <tr key={i}><td style={td}>{fmtDate(x.date)}</td><td style={{ ...td, fontFamily: "'IBM Plex Mono', monospace" }}>{x.no}</td><td style={td}>{x.customer || <span style={{ color: C.textFaint }}>—</span>}</td><td style={{ ...td, color: C.textDim }}>{x.tin || "—"}</td><td style={num}>{usd(x.net)}</td><td style={num}>{usd(x.vat)}</td><td style={num}>{usd(x.total)}</td></tr>
+              ))}</tbody>
+            </table>
+          ))}
+          {section("purchases", "Purchase book (input VAT)", purchases.length, usd(s.input_vat), purchases.length === 0 ? <div style={{ padding: 14, fontSize: 12.5, color: C.textFaint }}>No purchases with VAT recorded this month.</div> : (
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 620 }}>
+              <thead><tr><th style={th}>Date</th><th style={th}>Supplier</th><th style={th}>VAT TIN</th><th style={th}>Description</th><th style={{ ...th, textAlign: "right" }}>Before VAT</th><th style={{ ...th, textAlign: "right" }}>VAT</th></tr></thead>
+              <tbody>{purchases.map((x, i) => (
+                <tr key={i}><td style={td}>{fmtDate(x.date)}</td><td style={td}>{x.vendor || "—"}</td><td style={{ ...td, color: C.textDim }}>{x.tin || "—"}</td><td style={{ ...td, color: C.textDim }}>{x.memo || ""}</td><td style={num}>{usd(x.net)}</td><td style={num}>{usd(x.vat)}</td></tr>
+              ))}</tbody>
+            </table>
+          ))}
+          {section("wht", "Withholding tax", wht.length, usd(s.wht), wht.length === 0 ? <div style={{ padding: 14, fontSize: 12.5, color: C.textFaint }}>No withholding tax recorded this month (e.g. on rent or services). If rent was paid, check whether WHT applies.</div> : (
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
+              <thead><tr><th style={th}>Date</th><th style={th}>Paid to</th><th style={th}>Type</th><th style={{ ...th, textAlign: "right" }}>Amount</th></tr></thead>
+              <tbody>{wht.map((x, i) => (<tr key={i}><td style={td}>{fmtDate(x.date)}</td><td style={td}>{x.who || "—"}</td><td style={{ ...td, color: C.textDim }}>{x.type}</td><td style={num}>{usd(x.amount)}</td></tr>))}</tbody>
+            </table>
+          ))}
+          {section("salary", "Salary tax", salary.length, usd(salaryTax), salary.length === 0 ? <div style={{ padding: 14, fontSize: 12.5, color: C.textFaint }}>No payroll for this month yet.</div> : (
+            <>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
+                <thead><tr><th style={th}>Staff</th><th style={th}>Position</th><th style={{ ...th, textAlign: "right" }}>Gross</th><th style={{ ...th, textAlign: "right" }}>Gross ៛</th><th style={{ ...th, textAlign: "right" }}>Tax ៛</th></tr></thead>
+                <tbody>{salary.map((x, i) => (<tr key={i}><td style={td}>{x.name}</td><td style={{ ...td, color: C.textDim }}>{x.position || ""}</td><td style={num}>{usd(x.gross)}</td><td style={num}>{khr(x.gross_khr)}</td><td style={num}>{khr(x.tax_khr)}</td></tr>))}</tbody>
+              </table>
+              <div style={{ padding: "8px 12px", fontSize: 11, color: C.textFaint }}>Estimate using the monthly resident brackets (0% up to ៛1.5M, then 5/10/15/20%) at the NBC rate; spouse/child allowances are not deducted. Confirm before filing.</div>
+            </>
+          ))}
+          {section("voids", "Cancelled (VOID) invoices", voids.length, null, voids.length === 0 ? <div style={{ padding: 14, fontSize: 12.5, color: C.textFaint }}>No invoices cancelled this month.</div> : (
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 420 }}>
+              <thead><tr><th style={th}>Number</th><th style={th}>Customer</th><th style={th}>Cancelled</th></tr></thead>
+              <tbody>{voids.map((x, i) => (<tr key={i}><td style={{ ...td, fontFamily: "'IBM Plex Mono', monospace" }}>{x.no}</td><td style={td}>{x.customer || "—"}</td><td style={{ ...td, color: C.textDim }}>{fmtDate(String(x.voided_at || "").slice(0, 10))}</td></tr>))}</tbody>
+            </table>
+          ))}
+        </>
+      )}
+    </div>
   );
 }
 
