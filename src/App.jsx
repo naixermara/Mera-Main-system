@@ -395,6 +395,7 @@ const emptyLogForm = {
   paid: "",
   owed: "",
   invoiceNumber: "",
+  billType: "commercial", // "commercial" → B bill, "tax" → INV tax invoice (+VAT)
   notes: "",
   saleRep: null, // null = use the store's assigned salesperson
 };
@@ -594,6 +595,40 @@ export default function AppRoot() {
 // National Bank of Cambodia official USD→KHR rate. The database refreshes it
 // several times every morning (exchange_rates table, filled by a scheduled
 // job). Invoices use the rate of their own date (or the latest before it).
+const CONSIGN_VAT = 10; // VAT % added on a tax invoice for consignment sales
+// Builds a printable invoice (same shape as a sales_invoices row) for the boxes
+// a consignment store sold on one visit. Nothing extra is saved — the visit
+// rows and its B / INV number are the record.
+function consignmentInvoiceDoc(store, visit) {
+  const no = String(visit.invoiceNumber || "").trim();
+  const isTax = /^INV/i.test(no);
+  const fields = {};
+  SKUS.forEach((x) => {
+    const sold = visit.rows.filter((r) => r.product === x.visitKey).reduce((a, r) => a + (Number(r.sold) || 0), 0);
+    fields[x.qtyCol] = sold;
+    fields[x.priceCol] = sold > 0 ? Number(store[x.priceKey]) || 0 : 0;
+    fields[x.freeCol] = 0;
+  });
+  const maker = visit.rows.find((r) => r.createdBy)?.createdBy;
+  return {
+    ...fields,
+    invoice_number: no,
+    invoice_date: visit.date,
+    customer_name: store.name,
+    customer_phone: store.phone || "",
+    customer_address: store.address || "",
+    vat_tin: store.vatTin || "",
+    send_to: "",
+    invoice_type: isTax ? "tax" : "commercial",
+    discount_percent: 0,
+    vat_percent: isTax ? CONSIGN_VAT : 0,
+    exchange_rate: nbcRateFor(visit.date).rate,
+    issued_by: maker ? nameOf(maker) : "",
+    sale_rep: visit.rows.find((r) => r.saleRep)?.saleRep || store.salesperson || "",
+    payment_term: "",
+    pay_kind: "Consignment",
+  };
+}
 const PAYMENT_METHOD = "ABA Choumhean Trading"; // the only payment method on delivery notes
 const NBC_RATE_FALLBACK = 4046;
 let NBC_RATES = []; // [{ rate_date, usd_khr }] newest first
@@ -887,6 +922,7 @@ function MeraConsignmentApp() {
             [x.priceKey, Number(r[x.priceCol] || 0)],
           ])),
           salesperson: r.salesperson || "",
+          phone: r.phone || "", address: r.address || "", vatTin: r.vat_tin || "",
         }))
       );
       setVisits(
@@ -901,6 +937,8 @@ function MeraConsignmentApp() {
           owed: Number(r.owed || 0),
           notes: r.notes || "",
           invoiceNumber: r.invoice_number || "",
+          createdBy: r.created_by || "",
+          saleRep: r.sale_rep || "",
         }))
       );
     } catch (e) {
@@ -1287,7 +1325,8 @@ function MeraConsignmentApp() {
           const p = PRODUCTS.find((x) => x.key === r.product);
           return a + r.sold * (Number(p ? store[p.priceKey] : 0) || 0);
         }, 0);
-        const no = await issueBillNumber("B", "consignment visit", store.name, amount);
+        const isTax = logForm.billType === "tax";
+        const no = await issueBillNumber(isTax ? "INV" : "B", isTax ? "consignment visit (tax invoice)" : "consignment visit", store.name, isTax ? Math.round(amount * (1 + CONSIGN_VAT / 100) * 100) / 100 : amount);
         if (no) rows[rows.length - 1].invoiceNumber = no;
       } catch (err) {
         setLogFormError("Couldn't get a bill number — check the connection and try again.");
@@ -2243,6 +2282,22 @@ function MeraConsignmentApp() {
               onChange={(v) => setLogForm({ ...logForm, saleRep: v })}
               style={{ marginBottom: 14 }}
             />
+
+            {SKUS.some((x) => parseFloat(logForm[x.formSold]) > 0) && !String(logForm.invoiceNumber || "").trim() && (
+              <Field label="Invoice to bill the store">
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  {[{ k: "commercial", t: "Commercial invoice (B)" }, { k: "tax", t: `Tax invoice (INV, +${CONSIGN_VAT}% VAT)` }].map((o) => (
+                    <button key={o.k} type="button" onClick={() => setLogForm({ ...logForm, billType: o.k })}
+                      style={{ padding: "9px 8px", borderRadius: 8, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+                        border: `1.5px solid ${logForm.billType === o.k ? C.gold : C.border}`,
+                        background: logForm.billType === o.k ? C.gold + "22" : C.bg2, color: logForm.billType === o.k ? C.goldBright : C.textDim }}>
+                      {o.t}
+                    </button>
+                  ))}
+                </div>
+                <div style={{ fontSize: 11, color: C.textFaint, marginTop: 5 }}>The number is issued when you save. Print it from the store's visit list.</div>
+              </Field>
+            )}
 
             <Field label="Invoice number (optional)">
               <input type="text" value={logForm.invoiceNumber} onChange={(e) => setLogForm({ ...logForm, invoiceNumber: e.target.value })} style={inputStyle} placeholder="e.g. INV-0042" />
@@ -15897,7 +15952,7 @@ function SingleDocument({ d, isDN, pageBreak, catalog }) {
                   <div style={{ marginTop: 2 }}>
                     <b>ការទូទាត់តាមកាលកំណត់:</b>{" "}
                     {["COD", "Credit", "Consignment"].map((opt) => (
-                      <span key={opt} style={{ marginRight: 8 }}>☐ {opt}</span>
+                      <span key={opt} style={{ marginRight: 8 }}>{d.pay_kind === opt ? "☑" : "☐"} {opt}</span>
                     ))}
                   </div>
                 )}
@@ -16694,6 +16749,7 @@ function StatCard({ icon: Icon, label, value, subtitle, onClick, active }) {
 
 function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, showAllTimePayments, onToggleAllTimePayments, onDeleteVisit, onUpdateVisit, onUpdatePrices, onUpdateStoreDetails, salespeople, onAddSalesperson, onLogVisit, onNewDeliveryNote }) {
   const [showHistory, setShowHistory] = useState(false);
+  const [printVisit, setPrintVisit] = useState(null);
   const [editingVisitId, setEditingVisitId] = useState(null);
   const [editForm, setEditForm] = useState(null);
   const [editVisitError, setEditVisitError] = useState(null);
@@ -17147,6 +17203,16 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
                         <div style={{ marginTop: 3, color: C.amber, fontStyle: "italic" }}>{visit.notes}</div>
                       )}
                     </div>
+                    {visit.invoiceNumber && visit.products.some((p) => p.sold > 0) && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setPrintVisit(visit); }}
+                        title={`Print ${/^INV/i.test(visit.invoiceNumber) ? "tax invoice" : "commercial invoice"} ${visit.invoiceNumber}`}
+                        style={{ background: C.gold + "22", border: `1px solid ${C.gold}66`, borderRadius: 6, padding: "0 9px", height: 28, fontSize: 11, fontWeight: 700, color: C.goldBright, flexShrink: 0, cursor: "pointer", whiteSpace: "nowrap" }}
+                      >
+                        Print invoice
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={async (e) => {
@@ -17167,6 +17233,14 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
             </div>
           )}
         </div>
+      )}
+      {printVisit && (
+        <DocumentPrintView
+          doc={{ type: "invoice", data: consignmentInvoiceDoc(store, printVisit) }}
+          onClose={() => setPrintVisit(null)}
+          linkedDN={null}
+          catalog={[]}
+        />
       )}
     </div>
   );
