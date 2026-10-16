@@ -716,7 +716,7 @@ function MeraConsignmentApp() {
   const [navMobile, setNavMobile] = useState(false);
   const [consignmentSubView, setConsignmentSubView] = useState(() => loadSavedNav()?.consignmentSubView || "regular");
   // One title for both the page header and the browser tab.
-  const pageTitle = page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : childTab === "invoices" ? "Invoices" : childTab === "notes" ? "Delivery Notes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "salesbyperson" ? "Sales by Person" : page === "fieldvisits" ? "Field Visits" : page === "assignreps" ? "Salesperson Assignment" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "close" ? "Month Close" : page === "stockplan" ? "Stock Forecast" : page === "cashflow" ? "Cash Forecast" : page === "expenses" ? (childTab === "approve" ? "Expense Register" : "Expenses") : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Term" : salesSubPage === "online" ? "Online & COD" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "cash" ? "Cash Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : (consignmentSubView === "bigco" ? "Corporate Accounts" : "Consignment")) : "Operations";
+  const pageTitle = page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : childTab === "invoices" ? "Invoices" : childTab === "notes" ? "Delivery Notes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "salesbyperson" ? "Sales by Person" : page === "fieldvisits" ? "Field Visits" : page === "assignreps" ? "Salesperson Assignment" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "sellout" ? "Sales Analysis" : page === "chainreports" ? "Chain Sales Reports" : page === "close" ? "Month Close" : page === "stockplan" ? "Stock Forecast" : page === "cashflow" ? "Cash Forecast" : page === "expenses" ? (childTab === "approve" ? "Expense Register" : "Expenses") : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Term" : salesSubPage === "online" ? "Online & COD" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "cash" ? "Cash Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : (consignmentSubView === "bigco" ? "Corporate Accounts" : "Consignment")) : "Operations";
   useEffect(() => { document.title = `Mèra — ${pageTitle}`; }, [pageTitle]);
 
   // Remembers which page/tab was open, purely so a browser refresh lands
@@ -1796,6 +1796,12 @@ function MeraConsignmentApp() {
           canSeeProfit
             ? <ProfitPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to profit figures.</div>
+        ) : page === "sellout" ? (
+          canSeePayroll
+            ? <ChainSelloutPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} mode="analysis" />
+            : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>Sales Analysis is in the Executive Office.</div>
+        ) : page === "chainreports" ? (
+          <ChainSelloutPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} mode="office" />
         ) : page === "assignreps" ? (
           <SalespersonAssignmentPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
         ) : page === "fieldvisits" ? (
@@ -8188,6 +8194,7 @@ const NAV = [
     { label: "Field Visits",           page: "fieldvisits" },
     { label: "Salesperson Assignment", page: "assignreps" },
     { label: "Province Coverage",      page: "sales", sub: "coverage" },
+    { label: "Chain Sales Reports",    page: "chainreports" },
   ]},
   { name: "Accounting", needs: "accounting", items: [
     { label: "Post Entry",          page: "accounting", tab: "post" },
@@ -8205,6 +8212,7 @@ const NAV = [
   { name: "Executive Office", needs: "payroll", items: [
     { label: "Profit & Margin", page: "profit", needs: "profit" },
     { label: "Sales by Person", page: "salesbyperson" },
+    { label: "Sales Analysis",  page: "sellout" },
     { label: "Cash Forecast",   page: "cashflow" },
     { label: "Sales Report",    page: "sales", sub: "report", needs: "owner" },
     { label: "Expense Register", page: "expenses", tab: "approve" },
@@ -10748,6 +10756,351 @@ function TaxPackPage({ C, sbFetch }) {
               <tbody>{voids.map((x, i) => (<tr key={i}><td style={{ ...td, fontFamily: "'IBM Plex Mono', monospace" }}>{x.no}</td><td style={td}>{x.customer || "—"}</td><td style={{ ...td, color: C.textDim }}>{fmtDate(String(x.voided_at || "").slice(0, 10))}</td></tr>))}</tbody>
             </table>
           ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+// Chain Sell-out — what chains (Chipmong, Emart…) actually sold off their
+// shelves, branch by branch, from the monthly sales report they send.
+// Gives automatic feedback: best/weak branches, products not selling,
+// unusual prices (promotions), and month-on-month change.
+function ChainSelloutPage({ authUser, C, sbFetch, logActivity, mode = "analysis" }) {
+  const isOffice = mode === "office";
+  const [rows, setRows] = useState(null);
+  const [reports, setReports] = useState([]);
+  const [upload, setUpload] = useState(null); // { chain, period, file, note }
+  const [chain, setChain] = useState("Chipmong");
+  const [period, setPeriod] = useState("");
+  const [entry, setEntry] = useState(null); // { chain, period, branches: [{code,name,qty:{}}] }
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [narrow, setNarrow] = useState(typeof window !== "undefined" && window.innerWidth < 640);
+  useEffect(() => { const f = () => setNarrow(window.innerWidth < 640); window.addEventListener("resize", f); return () => window.removeEventListener("resize", f); }, []);
+
+  async function load() {
+    try {
+      const r = await sbFetch("chain_sellout?select=*&order=period.desc,branch_code.asc");
+      setRows(r || []);
+      try { setReports((await sbFetch("chain_reports?select=*&order=created_at.desc")) || []); } catch (e) { /* optional */ }
+    } catch (e) { setRows([]); setErr("Couldn't load the chain reports."); }
+  }
+  useEffect(() => { load(); }, []);
+
+  const all = rows || [];
+  const chains = Array.from(new Set(["Chipmong", ...all.map((r) => r.chain)]));
+  const periods = Array.from(new Set(all.filter((r) => r.chain === chain).map((r) => r.period))).sort().reverse();
+  const cur = period && periods.includes(period) ? period : periods[0] || "";
+  const prev = periods[periods.indexOf(cur) + 1] || "";
+  const inP = (p) => all.filter((r) => r.chain === chain && r.period === p);
+  const now = inP(cur), before = inP(prev);
+  const skuLabel = (code) => SKUS.find((x) => x.code === code)?.label || code;
+  const usd = (n) => `$${Number(n || 0).toLocaleString("en-US", MONEY2)}`;
+
+  const branches = Array.from(new Map(now.map((r) => [r.branch_code, r.branch_name])).entries()).map(([code, name]) => {
+    const q = {}; SKUS.forEach((x) => { q[x.code] = now.filter((r) => r.branch_code === code && r.product === x.code).reduce((a, r) => a + Number(r.qty || 0), 0); });
+    const total = Object.values(q).reduce((a, b) => a + b, 0);
+    const amount = now.filter((r) => r.branch_code === code).reduce((a, r) => a + Number(r.amount || 0), 0);
+    const prevTotal = before.filter((r) => r.branch_code === code).reduce((a, r) => a + Number(r.qty || 0), 0);
+    return { code, name, q, total, amount, prevTotal, hasPrev: before.some((r) => r.branch_code === code) };
+  }).sort((a, b) => b.total - a.total);
+
+  const totalBoxes = branches.reduce((a, b) => a + b.total, 0);
+  const totalAmt = branches.reduce((a, b) => a + b.amount, 0);
+  const prevBoxes = before.reduce((a, r) => a + Number(r.qty || 0), 0);
+  const change = prevBoxes > 0 ? Math.round(((totalBoxes - prevBoxes) / prevBoxes) * 100) : null;
+  const listed = SKUS.filter((x) => branches.some((b) => b.q[x.code] > 0));
+  const notListed = SKUS.filter((x) => !branches.some((b) => b.q[x.code] > 0));
+
+  // Automatic feedback
+  const tips = [];
+  if (branches.length) {
+    const top = branches.slice(0, 2).map((b) => `${b.name} (${b.total})`).join(" and ");
+    tips.push({ tone: "good", text: `Best branches: ${top} boxes.` });
+    const weak = branches.filter((b) => b.total < 5);
+    if (weak.length) tips.push({ tone: "warn", text: `Almost no sales at ${weak.map((b) => `${b.name} (${b.total})`).join(", ")} — check the shelf, stock and position.` });
+    listed.forEach((x) => {
+      const zero = branches.filter((b) => b.total >= 5 && b.q[x.code] === 0);
+      if (zero.length) tips.push({ tone: "info", text: `${skuLabel(x.code)} sold 0 at ${zero.map((b) => b.name).join(", ")} — maybe not on the shelf there, or customers prefer other products.` });
+    });
+    listed.forEach((x) => {
+      const lines = now.filter((r) => r.product === x.code && Number(r.qty) > 0 && r.unit_cost != null);
+      const costs = lines.map((r) => Number(r.unit_cost)).sort((a, b) => a - b);
+      const median = costs[Math.floor(costs.length / 2)] || 0;
+      const low = lines.filter((r) => median && Number(r.unit_cost) < median * 0.95);
+      if (low.length) tips.push({ tone: "info", text: `${skuLabel(x.code)} paid at a lower price at ${Array.from(new Set(low.map((r) => r.branch_name))).join(", ")} ($${Number(low[0].unit_cost).toFixed(2)} vs usual $${median.toFixed(2)}) — promotion, or check the price with the chain.` });
+    });
+    if (notListed.length) tips.push({ tone: "info", text: `Not sold at any branch: ${notListed.map((x) => x.label).join(", ")} — opportunity if the chain agrees to list them.` });
+    if (prev) {
+      const moved = branches.filter((b) => b.hasPrev && b.prevTotal > 0).map((b) => ({ ...b, pct: Math.round(((b.total - b.prevTotal) / b.prevTotal) * 100) }));
+      const drops = moved.filter((b) => b.pct <= -30).sort((a, b) => a.pct - b.pct);
+      const ups = moved.filter((b) => b.pct >= 30).sort((a, b) => b.pct - a.pct);
+      if (drops.length) tips.push({ tone: "warn", text: `Dropped a lot vs ${monthLabel(prev)}: ${drops.slice(0, 4).map((b) => `${b.name} (${b.pct}%)`).join(", ")}.` });
+      if (ups.length) tips.push({ tone: "good", text: `Grew strongly vs ${monthLabel(prev)}: ${ups.slice(0, 4).map((b) => `${b.name} (+${b.pct}%)`).join(", ")}.` });
+    } else {
+      tips.push({ tone: "info", text: "Add next month's report to see which branches grow or drop. 2–3 months gives a reliable picture." });
+    }
+  }
+
+  // AI reader (Railway service) — fills the quantities table from the uploaded PDF.
+  const READER_URL = "https://chain-report-reader-production.up.railway.app/read";
+  const [reading, setReading] = useState(false);
+  const [aiNote, setAiNote] = useState("");
+  const skuFor = (it) => {
+    const bc = String(it.barcode || "").replace(/\D/g, "");
+    const byBc = SKUS.find((x) => x.barcode && bc && x.barcode === bc);
+    if (byBc) return byBc.code;
+    const d = String(it.description || "").toUpperCase();
+    if (/PANT/.test(d)) return "pant";
+    if (/COOL|MINT|SUMMER|SHORT/.test(d)) return "short";
+    if (/NIGHT|290/.test(d)) return "night";
+    if (/DAILY|LINER|150/.test(d)) return "pl";
+    if (/\bDAY\b|240/.test(d)) return "day";
+    return null;
+  };
+  async function readWithAI(path, chainName, per) {
+    setReading(true); setErr(""); setAiNote("");
+    try {
+      const res = await fetch(READER_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${currentAccessToken || ""}` },
+        body: JSON.stringify({ path }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !Array.isArray(j.branches)) throw new Error(j.error || "The AI reader didn't return any branches.");
+      const unknown = [];
+      const branchesOut = j.branches.map((b) => {
+        const qty = {};
+        (b.items || []).forEach((it) => { const code = skuFor(it); if (code) qty[code] = String((Number(qty[code]) || 0) + (Number(it.qty) || 0)); else unknown.push(it.description || it.barcode); });
+        return { code: String(b.code || "").trim(), name: String(b.name || "").replace(/^SUPER\s+/i, "").trim() || String(b.code || ""), qty };
+      });
+      const p = /^\d{4}-\d{2}$/.test(j.period || "") ? j.period : per;
+      setEntry({ chain: chainName || j.chain || chain, period: p, branches: branchesOut.length ? branchesOut : [{ code: "", name: "", qty: {} }] });
+      const boxes = branchesOut.reduce((a, b) => a + Object.values(b.qty).reduce((x, y) => x + Number(y || 0), 0), 0);
+      setAiNote(`Filled in by AI: ${branchesOut.length} branches, ${boxes} boxes. Check a few numbers against the PDF, then press Save report.${unknown.length ? ` Not matched to a product: ${Array.from(new Set(unknown)).join(", ")}.` : ""}${(j.unclear || []).length ? ` Unclear: ${j.unclear.join("; ")}.` : ""}`);
+    } catch (e) {
+      setErr(`The AI couldn't read this report (${e.message}). You can still type the quantities with “Enter quantities”.`);
+    }
+    setReading(false);
+  }
+
+  async function saveUpload() {
+    if (!upload?.chain?.trim() || !/^\d{4}-\d{2}$/.test(upload.period || "")) { setErr("Choose the chain and month."); return; }
+    if (!upload.file) { setErr("Choose the report file."); return; }
+    setBusy(true); setErr("");
+    try {
+      const safe = upload.file.name.replace(/[^A-Za-z0-9._-]+/g, "_");
+      const path = `${upload.chain.trim().replace(/[^A-Za-z0-9]+/g, "_")}/${upload.period}/${Date.now()}_${safe}`;
+      const res = await fetch(`${SUPABASE_URL}/storage/v1/object/chain-reports/${path}`, {
+        method: "POST",
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${currentAccessToken || SUPABASE_KEY}`, "Content-Type": upload.file.type || "application/octet-stream" },
+        body: upload.file,
+      });
+      if (!res.ok) throw new Error(await res.text());
+      await sbFetch("chain_reports", { method: "POST", body: JSON.stringify({ chain: upload.chain.trim(), period: upload.period, file_path: path, file_name: upload.file.name, note: upload.note || null, status: "received", created_by: authUser?.email || "unknown" }) });
+      logActivity?.("Chain report uploaded", upload.chain.trim(), `${monthLabel(upload.period)} · ${upload.file.name}`);
+      const up = upload;
+      setUpload(null);
+      await load();
+      await readWithAI(path, up.chain.trim(), up.period);
+    } catch (e) { setErr("Couldn't upload — check the connection and try again."); }
+    setBusy(false);
+  }
+  async function openFile(r) {
+    try {
+      const res = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/chain-reports/${r.file_path}`, {
+        method: "POST",
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${currentAccessToken || SUPABASE_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ expiresIn: 600 }),
+      });
+      const j = await res.json();
+      if (j?.signedURL) window.open(`${SUPABASE_URL}/storage/v1${j.signedURL}`, "_blank", "noopener");
+    } catch (e) { setErr("Couldn't open the file."); }
+  }
+
+  function startEntry() {
+    const lastBranches = Array.from(new Map(inP(periods[0] || "").map((r) => [r.branch_code, r.branch_name])).entries());
+    const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1);
+    setEntry({ chain, period: d.toISOString().slice(0, 7), branches: (lastBranches.length ? lastBranches : [["", ""]]).map(([code, name]) => ({ code, name, qty: {} })) });
+    setErr("");
+  }
+  async function saveEntry() {
+    if (!entry?.chain?.trim() || !/^\d{4}-\d{2}$/.test(entry.period)) { setErr("Choose the chain and month."); return; }
+    const lastCost = (code, p) => { const r = all.find((x) => x.chain === entry.chain && x.branch_code === code && x.product === p && x.unit_cost != null) || all.find((x) => x.chain === entry.chain && x.product === p && x.unit_cost != null); return r ? Number(r.unit_cost) : null; };
+    const body = [];
+    entry.branches.forEach((b) => {
+      if (!String(b.code).trim() && !String(b.name).trim()) return;
+      SKUS.forEach((x) => {
+        const q = parseFloat(b.qty[x.code]);
+        if (q > 0) { const uc = lastCost(b.code, x.code); body.push({ chain: entry.chain.trim(), period: entry.period, branch_code: String(b.code || b.name).trim(), branch_name: String(b.name || b.code).trim(), product: x.code, qty: q, unit_cost: uc, amount: uc != null ? Math.round(q * uc * 100) / 100 : null, created_by: authUser?.email || "unknown" }); }
+      });
+    });
+    if (!body.length) { setErr("Enter at least one quantity."); return; }
+    setBusy(true); setErr("");
+    try {
+      await sbFetch("chain_sellout?on_conflict=chain,period,branch_code,product", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify(body) });
+      logActivity?.("Chain sell-out added", entry.chain, `${monthLabel(entry.period)} · ${body.reduce((a, r) => a + r.qty, 0)} boxes`);
+      setChain(entry.chain.trim()); setPeriod(entry.period); setEntry(null); setAiNote("");
+      await load();
+    } catch (e) { setErr("Couldn't save — check the connection and try again."); }
+    setBusy(false);
+  }
+
+  const card = (label, value, sub, tone) => (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px" }}>
+      <div style={{ fontSize: 10.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", color: tone || C.text, marginTop: 4 }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: C.textFaint, marginTop: 3 }}>{sub}</div>}
+    </div>
+  );
+  const th = { padding: "8px 9px", fontSize: 10.5, color: C.textFaint, textAlign: "right", fontWeight: 700, whiteSpace: "nowrap" };
+  const td = { padding: "8px 9px", borderTop: `1px solid ${C.border}`, fontSize: 12.5, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", color: C.text };
+  const inp = { background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 7, padding: "7px 8px", fontSize: 12.5, width: "100%", boxSizing: "border-box" };
+
+  if (!rows) return <div style={{ padding: 40, color: C.textFaint }}>Loading…</div>;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12, flexWrap: "wrap", marginTop: 4, marginBottom: 14 }}>
+        <div style={{ minWidth: 0 }}>
+          <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: 0 }}>{isOffice ? "Chain Sales Reports" : "Sales Analysis"}</h2>
+          <div style={{ fontSize: 12, color: C.textFaint, marginTop: 4, maxWidth: 640 }}>{isOffice
+            ? "Upload each chain's monthly sales report (Chipmong, Emart…) and enter the boxes sold per branch. The analysis appears in the Executive Office."
+            : "What each chain branch actually sold to shoppers, from the chain's monthly sales report — with automatic feedback."}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <select value={chain} onChange={(e) => { setChain(e.target.value); setPeriod(""); }} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 9, padding: "9px 10px", fontSize: 13, fontWeight: 600 }}>
+            {chains.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <select value={cur} onChange={(e) => setPeriod(e.target.value)} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 9, padding: "9px 10px", fontSize: 13, fontWeight: 600 }}>
+            {periods.length === 0 && <option value="">No reports yet</option>}
+            {periods.map((p) => <option key={p} value={p}>{monthLabel(p)}</option>)}
+          </select>
+          {isOffice && <button onClick={() => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); setUpload({ chain, period: d.toISOString().slice(0, 7), file: null, note: "" }); setErr(""); }} style={{ background: "none", border: `1px solid ${C.gold}`, borderRadius: 9, padding: "9px 14px", fontSize: 13, fontWeight: 700, color: C.goldBright, cursor: "pointer" }}>⬆ Upload report</button>}
+          {isOffice && <button onClick={startEntry} style={{ background: C.gold, border: "none", borderRadius: 9, padding: "9px 14px", fontSize: 13, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>+ Enter quantities</button>}
+        </div>
+      </div>
+      {err && <div style={{ background: C.roseBg, color: C.rose, padding: "9px 12px", borderRadius: 9, fontSize: 12.5, marginBottom: 12 }}>{err}</div>}
+
+      {isOffice && upload && (
+        <div style={{ background: C.surface, border: `1px solid ${C.gold}66`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+            <input value={upload.chain} onChange={(e) => setUpload({ ...upload, chain: e.target.value })} placeholder="Chain (e.g. Chipmong)" style={{ ...inp, flex: "1 1 160px", width: "auto" }} />
+            <input type="month" value={upload.period} onChange={(e) => setUpload({ ...upload, period: e.target.value })} style={{ ...inp, flex: "1 1 140px", width: "auto" }} />
+          </div>
+          <input type="file" accept=".pdf,.xls,.xlsx,.csv,image/*" onChange={(e) => setUpload({ ...upload, file: e.target.files?.[0] || null })} style={{ fontSize: 12.5, color: C.text, marginBottom: 8, display: "block" }} />
+          <input value={upload.note} onChange={(e) => setUpload({ ...upload, note: e.target.value })} placeholder="Note (optional)" style={{ ...inp, marginBottom: 8 }} />
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button type="button" onClick={() => setUpload(null)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
+            <button type="button" disabled={busy} onClick={saveUpload} style={{ background: C.gold, border: "none", color: "#1A1508", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>{busy ? "Uploading…" : "Upload"}</button>
+          </div>
+          <div style={{ fontSize: 11, color: C.textFaint, marginTop: 6 }}>After uploading, the AI reads the report and fills in the quantities for you to check.</div>
+        </div>
+      )}
+      {isOffice && (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 14px", marginBottom: 14 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>Reports received</div>
+          {reports.length === 0 ? <div style={{ fontSize: 12.5, color: C.textFaint }}>No reports uploaded yet.</div> : reports.map((r) => {
+            const entered = all.some((x) => x.chain === r.chain && x.period === r.period);
+            return (
+              <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "6px 0", borderTop: `1px solid ${C.border}`, fontSize: 12.5, flexWrap: "wrap" }}>
+                <span><b>{r.chain}</b> · {monthLabel(r.period)} · <span style={{ color: C.textDim }}>{r.file_name || "—"}</span></span>
+                <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ fontWeight: 700, color: entered ? C.emerald : C.amber }}>{entered ? "✓ Entered" : "Waiting for quantities"}</span>
+                  {r.file_path && !entered && <button type="button" disabled={reading} onClick={() => readWithAI(r.file_path, r.chain, r.period)} style={{ background: "none", border: `1px solid ${C.gold}`, color: C.goldBright, borderRadius: 7, padding: "4px 9px", fontSize: 11.5, cursor: "pointer" }}>{reading ? "Reading…" : "Read with AI"}</button>}
+                  {r.file_path && <button type="button" onClick={() => openFile(r)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.text, borderRadius: 7, padding: "4px 9px", fontSize: 11.5, cursor: "pointer" }}>Open</button>}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {isOffice && reading && <div style={{ background: C.surface, border: `1px solid ${C.gold}66`, borderRadius: 12, padding: "12px 14px", marginBottom: 14, fontSize: 13 }}>🤖 Reading the report with AI… this takes about 20–60 seconds.</div>}
+      {isOffice && entry && aiNote && <div style={{ background: `${C.emerald}14`, border: `1px solid ${C.emerald}55`, borderRadius: 10, padding: "9px 12px", marginBottom: 8, fontSize: 12.5, color: C.text }}>{aiNote}</div>}
+      {isOffice && entry && (
+        <div style={{ background: C.surface, border: `1px solid ${C.gold}66`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+            <input value={entry.chain} onChange={(e) => setEntry({ ...entry, chain: e.target.value })} placeholder="Chain (e.g. Chipmong)" style={{ ...inp, flex: "1 1 160px", width: "auto" }} />
+            <input type="month" value={entry.period} onChange={(e) => setEntry({ ...entry, period: e.target.value })} style={{ ...inp, flex: "1 1 140px", width: "auto" }} />
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
+              <thead><tr><th style={{ ...th, textAlign: "left" }}>Code</th><th style={{ ...th, textAlign: "left" }}>Branch</th>{SKUS.map((x) => <th key={x.code} style={th}>{x.label}</th>)}<th style={th}></th></tr></thead>
+              <tbody>{entry.branches.map((b, i) => (
+                <tr key={i}>
+                  <td style={{ ...td, textAlign: "left", width: 70 }}><input value={b.code} onChange={(e) => { const br = [...entry.branches]; br[i] = { ...b, code: e.target.value }; setEntry({ ...entry, branches: br }); }} style={inp} /></td>
+                  <td style={{ ...td, textAlign: "left", minWidth: 140 }}><input value={b.name} onChange={(e) => { const br = [...entry.branches]; br[i] = { ...b, name: e.target.value }; setEntry({ ...entry, branches: br }); }} style={inp} /></td>
+                  {SKUS.map((x) => <td key={x.code} style={{ ...td, width: 72 }}><input type="number" min="0" value={b.qty[x.code] ?? ""} onChange={(e) => { const br = [...entry.branches]; br[i] = { ...b, qty: { ...b.qty, [x.code]: e.target.value } }; setEntry({ ...entry, branches: br }); }} style={{ ...inp, textAlign: "right" }} placeholder="0" /></td>)}
+                  <td style={{ ...td, width: 30 }}><button type="button" onClick={() => setEntry({ ...entry, branches: entry.branches.filter((_, k) => k !== i) })} style={{ background: "none", border: "none", color: C.rose, cursor: "pointer", fontSize: 14 }}>×</button></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+            <button type="button" onClick={() => setEntry({ ...entry, branches: [...entry.branches, { code: "", name: "", qty: {} }] })} style={{ background: "none", border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, cursor: "pointer" }}>+ Branch</button>
+            <span style={{ flex: 1 }} />
+            <button type="button" onClick={() => setEntry(null)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
+            <button type="button" disabled={busy} onClick={saveEntry} style={{ background: C.gold, border: "none", color: "#1A1508", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>{busy ? "Saving…" : "Save report"}</button>
+          </div>
+          <div style={{ fontSize: 11, color: C.textFaint, marginTop: 6 }}>Enter boxes sold (Sales Quantity). Prices are taken from the chain's last report.</div>
+        </div>
+      )}
+
+      {!cur ? (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 24, color: C.textFaint, fontSize: 13, textAlign: "center" }}>No reports for {chain} yet.</div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr 1fr" : "repeat(4, 1fr)", gap: 10, marginBottom: 12 }}>
+            {card("Boxes sold", totalBoxes.toLocaleString("en-US"), monthLabel(cur))}
+            {card("Value (excl. VAT)", usd(totalAmt), `incl. VAT ≈ ${usd(totalAmt * 1.1)}`)}
+            {!isOffice && card("vs last month", change == null ? "—" : `${change > 0 ? "+" : ""}${change}%`, prev ? `${monthLabel(prev)}: ${prevBoxes} boxes` : "No earlier report", change == null ? null : change >= 0 ? C.emerald : C.rose)}
+            {card("Branches selling", `${branches.filter((b) => b.total > 0).length}`, `avg ${branches.length ? Math.round(totalBoxes / branches.length) : 0} boxes each`)}
+          </div>
+
+          {!isOffice && tips.length > 0 && (
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", marginBottom: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>Feedback</div>
+              {tips.map((t, i) => (
+                <div key={i} style={{ display: "flex", gap: 8, fontSize: 12.5, padding: "4px 0", color: C.text }}>
+                  <span style={{ color: t.tone === "good" ? C.emerald : t.tone === "warn" ? C.amber : C.goldBright, fontWeight: 800 }}>{t.tone === "good" ? "▲" : t.tone === "warn" ? "⚠" : "•"}</span>
+                  <span>{t.text}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
+              <thead><tr>
+                <th style={{ ...th, textAlign: "left" }}>Branch</th>
+                {listed.map((x) => <th key={x.code} style={th}>{x.label}</th>)}
+                <th style={th}>Total</th><th style={th}>Value</th>{prev && <th style={th}>vs {monthLabel(prev).split(" ")[0]}</th>}
+              </tr></thead>
+              <tbody>
+                {branches.map((b) => {
+                  const pct = b.hasPrev && b.prevTotal > 0 ? Math.round(((b.total - b.prevTotal) / b.prevTotal) * 100) : null;
+                  return (
+                    <tr key={b.code} style={{ background: b.total < 5 ? `${C.amber}12` : "none" }}>
+                      <td style={{ ...td, textAlign: "left", fontFamily: "inherit" }}><span style={{ color: C.textFaint, marginRight: 6 }}>{b.code}</span>{b.name}</td>
+                      {listed.map((x) => <td key={x.code} style={{ ...td, color: b.q[x.code] === 0 ? C.textFaint : C.text }}>{b.q[x.code]}</td>)}
+                      <td style={{ ...td, fontWeight: 700 }}>{b.total}</td>
+                      <td style={td}>{usd(b.amount)}</td>
+                      {prev && <td style={{ ...td, color: pct == null ? C.textFaint : pct >= 0 ? C.emerald : C.rose }}>{pct == null ? "new" : `${pct > 0 ? "+" : ""}${pct}%`}</td>}
+                    </tr>
+                  );
+                })}
+                <tr>
+                  <td style={{ ...td, textAlign: "left", fontFamily: "inherit", fontWeight: 700 }}>Total</td>
+                  {listed.map((x) => <td key={x.code} style={{ ...td, fontWeight: 700 }}>{branches.reduce((a, b) => a + b.q[x.code], 0)}</td>)}
+                  <td style={{ ...td, fontWeight: 700 }}>{totalBoxes}</td>
+                  <td style={{ ...td, fontWeight: 700 }}>{usd(totalAmt)}</td>
+                  {prev && <td style={td}></td>}
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </>
       )}
     </div>
