@@ -5930,7 +5930,7 @@ function ApplyPaymentPanel({ r, h, ctx, C, sbFetch, authUser, logActivity, onDon
     const who_ = authUser?.email || "unknown";
     try {
       await sbFetch(`online_sales?id=eq.${o.id}`, { method: "PATCH", body: JSON.stringify({ paid_note: ref }) });
-      const note = `${o.bill_no || prBills(o.description)[0] || "online sale"} · ${o.customer_name} (already recorded)`;
+      const note = `${o.bill_no || prBills(o.description)[0] || "Online sale"} · ${o.customer_name}`;
       await sbFetch(`pending_payments?id=eq.${r.id}`, { method: "PATCH", body: JSON.stringify({ status: "assigned", assigned_type: "online", assigned_note: note, assigned_by: who_, assigned_at: new Date().toISOString() }) });
       logActivity?.("Linked payment to recorded sale", o.customer_name, `${fm(amount)} → ${note}`);
       onDone();
