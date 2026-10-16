@@ -597,6 +597,19 @@ export default function AppRoot() {
 const PAYMENT_METHOD = "ABA Choumhean Trading"; // the only payment method on delivery notes
 const NBC_RATE_FALLBACK = 4046;
 let NBC_RATES = []; // [{ rate_date, usd_khr }] newest first
+// Names of the people who log in (Settings → user names). Used so "Issued by"
+// on delivery notes and invoices is always the person logged in.
+let USER_NAMES = {};
+async function loadUserNames() {
+  try {
+    const rows = await sbFetch("user_names?select=email,name");
+    if (Array.isArray(rows)) USER_NAMES = Object.fromEntries(rows.map((r) => [String(r.email).toLowerCase(), r.name]));
+  } catch (e) {}
+}
+function nameOf(email) {
+  if (!email) return "";
+  return USER_NAMES[String(email).toLowerCase()] || String(email).split("@")[0];
+}
 async function loadNbcRates() {
   try {
     const rows = await sbFetch("exchange_rates?select=rate_date,usd_khr&order=rate_date.desc&limit=400");
@@ -631,7 +644,7 @@ function MeraConsignmentApp() {
 
   const [authUser, setAuthUser] = useState(undefined); // undefined = checking, null = logged out, object = logged in
   const [nbcToday, setNbcToday] = useState({ rate: NBC_RATE_FALLBACK, date: null });
-  useEffect(() => { if (authUser) loadNbcRates().then(() => setNbcToday(nbcRateFor())); }, [authUser]);
+  useEffect(() => { if (authUser) { loadUserNames(); loadNbcRates().then(() => setNbcToday(nbcRateFor())); } }, [authUser]);
   const [authError, setAuthError] = useState(null);
   const [authLoading, setAuthLoading] = useState(false);
   const canSeePayroll = PAYROLL_EMAILS.includes(String(authUser?.email || "").toLowerCase());
@@ -14306,7 +14319,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
           store_id: storeId,
           issued_date: dnForm.issuedDate,
           sale_date: dnForm.saleDate,
-          issued_by: dnForm.issuedBy,
+          issued_by: nameOf(authUser?.email),
           sale_rep: dnForm.saleRep,
           payment_method: PAYMENT_METHOD,
           ...Object.fromEntries(SKUS.flatMap((x) => [
@@ -15262,7 +15275,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
               <div>
                 <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase" }}>Issued by</label>
-                <input type="text" value={dnForm.issuedBy} onChange={(e) => setDnForm({ ...dnForm, issuedBy: e.target.value })} style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 14, background: C.bg2, color: C.text }} />
+                <input type="text" value={nameOf(authUser?.email)} readOnly title="Always the person logged in" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 14, background: C.bg2, color: C.textDim, cursor: "default" }} />
               </div>
               <div>
                 <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase" }}>Sale rep</label>
@@ -15522,7 +15535,7 @@ function EditDocumentModal({ doc, C, salespeople, canChangeAmounts, amountsLocke
         </div>
         <div style={{ marginBottom: 12 }}>{field("Address", "customerAddress")}</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
-          {field("Issued by", "issuedBy")}
+          <div><label style={lbl}>Issued by</label><input type="text" value={form.issuedBy} readOnly title="Set automatically to the person who issued it" style={{ ...inp, color: C.textDim, cursor: "default" }} /></div>
           <div>
             <label style={lbl}>Sales representative</label>
             <select value={form.saleRep} onChange={set("saleRep")} style={inp}>
@@ -15639,7 +15652,7 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
           order_no: dn.order_no,
           invoice_date: dn.sale_date,
           payment_term: form.paymentTerm,
-          issued_by: dn.issued_by,
+          issued_by: nameOf(authUser?.email), // the person releasing the invoice
           sale_rep: dn.sale_rep,
           // Every product on the note carries over — sold boxes at their
           // price, and any free gift boxes (printed at $0.00).
