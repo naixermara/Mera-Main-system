@@ -594,6 +594,7 @@ export default function AppRoot() {
 // National Bank of Cambodia official USD→KHR rate. The database refreshes it
 // several times every morning (exchange_rates table, filled by a scheduled
 // job). Invoices use the rate of their own date (or the latest before it).
+const PAYMENT_METHOD = "ABA Choumhean Trading"; // the only payment method on delivery notes
 const NBC_RATE_FALLBACK = 4046;
 let NBC_RATES = []; // [{ rate_date, usd_khr }] newest first
 async function loadNbcRates() {
@@ -14307,7 +14308,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
           sale_date: dnForm.saleDate,
           issued_by: dnForm.issuedBy,
           sale_rep: dnForm.saleRep,
-          payment_method: dnForm.paymentMethod,
+          payment_method: PAYMENT_METHOD,
           ...Object.fromEntries(SKUS.flatMap((x) => [
             [x.qtyCol, parseFloat(dnForm[x.formQty]) || 0],
             [x.freeCol, parseFloat(dnForm[x.formFree]) || 0],
@@ -14622,7 +14623,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
         if (dn && qtyChanged) savedDN = await patchRow("delivery_notes", dn.id, qtyCols);
       } else {
         savedDN = await patchRow("delivery_notes", d.id, {
-          ...shared, sale_date: form.date, payment_method: form.paymentMethod, ...qtyCols, ...priceCols,
+          ...shared, sale_date: form.date, payment_method: PAYMENT_METHOD, ...qtyCols, ...priceCols,
         });
       }
 
@@ -15243,7 +15244,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
               </div>
               <div>
                 <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase" }}>Payment method</label>
-                <input type="text" value={dnForm.paymentMethod} onChange={(e) => setDnForm({ ...dnForm, paymentMethod: e.target.value })} placeholder="e.g. ABA Choumhean Trading" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 14, background: C.bg2, color: C.text }} />
+                <input type="text" value={PAYMENT_METHOD} readOnly style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 14, background: C.bg2, color: C.textDim, cursor: "default" }} />
               </div>
             </div>
 
@@ -15529,7 +15530,7 @@ function EditDocumentModal({ doc, C, salespeople, canChangeAmounts, amountsLocke
               {[...new Set([...(salespeople || []), form.saleRep].filter(Boolean))].map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
           </div>
-          {isDN ? field("Payment method", "paymentMethod") : field("Payment term", "paymentTerm")}
+          {isDN ? (<div><label style={lbl}>Payment method</label><input type="text" value={PAYMENT_METHOD} readOnly style={{ ...inp, color: C.textDim, cursor: "default" }} /></div>) : field("Payment term", "paymentTerm")}
           {!isDN && d.invoice_type !== "consignment" && field("VAT TIN", "vatTin")}
         </div>
 
@@ -15959,7 +15960,7 @@ function SingleDocument({ d, isDN, pageBreak, catalog }) {
 
         {isDN ? (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, fontSize: 11 }}>
-            <div>- Payment Method : {d.payment_method || "—"}</div>
+            <div>- Payment Method : {PAYMENT_METHOD}</div>
             <div><b>Total Qty :</b> {products.reduce((a, p) => a + p.qty, 0) + freeItems.reduce((a, p) => a + p.qty, 0)}{freeItems.length > 0 && <> (incl. {freeItems.reduce((a, p) => a + p.qty, 0)} free)</>}</div>
           </div>
         ) : (
