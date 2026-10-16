@@ -951,7 +951,7 @@ function MeraConsignmentApp() {
   const [userNames, setUserNames] = useState({});
   const [editingNames, setEditingNames] = useState(null); // { email: name } while editing
   const [logPerson, setLogPerson] = useState("");
-  const KNOWN_LOGINS = ["rosamaramfi@gmail.com", "choumheantrading@gmail.com", "kimlychea116@gmail.com", "jeryyka6@gmail.com", "acc@rolyamfi.com.kh"];
+  const KNOWN_LOGINS = ["rosamaramfi@gmail.com", "choumheantrading@gmail.com", "kimlychea116@gmail.com", "vadab21.482@gmail.com", "acc@rolyamfi.com.kh"];
   const personLabel = (email) => userNames[email] || email;
   async function saveUserNames() {
     try {
