@@ -11195,10 +11195,16 @@ function ChainSelloutPage({ authUser, C, sbFetch, logActivity, mode = "analysis"
   // Automatic feedback
   const tips = [];
   if (branches.length) {
-    const top = branches.slice(0, 2).map((b) => `${b.name} (${b.total})`).join(" and ");
-    tips.push({ tone: "good", text: `Best branches: ${top} boxes.` });
-    const weak = branches.filter((b) => b.total < 5);
-    if (weak.length) tips.push({ tone: "warn", text: `Almost no sales at ${weak.map((b) => `${b.name} (${b.total})`).join(", ")} — check the shelf, stock and position.` });
+    // A branch is only "best" or "weak" compared with the others — never both.
+    const best = branches[0].total;
+    if (best < 5) {
+      tips.push({ tone: "warn", text: `Sales are low at every branch (${totalBoxes} boxes in total${branches.length > 1 ? `: ${branches.map((b) => `${b.name} ${b.total}`).join(", ")}` : ""}) — check the shelf, stock and position.` });
+    } else {
+      const topList = branches.length > 1 ? branches.slice(0, 2) : branches;
+      tips.push({ tone: "good", text: `${topList.length > 1 ? "Best branches" : "Best branch"}: ${topList.map((b) => `${b.name} (${b.total})`).join(" and ")} boxes.` });
+      const weak = branches.filter((b) => !topList.includes(b) && b.total < Math.max(5, best * 0.3));
+      if (weak.length) tips.push({ tone: "warn", text: `Almost no sales at ${weak.map((b) => `${b.name} (${b.total})`).join(", ")} — check the shelf, stock and position.` });
+    }
     listed.forEach((x) => {
       const zero = branches.filter((b) => b.total >= 5 && b.q[x.code] === 0);
       if (zero.length) tips.push({ tone: "info", text: `${skuLabel(x.code)} sold 0 at ${zero.map((b) => b.name).join(", ")} — maybe not on the shelf there, or customers prefer other products.` });
@@ -11258,11 +11264,21 @@ function ChainSelloutPage({ authUser, C, sbFetch, logActivity, mode = "analysis"
   async function readWithAI(path, chainName, per, report) {
     setReading(true); setErr(""); setAiNote("");
     try {
-      const res = await fetch(READER_URL, {
+      // The login token lasts about an hour. Ask for a fresh one if the
+      // reader says it has expired, then try once more.
+      const callReader = () => fetch(READER_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${currentAccessToken || ""}` },
         body: JSON.stringify({ path }),
       });
+      try { await ensureFreshAccessToken(); } catch (e) { /* fall back to the retry below */ }
+      let res = await callReader();
+      if (res.status === 401) {
+        let saved = null;
+        try { saved = localStorage.getItem("mera_refresh"); } catch (e) { /* private mode */ }
+        const fresh = saved ? await refreshSession(saved).catch(() => null) : null;
+        if (fresh && fresh.access_token) { setAccessToken(fresh.access_token, fresh.refresh_token); res = await callReader(); }
+      }
       const j = await res.json().catch(() => ({}));
       if (!res.ok || !Array.isArray(j.branches)) throw new Error(j.error || "The AI reader didn't return any branches.");
       const unknown = [];
