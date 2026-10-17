@@ -11239,7 +11239,23 @@ function ChainSelloutPage({ authUser, C, sbFetch, logActivity, mode = "analysis"
     if (/\bDAY\b|240/.test(d)) return "day";
     return null;
   };
-  async function readWithAI(path, chainName, per) {
+  // Turns a filled entry into chain_sellout rows (unit cost = last known cost).
+  function rowsFor(en) {
+    const lastCost = (code, p) => { const r = all.find((x) => x.chain === en.chain && x.branch_code === code && x.product === p && x.unit_cost != null) || all.find((x) => x.chain === en.chain && x.product === p && x.unit_cost != null); return r ? Number(r.unit_cost) : null; };
+    const body = [];
+    en.branches.forEach((b) => {
+      if (!String(b.code).trim() && !String(b.name).trim()) return;
+      SKUS.forEach((x) => {
+        const q = parseFloat(b.qty[x.code]);
+        if (q > 0) { const uc = lastCost(b.code, x.code); body.push({ chain: en.chain.trim(), period: en.period, branch_code: String(b.code || b.name).trim(), branch_name: String(b.name || b.code).trim(), product: x.code, qty: q, unit_cost: uc, amount: uc != null ? Math.round(q * uc * 100) / 100 : null, created_by: authUser?.email || "unknown" }); }
+      });
+    });
+    return body;
+  }
+  // The AI reads the report and SAVES the numbers straight away, so an upload
+  // is enough — nobody has to remember to press Save. Wrong numbers can still
+  // be fixed with "Enter quantities".
+  async function readWithAI(path, chainName, per, report) {
     setReading(true); setErr(""); setAiNote("");
     try {
       const res = await fetch(READER_URL, {
@@ -11255,14 +11271,38 @@ function ChainSelloutPage({ authUser, C, sbFetch, logActivity, mode = "analysis"
         (b.items || []).forEach((it) => { const code = skuFor(it); if (code) qty[code] = String((Number(qty[code]) || 0) + (Number(it.qty) || 0)); else unknown.push(it.description || it.barcode); });
         return { code: String(b.code || "").trim(), name: String(b.name || "").replace(/^SUPER\s+/i, "").trim() || String(b.code || ""), qty };
       });
-      const p = /^\d{4}-\d{2}$/.test(j.period || "") ? j.period : per;
-      setEntry({ chain: chainName || j.chain || chain, period: p, branches: branchesOut.length ? branchesOut : [{ code: "", name: "", qty: {} }] });
+      // The month the office chose when uploading wins over the AI's guess.
+      const p = /^\d{4}-\d{2}$/.test(per || "") ? per : (/^\d{4}-\d{2}$/.test(j.period || "") ? j.period : per);
+      const en = { chain: chainName || j.chain || chain, period: p, branches: branchesOut.length ? branchesOut : [{ code: "", name: "", qty: {} }] };
       const boxes = branchesOut.reduce((a, b) => a + Object.values(b.qty).reduce((x, y) => x + Number(y || 0), 0), 0);
-      setAiNote(`Filled in by AI: ${branchesOut.length} branches, ${boxes} boxes. Check a few numbers against the PDF, then press Save report.${unknown.length ? ` Not matched to a product: ${Array.from(new Set(unknown)).join(", ")}.` : ""}${(j.unclear || []).length ? ` Unclear: ${j.unclear.join("; ")}.` : ""}`);
+      const extra = `${unknown.length ? ` Not matched to a product: ${Array.from(new Set(unknown)).join(", ")}.` : ""}${(j.unclear || []).length ? ` Unclear: ${j.unclear.join("; ")}.` : ""}`;
+      const body = rowsFor(en);
+      if (!body.length) {
+        setEntry(en);
+        setAiNote(`The AI found no Méra boxes sold in this report. Check the file and type the quantities if needed.${extra}`);
+      } else {
+        await sbFetch("chain_sellout?on_conflict=chain,period,branch_code,product", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify(body) });
+        if (report?.id) { try { await sbFetch(`chain_reports?id=eq.${report.id}`, { method: "PATCH", body: JSON.stringify({ status: "entered" }) }); } catch (e) { /* the numbers are saved anyway */ } }
+        logActivity?.("Chain sell-out read by AI", en.chain, `${monthLabel(p)} · ${boxes} boxes`);
+        setChain(en.chain.trim()); setPeriod(p); setEntry(null);
+        setAiNote(`✓ Saved by AI: ${en.chain} · ${monthLabel(p)} · ${branchesOut.length} branch${branchesOut.length === 1 ? "" : "es"}, ${boxes} boxes. It now shows in Sales Analysis. If a number is wrong, fix it with “Enter quantities”.${extra}`);
+        await load();
+      }
     } catch (e) {
       setErr(`The AI couldn't read this report (${e.message}). You can still type the quantities with “Enter quantities”.`);
     }
     setReading(false);
+  }
+
+  async function readAllWaiting() {
+    const list = reports.filter((r) => r.file_path && r.status !== "entered");
+    const done = [], failed = [];
+    for (const r of list) {
+      await readWithAI(r.file_path, r.chain, r.period, r);
+      const [chk] = (await sbFetch(`chain_reports?select=status&id=eq.${r.id}`).catch(() => [])) || [];
+      (chk?.status === "entered" ? done : failed).push(`${r.chain} (${r.file_name || ""})`);
+    }
+    setAiNote(`AI finished: ${done.length} saved${failed.length ? `, ${failed.length} need checking — ${failed.join("; ")}` : ""}. Open Sales Analysis to see them.`);
   }
 
   async function saveUpload() {
@@ -11281,12 +11321,12 @@ function ChainSelloutPage({ authUser, C, sbFetch, logActivity, mode = "analysis"
         body: upload.file,
       });
       if (!res.ok) throw new Error(await res.text());
-      await sbFetch("chain_reports", { method: "POST", body: JSON.stringify({ chain: upload.chain.trim(), period: upload.period, file_path: path, file_name: upload.file.name, note: upload.note || null, status: "received", created_by: authUser?.email || "unknown" }) });
+      const [newRep] = (await sbFetch("chain_reports", { method: "POST", body: JSON.stringify({ chain: upload.chain.trim(), period: upload.period, file_path: path, file_name: upload.file.name, note: upload.note || null, status: "received", created_by: authUser?.email || "unknown" }) })) || [];
       logActivity?.("Chain report uploaded", upload.chain.trim(), `${monthLabel(upload.period)} · ${upload.file.name}`);
       const up = upload;
       setUpload(null);
       await load();
-      await readWithAI(path, up.chain.trim(), up.period);
+      await readWithAI(path, up.chain.trim(), up.period, newRep);
     } catch (e) { setErr("Couldn't upload — check the connection and try again."); }
     setBusy(false);
   }
@@ -11386,15 +11426,22 @@ function ChainSelloutPage({ authUser, C, sbFetch, logActivity, mode = "analysis"
       )}
       {isOffice && (
         <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 14px", marginBottom: 14 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>Reports received</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 13, fontWeight: 700 }}>Reports received</span>
+            {reports.filter((r) => r.file_path && r.status !== "entered").length > 1 && (
+              <button type="button" disabled={reading} onClick={readAllWaiting} style={{ background: C.gold, border: "none", color: "#1A1508", borderRadius: 7, padding: "5px 11px", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>
+                {reading ? "Reading…" : `Read all waiting with AI (${reports.filter((r) => r.file_path && r.status !== "entered").length})`}
+              </button>
+            )}
+          </div>
           {reports.length === 0 ? <div style={{ fontSize: 12.5, color: C.textFaint }}>No reports uploaded yet.</div> : reports.map((r) => {
-            const entered = all.some((x) => x.chain === r.chain && x.period === r.period);
+            const entered = r.status === "entered";
             return (
               <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "6px 0", borderTop: `1px solid ${C.border}`, fontSize: 12.5, flexWrap: "wrap" }}>
                 <span><b>{r.chain}</b> · {monthLabel(r.period)} · <span style={{ color: C.textDim }}>{r.file_name || "—"}</span></span>
                 <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   <span style={{ fontWeight: 700, color: entered ? C.emerald : C.amber }}>{entered ? "✓ Entered" : "Waiting for quantities"}</span>
-                  {r.file_path && !entered && <button type="button" disabled={reading} onClick={() => readWithAI(r.file_path, r.chain, r.period)} style={{ background: "none", border: `1px solid ${C.gold}`, color: C.goldBright, borderRadius: 7, padding: "4px 9px", fontSize: 11.5, cursor: "pointer" }}>{reading ? "Reading…" : "Read with AI"}</button>}
+                  {r.file_path && !entered && <button type="button" disabled={reading} onClick={() => readWithAI(r.file_path, r.chain, r.period, r)} style={{ background: "none", border: `1px solid ${C.gold}`, color: C.goldBright, borderRadius: 7, padding: "4px 9px", fontSize: 11.5, cursor: "pointer" }}>{reading ? "Reading…" : "Read with AI"}</button>}
                   {r.file_path && <button type="button" onClick={() => openFile(r)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.text, borderRadius: 7, padding: "4px 9px", fontSize: 11.5, cursor: "pointer" }}>Open</button>}
                 </span>
               </div>
@@ -11404,7 +11451,7 @@ function ChainSelloutPage({ authUser, C, sbFetch, logActivity, mode = "analysis"
       )}
 
       {isOffice && reading && <div style={{ background: C.surface, border: `1px solid ${C.gold}66`, borderRadius: 12, padding: "12px 14px", marginBottom: 14, fontSize: 13 }}>🤖 Reading the report with AI… this takes about 20–60 seconds.</div>}
-      {isOffice && entry && aiNote && <div style={{ background: `${C.emerald}14`, border: `1px solid ${C.emerald}55`, borderRadius: 10, padding: "9px 12px", marginBottom: 8, fontSize: 12.5, color: C.text }}>{aiNote}</div>}
+      {isOffice && aiNote && <div style={{ background: `${C.emerald}14`, border: `1px solid ${C.emerald}55`, borderRadius: 10, padding: "9px 12px", marginBottom: 8, fontSize: 12.5, color: C.text }}>{aiNote}</div>}
       {isOffice && entry && (
         <div style={{ background: C.surface, border: `1px solid ${C.gold}66`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
