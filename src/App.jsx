@@ -10770,6 +10770,7 @@ function ChainSelloutPage({ authUser, C, sbFetch, logActivity, mode = "analysis"
   const isOffice = mode === "office";
   const [rows, setRows] = useState(null);
   const [reports, setReports] = useState([]);
+  const [bigco, setBigco] = useState([]); // Big Company stores — their chain names fill the dropdown
   const [upload, setUpload] = useState(null); // { chain, period, file, note }
   const [chain, setChain] = useState("Chipmong");
   const [period, setPeriod] = useState("");
@@ -10784,12 +10785,62 @@ function ChainSelloutPage({ authUser, C, sbFetch, logActivity, mode = "analysis"
       const r = await sbFetch("chain_sellout?select=*&order=period.desc,branch_code.asc");
       setRows(r || []);
       try { setReports((await sbFetch("chain_reports?select=*&order=created_at.desc")) || []); } catch (e) { /* optional */ }
+      try { setBigco((await sbFetch("bigco_stores?select=name")) || []); } catch (e) { /* optional */ }
     } catch (e) { setRows([]); setErr("Couldn't load the chain reports."); }
   }
   useEffect(() => { load(); }, []);
 
   const all = rows || [];
-  const chains = Array.from(new Set(["Chipmong", ...all.map((r) => r.chain), ...reports.map((r) => r.chain)].filter(Boolean)));
+  // "ជីប ម៉ុង ៥៩៨ ម៉ល (598 Mall)" → "Chipmong", "SGB វត្តបទុម" → "SGB",
+  // "VIN MART តាខ្មៅ (Takhmao)" → "VIN MART", "ណម ហ្វាម៉ាស៊ី ឯ.ក" → "ណម ហ្វាម៉ាស៊ី"
+  const chainOf = (storeName) => {
+    const n = String(storeName || "").replace(/\([^)]*\)/g, " ").replace(/ឯ\.ក/g, " ").replace(/\s+/g, " ").trim();
+    if (/ជីប\s*ម៉ុង|chip\s*mong/i.test(n)) return "Chipmong";
+    if (/^sgb/i.test(n)) return "SGB";
+    const latin = n.split(/[\u1780-\u17ff]/)[0].trim();
+    return latin || n;
+  };
+  const chains = (() => {
+    const seen = new Map();
+    ["Chipmong", ...all.map((r) => r.chain), ...reports.map((r) => r.chain), ...bigco.map((b) => chainOf(b.name))].filter(Boolean).forEach((c) => {
+      const k = String(c).toLowerCase().replace(/[^a-z0-9\u1780-\u17ff]+/g, "");
+      if (!seen.has(k)) seen.set(k, c);
+    });
+    return Array.from(seen.values());
+  })();
+
+  // Chain names are picked from a list so a typo can't create a fake chain.
+  // A brand-new name is checked against the list first ("sgb" → "SGB",
+  // "Chipmng" → "Did you mean Chipmong?") and must be confirmed.
+  const chainKey = (n) => String(n || "").toLowerCase().replace(/[^a-z0-9\u1780-\u17ff]+/g, "");
+  const editDist = (a, b) => {
+    const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+    for (let j = 1; j <= b.length; j++) d[0][j] = j;
+    for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    return d[a.length][b.length];
+  };
+  function confirmChain(raw) {
+    const name = String(raw || "").replace(/\s+/g, " ").trim();
+    if (!name) return null;
+    const k = chainKey(name);
+    const same = chains.find((c) => chainKey(c) === k);
+    if (same) return same; // same chain, different spelling/case → use the existing one
+    const near = chains.find((c) => { const ck = chainKey(c); return (k.length >= 3 && (ck.includes(k) || k.includes(ck))) || editDist(ck, k) <= Math.max(1, Math.floor(Math.min(ck.length, k.length) / 4)); });
+    if (near && window.confirm(`"${name}" looks like "${near}", which is already in the list.\n\nOK = use "${near}"\nCancel = it is a different chain`)) return near;
+    return window.confirm(`Add a NEW chain called "${name}"?\n\nPlease check the spelling — it will be used for every report from this chain.`) ? name : null;
+  }
+  const chainField = (form, setForm) => {
+    const isNew = form.isNew || !chains.includes(form.chain);
+    return (
+      <>
+        <select value={isNew ? "__new" : form.chain} onChange={(e) => setForm({ ...form, chain: e.target.value === "__new" ? "" : e.target.value, isNew: e.target.value === "__new" })} style={{ ...inp, flex: "1 1 160px", width: "auto" }}>
+          {chains.map((c) => <option key={c} value={c}>{c}</option>)}
+          <option value="__new">➕ New chain…</option>
+        </select>
+        {isNew && <input autoFocus value={form.chain} onChange={(e) => setForm({ ...form, chain: e.target.value, isNew: true })} placeholder="New chain name (check spelling)" style={{ ...inp, flex: "1 1 160px", width: "auto" }} />}
+      </>
+    );
+  };
   const periods = Array.from(new Set(all.filter((r) => r.chain === chain).map((r) => r.period))).sort().reverse();
   const cur = period && periods.includes(period) ? period : periods[0] || "";
   const prev = periods[periods.indexOf(cur) + 1] || "";
@@ -10889,6 +10940,9 @@ function ChainSelloutPage({ authUser, C, sbFetch, logActivity, mode = "analysis"
   async function saveUpload() {
     if (!upload?.chain?.trim() || !/^\d{4}-\d{2}$/.test(upload.period || "")) { setErr("Choose the chain and month."); return; }
     if (!upload.file) { setErr("Choose the report file."); return; }
+    const okChain = confirmChain(upload.chain);
+    if (!okChain) return;
+    upload.chain = okChain;
     setBusy(true); setErr("");
     try {
       const safe = upload.file.name.replace(/[^A-Za-z0-9._-]+/g, "_");
@@ -10928,6 +10982,9 @@ function ChainSelloutPage({ authUser, C, sbFetch, logActivity, mode = "analysis"
   }
   async function saveEntry() {
     if (!entry?.chain?.trim() || !/^\d{4}-\d{2}$/.test(entry.period)) { setErr("Choose the chain and month."); return; }
+    const okChain = confirmChain(entry.chain);
+    if (!okChain) return;
+    entry.chain = okChain;
     const lastCost = (code, p) => { const r = all.find((x) => x.chain === entry.chain && x.branch_code === code && x.product === p && x.unit_cost != null) || all.find((x) => x.chain === entry.chain && x.product === p && x.unit_cost != null); return r ? Number(r.unit_cost) : null; };
     const body = [];
     entry.branches.forEach((b) => {
@@ -10987,7 +11044,7 @@ function ChainSelloutPage({ authUser, C, sbFetch, logActivity, mode = "analysis"
       {isOffice && upload && (
         <div style={{ background: C.surface, border: `1px solid ${C.gold}66`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-            <input value={upload.chain} onChange={(e) => setUpload({ ...upload, chain: e.target.value })} placeholder="Chain (e.g. Chipmong)" style={{ ...inp, flex: "1 1 160px", width: "auto" }} />
+            {chainField(upload, setUpload)}
             <input type="month" value={upload.period} onChange={(e) => setUpload({ ...upload, period: e.target.value })} style={{ ...inp, flex: "1 1 140px", width: "auto" }} />
           </div>
           <input type="file" accept=".pdf,.xls,.xlsx,.csv,image/*" onChange={(e) => setUpload({ ...upload, file: e.target.files?.[0] || null })} style={{ fontSize: 12.5, color: C.text, marginBottom: 8, display: "block" }} />
@@ -11023,7 +11080,7 @@ function ChainSelloutPage({ authUser, C, sbFetch, logActivity, mode = "analysis"
       {isOffice && entry && (
         <div style={{ background: C.surface, border: `1px solid ${C.gold}66`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-            <input value={entry.chain} onChange={(e) => setEntry({ ...entry, chain: e.target.value })} placeholder="Chain (e.g. Chipmong)" style={{ ...inp, flex: "1 1 160px", width: "auto" }} />
+            {chainField(entry, setEntry)}
             <input type="month" value={entry.period} onChange={(e) => setEntry({ ...entry, period: e.target.value })} style={{ ...inp, flex: "1 1 140px", width: "auto" }} />
           </div>
           <div style={{ overflowX: "auto" }}>
