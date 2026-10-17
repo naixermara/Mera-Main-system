@@ -1578,6 +1578,10 @@ function MeraConsignmentApp() {
       setSalesSubPage("consignment");
       setConsignmentSubView("regular");
       jumpToStore(hit.name, hit.id);
+    } else if (hit.type === "online") {
+      setNavPick("Store Directory");
+      setPage("stores");
+      setStoreFocus({ ...hit, n: Date.now() });
     } else if (hit.type === "credit") {
       setNavPick("Credit Term");
       setSalesSubPage("credit");
@@ -1787,7 +1791,7 @@ function MeraConsignmentApp() {
         ) : page === "delivery" ? (
           <DeliveryNotePage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} stockForStore={stockForStore} onStockHandled={() => setStockForStore(null)} onStoreDelivered={recordDeliveryToStore} openPanel={childTab} />
         ) : page === "stores" ? (
-          <StoresPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
+          <StoresPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} focus={storeFocus?.type === "online" ? storeFocus : null} />
         ) : page === "accounting" ? (
           canSeeAccounting
             ? <AccountingPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} openTab={childTab} canSeeProfit={canSeeProfit} />
@@ -10447,7 +10451,7 @@ function VendorSection({ C, docs, lines, vendors, accounts, balances, missing, b
   );
 }
 
-const STORE_TYPE_LABEL = { consignment: "Consignment", credit: "Credit", corporate: "Corporate" };
+const STORE_TYPE_LABEL = { consignment: "Consignment", credit: "Credit", corporate: "Corporate", online: "COD / Online" };
 
 // One search box for every store, whatever kind it is. Loads the three store
 // lists when you click into it (so it is always current) and matches the
@@ -10459,24 +10463,26 @@ function StoreFinder({ C, sbFetch, onFind }) {
   async function load() {
     try {
       const pick = "id,name,nickname";
-      const [a, b, c] = await Promise.all([
+      const [a, b, c, d] = await Promise.all([
         sbFetch(`stores?select=id,name,day`).catch(() => []),
         sbFetch(`credit_stores?select=${pick}`).catch(() => []),
         sbFetch(`bigco_stores?select=${pick}`).catch(() => []),
+        sbFetch(`online_customers?select=id,name,phone`).catch(() => []),
       ]);
       setAll([
         ...(a || []).map((x) => ({ type: "consignment", id: x.id, name: x.name, nickname: "", extra: x.day ? `Day ${x.day}` : "" })),
         ...(b || []).map((x) => ({ type: "credit", id: x.id, name: x.name, nickname: x.nickname || "", extra: "" })),
         ...(c || []).map((x) => ({ type: "corporate", id: x.id, name: x.name, nickname: x.nickname || "", extra: "" })),
+        ...(d || []).map((x) => ({ type: "online", id: x.id, name: x.name, nickname: "", extra: x.phone || "" })),
       ]);
     } catch (e) { setAll([]); }
   }
   const term = q.trim().toLowerCase();
   const hits = !term || !all ? [] : all
-    .filter((x) => `${x.name} ${x.nickname}`.toLowerCase().includes(term))
+    .filter((x) => `${x.name} ${x.nickname} ${x.extra}`.toLowerCase().includes(term))
     .sort((x, y) => (x.name.toLowerCase().startsWith(term) ? 0 : 1) - (y.name.toLowerCase().startsWith(term) ? 0 : 1) || x.name.localeCompare(y.name))
     .slice(0, 15);
-  const tone = { consignment: C.goldBright, credit: C.emerald, corporate: C.amber };
+  const tone = { consignment: C.goldBright, credit: C.emerald, corporate: C.amber, online: C.rose };
   function pick(h) { onFind(h); setQ(""); setOpen(false); }
   return (
     <div style={{ position: "relative", padding: "0 12px 14px" }}>
@@ -11202,8 +11208,14 @@ function ChainSelloutPage({ authUser, C, sbFetch, logActivity, mode = "analysis"
     } else {
       const topList = branches.length > 1 ? branches.slice(0, 2) : branches;
       tips.push({ tone: "good", text: `${topList.length > 1 ? "Best branches" : "Best branch"}: ${topList.map((b) => `${b.name} (${b.total})`).join(" and ")} boxes.` });
-      const weak = branches.filter((b) => !topList.includes(b) && b.total < Math.max(5, best * 0.3));
-      if (weak.length) tips.push({ tone: "warn", text: `Almost no sales at ${weak.map((b) => `${b.name} (${b.total})`).join(", ")} — check the shelf, stock and position.` });
+      // "Almost no sales" = 0–2 boxes. "Below the others" = under half the
+      // chain's average per branch. Ordinary branches are not flagged.
+      const avg = totalBoxes / branches.length;
+      const rest = branches.filter((b) => !topList.includes(b));
+      const none = rest.filter((b) => b.total <= 2);
+      const slow = rest.filter((b) => b.total > 2 && b.total < avg * 0.5);
+      if (none.length) tips.push({ tone: "warn", text: `Almost no sales at ${none.map((b) => `${b.name} (${b.total})`).join(", ")} — check the shelf, stock and position.` });
+      if (slow.length) tips.push({ tone: "warn", text: `Selling less than the other branches (average ${Math.round(avg)} boxes each): ${slow.map((b) => `${b.name} (${b.total})`).join(", ")}.` });
     }
     listed.forEach((x) => {
       const zero = branches.filter((b) => b.total >= 5 && b.q[x.code] === 0);
@@ -11503,7 +11515,7 @@ function ChainSelloutPage({ authUser, C, sbFetch, logActivity, mode = "analysis"
         <>
           <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr 1fr" : "repeat(4, 1fr)", gap: 10, marginBottom: 12 }}>
             {card("Boxes sold", totalBoxes.toLocaleString("en-US"), monthLabel(cur))}
-            {card("Value (excl. VAT)", usd(totalAmt), `incl. VAT ≈ ${usd(totalAmt * 1.1)}`)}
+            {card("Value (excl. VAT)", totalAmt > 0 ? usd(totalAmt) : "—", totalAmt > 0 ? `incl. VAT ≈ ${usd(totalAmt * 1.1)}` : "No prices in this report")}
             {!isOffice && card("vs last month", change == null ? "—" : `${change > 0 ? "+" : ""}${change}%`, prev ? `${monthLabel(prev)}: ${prevBoxes} boxes` : "No earlier report", change == null ? null : change >= 0 ? C.emerald : C.rose)}
             {card("Branches selling", `${branches.filter((b) => b.total > 0).length}`, `avg ${branches.length ? Math.round(totalBoxes / branches.length) : 0} boxes each`)}
           </div>
@@ -17256,8 +17268,8 @@ function MultiDocumentPrintView({ docs, onClose, catalog }) {
   );
 }
 
-function StoresPage({ authUser, C, sbFetch, logActivity }) {
-  const [activeType, setActiveType] = useState("consignment");
+function StoresPage({ authUser, C, sbFetch, logActivity, focus }) {
+  const [activeType, setActiveType] = useState(focus ? "online" : "consignment");
   const [loading, setLoading] = useState(true);
   const [consignmentStores, setConsignmentStores] = useState([]);
   const [creditStores, setCreditStores] = useState([]);
@@ -17266,7 +17278,9 @@ function StoresPage({ authUser, C, sbFetch, logActivity }) {
   const [saveError, setSaveError] = useState(false);
   const [showNewStore, setShowNewStore] = useState(false);
   const [editingStoreId, setEditingStoreId] = useState(null);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState(focus?.name || "");
+  // Picked from the sidebar "Find any store" box → open COD / Online with it.
+  useEffect(() => { if (focus) { setActiveType("online"); setSearchQuery(focus.name || ""); } }, [focus?.n]);
   const [salespeople, setSalespeople] = useState([]);
 
   const emptyForm = {
