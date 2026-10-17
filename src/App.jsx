@@ -8204,6 +8204,7 @@ const NAV = [
     { label: "Ledger Entries",       page: "accounting", tab: "ledger" },
     { label: "Reports",       page: "accounting", tab: "reports" },
     { label: "Finance",       page: "accounting", tab: "finance" },
+    // { label: "Receive Vouchers", page: "accounting", tab: "vouchers" }, // paused — waiting for staff to confirm
     { label: "Chart of Accounts",      page: "accounting", tab: "accounts" },
     { label: "Month Close",            page: "close" },
   ]},
@@ -9929,6 +9930,7 @@ function AccountingPage({ authUser, C, sbFetch, logActivity, openTab, canSeeProf
         );
       })()}
       {tab === "tax" && <TaxPackPage C={C} sbFetch={sbFetch} />}
+      {tab === "vouchers" && <ReceiveVouchersPage C={C} sbFetch={sbFetch} authUser={authUser} logActivity={logActivity} />}
 
       {/* ---------------- chart of accounts ---------------- */}
       {tab === "accounts" && (
@@ -10594,6 +10596,332 @@ function SideNav({ C, nav, active, openGroup, onOpenGroup, onPick, mobileOpen, o
 // Tax Pack — everything the monthly GDT tax return needs, pulled from the
 // declared books (Accounting) in one place: sales book, purchase book, VAT,
 // 1% prepayment, withholding tax and an estimate of salary tax.
+// ---------------------------------------------------------------------------
+// Receive Vouchers — the paper the accountant files for every customer
+// payment (BizAdvisor called them "RECEIVE VOUCHER", numbered CP000581…).
+// One voucher per INVOICE: a payment that covers 4 bills gets 4 vouchers.
+// Made from the bank payments the office has already assigned. A number is
+// only given out when someone presses "Issue", the numbers never skip, and a
+// mistake is VOIDED (kept on record), never deleted or reused.
+// ---------------------------------------------------------------------------
+const BILL_RE = /\b(?:B|INV)\d{7}\b/g;
+const billsIn = (s) => Array.from(new Set(String(s || "").match(BILL_RE) || []));
+function customerFromNote(note) {
+  const t = String(note || "").trim();
+  if (!t || /^Already recorded/i.test(t)) return "";
+  if (t.includes(" · ")) {
+    const part = t.split(" · ").find((p) => !/^\s*(?:B|INV)\d{7}/.test(p));
+    return (part || "").trim();
+  }
+  if (t.includes(" — ")) return t.split(" — ")[0].trim();
+  return t.replace(BILL_RE, "").replace(/\([^)]*\)/g, "").replace(/[·—,]/g, " ").replace(/\s+/g, " ").trim();
+}
+const r2v = (n) => Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100;
+const usdV = (n) => `$${Number(n || 0).toLocaleString("en-US", MONEY2)}`;
+const ddmmyyyy = (iso) => { const s = String(iso || "").slice(0, 10); const [y, m, d] = s.split("-"); return y ? `${d}/${m}/${y}` : ""; };
+
+function ReceiveVouchersPage({ C, sbFetch, authUser, logActivity }) {
+  const [payments, setPayments] = useState(null);
+  const [vouchers, setVouchers] = useState([]);
+  const [started, setStarted] = useState(null); // null = unknown, false = not started, number = next
+  const [startNo, setStartNo] = useState("");
+  const [form, setForm] = useState(null); // { payment, customer, lines:[{bill,balance,paid,disc}], remark }
+  const [printing, setPrinting] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
+
+  async function load() {
+    setErr("");
+    try {
+      const [p, v, c] = await Promise.all([
+        sbFetch("pending_payments?select=*&status=eq.assigned&paid_at=gte.2026-10-10&order=paid_at.asc"),
+        sbFetch("receive_vouchers?select=*&order=seq.desc"),
+        sbFetch("document_counters?select=next_number&series_key=eq.voucher-CP").catch(() => null),
+      ]);
+      setPayments((p || []).filter((x) => x.assigned_type !== "books"));
+      setVouchers(v || []);
+      if (Array.isArray(c)) setStarted(c.length ? Number(c[0].next_number) : false);
+      else setStarted((v || []).length ? Number(v[0].seq) + 1 : false);
+    } catch (e) {
+      setPayments([]);
+      setErr("Couldn't load vouchers — only the owner, Lita and the accountant can open this page.");
+    }
+  }
+  useEffect(() => { load(); }, []);
+
+  const live = vouchers.filter((v) => v.status === "issued");
+  const hasVoucher = new Set(live.map((v) => String(v.payment_id)));
+  const waiting = (payments || []).filter((p) => !hasVoucher.has(String(p.id)));
+
+  async function openForm(p) {
+    setErr("");
+    const bills = billsIn(p.assigned_note);
+    let info = [];
+    if (bills.length) {
+      try { info = (await sbFetch("rpc/voucher_bill_info", { method: "POST", body: JSON.stringify({ p_bills: bills }) })) || []; } catch (e) { info = []; }
+    }
+    let left = r2v(p.amount);
+    const lines = (bills.length ? bills : [""]).map((b, i, arr) => {
+      const inf = info.find((x) => x.bill === b) || {};
+      const bal = inf.total != null ? r2v(Number(inf.total) - Number(inf.paid_before || 0)) : null;
+      const paid = i === arr.length - 1 ? left : r2v(Math.min(left, bal != null ? bal : left));
+      left = r2v(left - paid);
+      return { bill: b, balance: bal != null ? bal : paid, paid, disc: 0 };
+    });
+    const cust = customerFromNote(p.assigned_note) || info.find((x) => x.customer)?.customer || p.payer_name || "";
+    setForm({ payment: p, customer: cust, lines, remark: "" });
+  }
+
+  const formPaid = form ? r2v(form.lines.reduce((a, l) => a + Number(l.paid || 0), 0)) : 0;
+  const formOk = form && Math.abs(formPaid - Number(form.payment.amount)) < 0.01 && form.customer.trim() && form.lines.every((l) => Number(l.paid) > 0);
+  const cpNo = (n) => `CP${String(n || "").padStart(6, "0")}`;
+  const issueLabel = form && form.lines.length > 1 ? `Issue ${form.lines.length} vouchers ${cpNo(started)}–${cpNo(Number(started) + form.lines.length - 1)}` : `Issue ${cpNo(started)}`;
+
+  async function issue() {
+    if (!formOk) return;
+    setBusy(true); setErr("");
+    try {
+      const lines = form.lines.map((l) => ({ bill: String(l.bill || "").trim(), balance: r2v(l.balance), paid: r2v(l.paid), disc: r2v(l.disc) }));
+      const nos = String(await sbFetch("rpc/issue_receive_voucher", { method: "POST", body: JSON.stringify({ p_payment_id: form.payment.id, p_customer: form.customer.trim(), p_lines: lines, p_remark: form.remark || null }) }) || "").split(",").filter(Boolean);
+      logActivity?.("Receive voucher issued", nos.join(", "), `${form.customer} · ${usdV(form.payment.amount)}`);
+      setForm(null);
+      await load();
+      const vs = nos.length ? (await sbFetch(`receive_vouchers?select=*&number=in.(${nos.map(encodeURIComponent).join(",")})&order=seq.asc`)) || [] : [];
+      if (vs.length) setPrinting(vs);
+    } catch (e) {
+      const m = String(e.message || "");
+      setErr(/VOUCHERS_NOT_STARTED/.test(m) ? "Set the first voucher number first (box above)." : (m.match(/"message":"([^"]+)"/)?.[1] || "Couldn't issue the voucher."));
+    }
+    setBusy(false);
+  }
+
+  async function start() {
+    const n = parseInt(String(startNo).replace(/\D/g, ""), 10);
+    if (!n) { setErr("Type the next voucher number, e.g. 650 for CP000650."); return; }
+    if (!window.confirm(`The first voucher will be CP${String(n).padStart(6, "0")}. This can't be changed after the first voucher is issued. Continue?`)) return;
+    setBusy(true); setErr("");
+    try { await sbFetch("rpc/start_receive_vouchers", { method: "POST", body: JSON.stringify({ p_next: n }) }); await load(); }
+    catch (e) { setErr(String(e.message || "").match(/"message":"([^"]+)"/)?.[1] || "Couldn't save the starting number."); }
+    setBusy(false);
+  }
+
+  async function voidVoucher(v) {
+    const reason = window.prompt(`VOID ${v.number}? The number stays on record as VOID and is never reused.\n\nReason:`);
+    if (!reason || !reason.trim()) return;
+    setBusy(true); setErr("");
+    try {
+      await sbFetch("rpc/void_receive_voucher", { method: "POST", body: JSON.stringify({ p_number: v.number, p_reason: reason.trim() }) });
+      logActivity?.("Receive voucher voided", v.number, reason.trim());
+      await load();
+    } catch (e) { setErr(String(e.message || "").match(/"message":"([^"]+)"/)?.[1] || "Couldn't void the voucher."); }
+    setBusy(false);
+  }
+
+  const inMonth = vouchers.filter((v) => String(v.voucher_date).slice(0, 7) === month);
+  const months = Array.from(new Set([new Date().toISOString().slice(0, 7), ...vouchers.map((v) => String(v.voucher_date).slice(0, 7))])).sort().reverse();
+  function downloadMonth() {
+    const rows = [];
+    inMonth.slice().sort((a, b) => a.seq - b.seq).forEach((v) => (v.lines || []).forEach((l, i) => rows.push({
+      "Voucher no": v.number, Date: ddmmyyyy(v.voucher_date), Customer: v.customer, "Invoice no": l.bill || "",
+      Balance: Number(l.balance || 0), Paid: Number(l.paid || 0), "Dis / Penalty": Number(l.disc || 0),
+      "Voucher total": i === 0 ? Number(v.amount) : "", Method: v.method, "Ref no (ABA Trx ID)": v.ref_no || "",
+      Status: v.status === "void" ? "VOID" : "Issued", "Issued by": nameOf(v.issued_by), Remark: v.status === "void" ? `VOID: ${v.void_reason || ""}` : (v.remark || ""),
+    })));
+    downloadBlob(`receive-vouchers-${month}.xls`, buildWorkbook({ "Receive vouchers": rows }), "application/vnd.ms-excel");
+  }
+
+  const card = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", marginBottom: 14 };
+  const inp = { background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, boxSizing: "border-box", minWidth: 0 };
+  const btn = { background: C.gold, border: "none", color: "#1A1508", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" };
+  const btnGhost = { background: "none", border: `1px solid ${C.border}`, color: C.text, borderRadius: 7, padding: "5px 10px", fontSize: 11.5, cursor: "pointer" };
+
+  if (payments === null) return <div style={{ padding: 30, color: C.textDim }}>Loading vouchers…</div>;
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: C.textDim, marginBottom: 12, maxWidth: 720 }}>
+        One receive voucher for every customer payment, for the accountant's tax file — same as the old BizAdvisor "RECEIVE VOUCHER". Payments before 10 Oct already have their vouchers in BizAdvisor.
+      </div>
+      {err && <div style={{ background: C.roseBg, color: C.rose, padding: "9px 12px", borderRadius: 9, fontSize: 12.5, marginBottom: 12 }}>{err}</div>}
+
+      {started === false && (
+        <div style={{ ...card, border: `1px solid ${C.gold}88` }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 4 }}>Set the first voucher number (once)</div>
+          <div style={{ fontSize: 12.5, color: C.textDim, marginBottom: 8 }}>Look in BizAdvisor for the last receive voucher (e.g. CP000649) and type the NEXT number, so the numbers carry on without a gap.</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ fontWeight: 700 }}>CP</span>
+            <input value={startNo} onChange={(e) => setStartNo(e.target.value)} placeholder="000650" inputMode="numeric" style={{ ...inp, width: 120 }} />
+            <button disabled={busy} onClick={start} style={btn}>Save</button>
+          </div>
+        </div>
+      )}
+
+      <div style={card}>
+        <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 6 }}>Waiting for a voucher {waiting.length > 0 && <span style={{ color: C.amber }}>({waiting.length})</span>}</div>
+        {waiting.length === 0 ? <div style={{ fontSize: 12.5, color: C.textFaint }}>Every assigned payment has its voucher. ✓</div> : waiting.map((p) => (
+          <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "7px 0", borderTop: `1px solid ${C.border}`, fontSize: 12.5, flexWrap: "wrap" }}>
+            <span><b>{usdV(p.amount)}</b> · {ddmmyyyy(String(p.paid_at))} · {p.payer_name} <span style={{ color: C.textDim }}>· {p.assigned_note || p.assigned_type}</span></span>
+            <button disabled={started === false} onClick={() => openForm(p)} style={{ ...btnGhost, border: `1px solid ${C.gold}`, color: C.goldBright, opacity: started === false ? 0.5 : 1 }}>Make voucher</button>
+          </div>
+        ))}
+      </div>
+
+      {form && (
+        <div style={{ ...card, border: `1px solid ${C.gold}88` }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>New voucher · {usdV(form.payment.amount)} from {form.payment.payer_name} · ABA Trx {form.payment.transaction_id}</div>
+          <label style={{ fontSize: 12, color: C.textDim }}>Customer (as on the invoice)</label>
+          <input value={form.customer} onChange={(e) => setForm({ ...form, customer: e.target.value })} style={{ ...inp, width: "100%", marginBottom: 10 }} />
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 480 }}>
+              <thead><tr style={{ color: C.textDim, textAlign: "left" }}><th style={{ padding: 4 }}>Invoice no</th><th style={{ padding: 4 }}>Balance</th><th style={{ padding: 4 }}>Paid</th><th style={{ padding: 4 }}>Dis / Penalty</th><th></th></tr></thead>
+              <tbody>{form.lines.map((l, i) => {
+                const set = (k, v) => { const ls = [...form.lines]; ls[i] = { ...l, [k]: v }; setForm({ ...form, lines: ls }); };
+                return (
+                  <tr key={i}>
+                    <td style={{ padding: 4 }}><input value={l.bill} onChange={(e) => set("bill", e.target.value.toUpperCase())} placeholder="B0000…" style={{ ...inp, width: "100%" }} /></td>
+                    <td style={{ padding: 4 }}><input type="number" step="0.01" value={l.balance} onChange={(e) => set("balance", e.target.value)} style={{ ...inp, width: "100%", textAlign: "right" }} /></td>
+                    <td style={{ padding: 4 }}><input type="number" step="0.01" value={l.paid} onChange={(e) => set("paid", e.target.value)} style={{ ...inp, width: "100%", textAlign: "right" }} /></td>
+                    <td style={{ padding: 4 }}><input type="number" step="0.01" value={l.disc} onChange={(e) => set("disc", e.target.value)} style={{ ...inp, width: "100%", textAlign: "right" }} /></td>
+                    <td style={{ padding: 4, width: 26 }}>{form.lines.length > 1 && <button onClick={() => setForm({ ...form, lines: form.lines.filter((_, k) => k !== i) })} style={{ background: "none", border: "none", color: C.rose, cursor: "pointer" }}>×</button>}</td>
+                  </tr>
+                );
+              })}</tbody>
+            </table>
+          </div>
+          <button onClick={() => setForm({ ...form, lines: [...form.lines, { bill: "", balance: 0, paid: 0, disc: 0 }] })} style={{ ...btnGhost, marginTop: 6 }}>+ Add invoice</button>
+          {form.lines.length > 1 && <div style={{ fontSize: 11.5, color: C.textDim, marginTop: 6 }}>Each invoice gets its own voucher ({form.lines.length} vouchers), all with the same ABA Ref No.</div>}
+          <input value={form.remark} onChange={(e) => setForm({ ...form, remark: e.target.value })} placeholder="Remark (optional)" style={{ ...inp, width: "100%", marginTop: 10 }} />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: formOk ? C.emerald : C.rose }}>
+              Paid lines {usdV(formPaid)} / payment {usdV(form.payment.amount)}{formOk ? " ✓" : " — must match"}
+            </span>
+            <span style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setForm(null)} style={btnGhost}>Cancel</button>
+              <button disabled={!formOk || busy} onClick={issue} style={{ ...btn, opacity: formOk ? 1 : 0.5 }}>{busy ? "Issuing…" : issueLabel}</button>
+            </span>
+          </div>
+        </div>
+      )}
+
+      <div style={card}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13.5, fontWeight: 700 }}>Vouchers issued</span>
+          <span style={{ display: "flex", gap: 8 }}>
+            <select value={month} onChange={(e) => setMonth(e.target.value)} style={inp}>{months.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}</select>
+            <button onClick={downloadMonth} disabled={!inMonth.length} style={btnGhost}>⬇ Excel</button>
+          </span>
+        </div>
+        {inMonth.length === 0 ? <div style={{ fontSize: 12.5, color: C.textFaint }}>None this month.</div> : inMonth.map((v) => (
+          <div key={v.number} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "7px 0", borderTop: `1px solid ${C.border}`, fontSize: 12.5, flexWrap: "wrap", opacity: v.status === "void" ? 0.6 : 1 }}>
+            <span><b>{v.number}</b> · {ddmmyyyy(v.voucher_date)} · {v.customer} · <b>{usdV(v.amount)}</b> <span style={{ color: C.textDim }}>· {(v.lines || []).map((l) => l.bill).filter(Boolean).join(", ")}</span>{v.status === "void" && <b style={{ color: C.rose }}> · VOID ({v.void_reason})</b>}</span>
+            <span style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setPrinting([v])} style={btnGhost}>Print</button>
+              {v.status === "issued" && <button disabled={busy} onClick={() => voidVoucher(v)} style={{ ...btnGhost, color: C.rose }}>Void</button>}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {printing && <ReceiveVoucherPrint list={printing} onClose={() => setPrinting(null)} />}
+    </div>
+  );
+}
+
+function ReceiveVoucherDoc({ v }) {
+  const lines = v.lines || [];
+  const totalPaid = r2v(lines.reduce((a, l) => a + Number(l.paid || 0), 0));
+  const totalAll = r2v(lines.reduce((a, l) => a + Number(l.paid || 0) + Number(l.disc || 0), 0));
+  const prev = v.prev_balance != null ? Number(v.prev_balance) : totalAll;
+  const bal = v.balance != null ? Number(v.balance) : r2v(prev - totalAll);
+  const b = { border: "1px solid #000", padding: "6px 8px" };
+  return (
+    <div className="doc-page" style={{ width: 718, maxWidth: "100%", margin: "0 auto", background: "#fff", color: "#1a1a1a", fontFamily: "'Battambang', 'Khmer OS', Arial, sans-serif", fontSize: 12, padding: "16px 30px 24px", boxSizing: "border-box", position: "relative" }}>
+      {v.status === "void" && <div style={{ position: "absolute", top: 260, left: 0, right: 0, textAlign: "center", fontSize: 110, fontWeight: 800, color: "rgba(200,0,0,0.18)", transform: "rotate(-18deg)", pointerEvents: "none" }}>VOID</div>}
+      <div style={{ position: "relative", minHeight: 92, marginBottom: 8 }}>
+        <img src={CHOUMHEAN_LOGO} alt="Company logo" style={{ width: 90, height: 90, objectFit: "contain", position: "absolute", left: 0, top: 0 }} />
+        <div style={{ textAlign: "center", padding: "0 100px" }}>
+          <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.3 }}>ជំហានត្រេឌីង ឯ.ក</div>
+          <div style={{ fontSize: 11, color: "#333" }}>ជាន់ទី០២ ផ្លូវដឹអេលីហ្សេ ភូមិ១៤ សង្កាត់ទន្លេបាសាក់ ខណ្ឌចំការមន ភ្នំពេញ</div>
+          <div style={{ fontSize: 11, color: "#333" }}>លេខអត្តសញ្ញាណកម្ម (VAT TIN)៖ K002-902506031</div>
+          <div style={{ fontSize: 11, color: "#333" }}>លេខការិយាល័យ៖ 081 882 982</div>
+        </div>
+      </div>
+      <div style={{ textAlign: "center", marginBottom: 12 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, textDecoration: "underline" }}>បង្កាន់ដៃទទួលប្រាក់</div>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>RECEIVE VOUCHER</div>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 20, marginBottom: 12, fontSize: 12 }}>
+        <div><div><b>Customer :</b> {v.customer}</div></div>
+        <div style={{ textAlign: "left", minWidth: 220 }}>
+          <div><b>Issued Date :</b> {ddmmyyyy(v.voucher_date)}</div>
+          <div><b>Voucher No :</b> {v.number}</div>
+          <div><b>Issued By :</b> {nameOf(v.issued_by)}</div>
+        </div>
+      </div>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 12 }}>
+        <thead><tr style={{ background: "#f1f1f1" }}>{["No", "Invoice No", "Balance", "Paid", "Dis / Penalty", "Total"].map((h) => <th key={h} style={{ ...b, textAlign: h === "No" || h === "Invoice No" ? "center" : "right" }}>{h}</th>)}</tr></thead>
+        <tbody>{lines.map((l, i) => (
+          <tr key={i}>
+            <td style={{ ...b, textAlign: "center", width: 36 }}>{i + 1}</td>
+            <td style={{ ...b, textAlign: "center" }}>{l.bill || "—"}</td>
+            <td style={{ ...b, textAlign: "right" }}>{usdV(l.balance)}</td>
+            <td style={{ ...b, textAlign: "right" }}>{usdV(l.paid)}</td>
+            <td style={{ ...b, textAlign: "right" }}>{usdV(l.disc)}</td>
+            <td style={{ ...b, textAlign: "right" }}>{usdV(Number(l.paid || 0) + Number(l.disc || 0))}</td>
+          </tr>
+        ))}</tbody>
+      </table>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 20, fontSize: 12, marginBottom: 46 }}>
+        <div>
+          <div>- <b>Payment Method :</b> {v.method || PAYMENT_METHOD}</div>
+          <div>- <b>Ref No :</b> {v.ref_no || ""}</div>
+          <div>- <b>Remark :</b> {v.remark || ""}</div>
+        </div>
+        <table style={{ borderCollapse: "collapse", minWidth: 240 }}><tbody>
+          {[["Total Amount :", totalAll], ["Previous Balance :", prev], ["Total Paid :", totalPaid], ["Balance :", bal]].map(([k, n]) => (
+            <tr key={k}><td style={{ padding: "2px 10px 2px 0", fontWeight: 700 }}>{k}</td><td style={{ padding: "2px 0", textAlign: "right" }}>{usdV(n)}</td></tr>
+          ))}
+        </tbody></table>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", textAlign: "center", fontSize: 12 }}>
+        {["Customer", "Prepared By", "Verified By"].map((s) => (
+          <div key={s} style={{ width: "30%" }}>
+            <div style={{ fontWeight: 700, marginBottom: 50 }}>{s}</div>
+            <div style={{ borderTop: "1px solid #000", paddingTop: 4 }}>Name / Date</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ReceiveVoucherPrint({ list, onClose }) {
+  return createPortal(
+    <div className="doc-print-root" style={{ position: "fixed", inset: 0, background: "#fff", zIndex: 999999, overflowY: "auto" }}>
+      <style>{`
+        @page { size: A4; margin: 10mm; }
+        .doc-page { margin: 0 auto 18px auto; box-shadow: 0 0 0 1px #e0e0e0; }
+        @media print {
+          .doc-no-print { display: none !important; }
+          html, body { background: #fff !important; height: auto !important; overflow: visible !important; margin: 0; padding: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .doc-print-root { display: block !important; position: static !important; inset: auto !important; overflow: visible !important; height: auto !important; z-index: auto !important; }
+          .doc-page { margin: 0 !important; box-shadow: none !important; }
+        }
+      `}</style>
+      <div className="doc-no-print" style={{ position: "sticky", top: 0, background: "#1a1a1a", padding: "12px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", zIndex: 10 }}>
+        <span style={{ color: "#fff", fontSize: 14, fontWeight: 600 }}>Print preview — {list.map((v) => v.number).join(", ")}</span>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={() => window.print()} style={{ background: "#C9A961", border: "none", borderRadius: 8, padding: "8px 18px", fontSize: 13, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>Print / Save as PDF</button>
+          <button onClick={onClose} style={{ background: "none", border: "1px solid #555", borderRadius: 8, padding: "8px 18px", fontSize: 13, color: "#fff", cursor: "pointer" }}>Close</button>
+        </div>
+      </div>
+      {list.map((v, i) => <div key={v.number} style={{ pageBreakAfter: i < list.length - 1 ? "always" : "auto", breakAfter: i < list.length - 1 ? "page" : "auto" }}><ReceiveVoucherDoc v={v} /></div>)}
+    </div>,
+    document.body
+  );
+}
+
 function TaxPackPage({ C, sbFetch }) {
   const prevMonth = (() => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 7); })();
   const [month, setMonth] = useState(prevMonth);
