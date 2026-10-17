@@ -716,7 +716,7 @@ function MeraConsignmentApp() {
   const [navMobile, setNavMobile] = useState(false);
   const [consignmentSubView, setConsignmentSubView] = useState(() => loadSavedNav()?.consignmentSubView || "regular");
   // One title for both the page header and the browser tab.
-  const pageTitle = page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : childTab === "invoices" ? "Invoices" : childTab === "notes" ? "Delivery Notes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "salesbyperson" ? "Sales by Person" : page === "fieldvisits" ? "Field Visits" : page === "assignreps" ? "Salesperson Assignment" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "sellout" ? "Sales Analysis" : page === "chainreports" ? "Chain Sales Reports" : page === "close" ? "Month Close" : page === "stockplan" ? "Stock Forecast" : page === "cashflow" ? "Cash Forecast" : page === "expenses" ? (childTab === "approve" ? "Expense Register" : "Expenses") : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Term" : salesSubPage === "online" ? "Online & COD" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "cash" ? "Cash Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : (consignmentSubView === "bigco" ? "Corporate Accounts" : "Consignment")) : "Operations";
+  const pageTitle = page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : childTab === "invoices" ? "Invoices" : childTab === "notes" ? "Delivery Notes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "salesbyperson" ? "Sales by Person" : page === "fieldvisits" ? "Field Visits" : page === "assignreps" ? "Salesperson Assignment" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "sellout" ? "Sales Analysis" : page === "chainreports" ? "Chain Sales Reports" : page === "close" ? "Month Close" : page === "stockplan" ? "Stock Forecast" : page === "samples" ? "Samples & Gifts" : page === "cashflow" ? "Cash Forecast" : page === "expenses" ? (childTab === "approve" ? "Expense Register" : "Expenses") : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Term" : salesSubPage === "online" ? "Online & COD" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "cash" ? "Cash Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : (consignmentSubView === "bigco" ? "Corporate Accounts" : "Consignment")) : "Operations";
   useEffect(() => { document.title = `Mèra — ${pageTitle}`; }, [pageTitle]);
 
   // Remembers which page/tab was open, purely so a browser refresh lands
@@ -1814,6 +1814,8 @@ function MeraConsignmentApp() {
           canSeePayroll
             ? <SalesByPersonPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to sales by person.</div>
+        ) : page === "samples" ? (
+          <SamplesGiftsPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} canApprove={canSeeProfit} />
         ) : page === "stockplan" ? (
           <StockForecastPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} canEdit={canSeeAccounting} />
         ) : page === "cashflow" ? (
@@ -8181,6 +8183,7 @@ const NAV = [
     { label: "Stock on Hand",       page: "delivery", tab: "stock" },
     { label: "Products & Barcodes", page: "delivery", tab: "products" },
     { label: "Stock Forecast",      page: "stockplan" },
+    { label: "Samples & Gifts",     page: "samples" },
   ]},
   { name: "Orders & Billing", items: [
     { label: "Delivery Notes", page: "delivery", tab: "notes" },
@@ -10925,6 +10928,187 @@ function ReceiveVoucherPrint({ list, onClose }) {
       {list.map((v, i) => <div key={v.number} style={{ pageBreakAfter: i < list.length - 1 ? "always" : "auto", breakAfter: i < list.length - 1 ? "page" : "auto" }}><ReceiveVoucherDoc v={v} /></div>)}
     </div>,
     document.body
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Samples & Gifts — every free box that leaves the warehouse (samples for
+// shops, gifts, KOL, events, staff use) is REQUESTED here by staff, then
+// approved by the owner or Lita. Approving takes the boxes out of the
+// warehouse straight away under the request number (SG00001), so nothing
+// leaves without a record.
+// ---------------------------------------------------------------------------
+const SG_PURPOSES = [
+  { key: "sample", label: "Sample for a shop / customer" },
+  { key: "gift", label: "Gift" },
+  { key: "kol", label: "KOL / influencer" },
+  { key: "event", label: "Event / promotion" },
+  { key: "staff", label: "Staff use" },
+  { key: "other", label: "Other" },
+];
+const sgPurpose = (k) => SG_PURPOSES.find((p) => p.key === k)?.label || k;
+
+function SamplesGiftsPage({ C, sbFetch, authUser, logActivity, canApprove }) {
+  const [reqs, setReqs] = useState(null);
+  const [stock, setStock] = useState({});
+  const [form, setForm] = useState({ purpose: "sample", recipient: "", note: "", qty: {} });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [okMsg, setOkMsg] = useState("");
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
+  const me = String(authUser?.email || "").toLowerCase();
+
+  async function load() {
+    try {
+      const [r, m] = await Promise.all([
+        sbFetch("sample_requests?select=*&order=id.desc"),
+        sbFetch("stock_moves?select=product,qty").catch(() => []),
+      ]);
+      setReqs(r || []);
+      const s = {}; (m || []).forEach((x) => { s[x.product] = (s[x.product] || 0) + Number(x.qty || 0); });
+      setStock(s);
+    } catch (e) { setReqs([]); setErr("Couldn't load samples & gifts. Ask Claude to check the sample_requests table."); }
+  }
+  useEffect(() => { load(); }, []);
+
+  const lines = Object.fromEntries(SKUS.map((x) => [x.code, Math.max(0, parseInt(form.qty[x.code] || "0", 10) || 0)]).filter(([, v]) => v > 0));
+  const totalAsked = Object.values(lines).reduce((a, b) => a + b, 0);
+  const sumLines = (l) => Object.values(l || {}).reduce((a, b) => a + Number(b || 0), 0);
+  const lineText = (l) => SKUS.filter((x) => Number(l?.[x.code]) > 0).map((x) => `${x.label} ${l[x.code]}`).join(", ");
+  const msg = (e, d) => String(e?.message || "").match(/"message":"([^"]+)"/)?.[1] || d;
+
+  async function submit() {
+    setErr(""); setOkMsg("");
+    if (!form.recipient.trim()) { setErr("Who is it for? Type the shop, person or event."); return; }
+    if (!totalAsked) { setErr("Type how many boxes."); return; }
+    const short = SKUS.filter((x) => (lines[x.code] || 0) > (stock[x.code] || 0));
+    if (short.length) { setErr(`Not enough in the warehouse: ${short.map((x) => `${x.label} (have ${stock[x.code] || 0})`).join(", ")}.`); return; }
+    setBusy(true);
+    try {
+      const [row] = (await sbFetch("sample_requests", { method: "POST", body: JSON.stringify({ purpose: form.purpose, recipient: form.recipient.trim(), note: form.note.trim() || null, lines, requested_by: me || "unknown" }) })) || [];
+      logActivity?.("Sample / gift requested", row?.req_no || "", `${sgPurpose(form.purpose)} · ${form.recipient.trim()} · ${totalAsked} boxes`);
+      setForm({ purpose: form.purpose, recipient: "", note: "", qty: {} });
+      setOkMsg(`Request ${row?.req_no || ""} sent — the owner or Lita will approve it, then the boxes come out of the warehouse.`);
+      await load();
+    } catch (e) { setErr(msg(e, "Couldn't send the request.")); }
+    setBusy(false);
+  }
+
+  async function decide(r, approve) {
+    let note = null;
+    if (!approve) { note = window.prompt(`Reject ${r.req_no}? Reason:`); if (note === null) return; }
+    else if (!window.confirm(`Approve ${r.req_no}? ${sumLines(r.lines)} boxes (${lineText(r.lines)}) will be taken out of the warehouse now.`)) return;
+    setBusy(true); setErr(""); setOkMsg("");
+    try {
+      await sbFetch("rpc/decide_sample_request", { method: "POST", body: JSON.stringify({ p_id: r.id, p_approve: approve, p_note: note }) });
+      logActivity?.(approve ? "Sample / gift approved" : "Sample / gift rejected", r.req_no, `${r.recipient} · ${sumLines(r.lines)} boxes`);
+      await load();
+    } catch (e) { setErr(msg(e, "Couldn't save.")); }
+    setBusy(false);
+  }
+  async function cancel(r) {
+    if (!window.confirm(`Cancel ${r.req_no}?`)) return;
+    setBusy(true); setErr("");
+    try { await sbFetch("rpc/cancel_sample_request", { method: "POST", body: JSON.stringify({ p_id: r.id }) }); await load(); }
+    catch (e) { setErr(msg(e, "Couldn't cancel.")); }
+    setBusy(false);
+  }
+
+  const all = reqs || [];
+  const waiting = all.filter((r) => r.status === "requested");
+  const done = all.filter((r) => r.status !== "requested" && String(r.decided_at || r.created_at).slice(0, 7) === month);
+  const given = done.filter((r) => r.status === "given");
+  const months = Array.from(new Set([new Date().toISOString().slice(0, 7), ...all.map((r) => String(r.decided_at || r.created_at).slice(0, 7))])).sort().reverse();
+  const byPurpose = SG_PURPOSES.map((p) => ({ ...p, boxes: given.filter((r) => r.purpose === p.key).reduce((a, r) => a + sumLines(r.lines), 0) })).filter((p) => p.boxes > 0);
+  const byProduct = SKUS.map((x) => ({ ...x, boxes: given.reduce((a, r) => a + Number(r.lines?.[x.code] || 0), 0) })).filter((x) => x.boxes > 0);
+  const givenTotal = given.reduce((a, r) => a + sumLines(r.lines), 0);
+
+  function downloadMonth() {
+    const rows = done.map((r) => ({
+      "Request no": r.req_no, "Requested on": r.request_date, "Requested by": nameOf(r.requested_by), Purpose: sgPurpose(r.purpose), "For": r.recipient,
+      ...Object.fromEntries(SKUS.map((x) => [x.label, Number(r.lines?.[x.code] || 0)])), "Total boxes": sumLines(r.lines),
+      Status: r.status === "given" ? "Given (out of warehouse)" : r.status, "Decided by": nameOf(r.decided_by), "Decided on": String(r.decided_at || "").slice(0, 10), Note: [r.note, r.decision_note].filter(Boolean).join(" · "),
+    }));
+    downloadBlob(`samples-gifts-${month}.xls`, buildWorkbook({ "Samples & gifts": rows }), "application/vnd.ms-excel");
+  }
+
+  const card = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", marginBottom: 14 };
+  const inp = { background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 10px", fontSize: 13, boxSizing: "border-box", minWidth: 0 };
+  const btn = { background: C.gold, border: "none", color: "#1A1508", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" };
+  const ghost = { background: "none", border: `1px solid ${C.border}`, color: C.text, borderRadius: 7, padding: "5px 10px", fontSize: 11.5, cursor: "pointer" };
+  const statusTone = { given: C.emerald, rejected: C.rose, cancelled: C.textFaint, requested: C.amber };
+  const statusLabel = { given: "✓ Given — out of warehouse", rejected: "Rejected", cancelled: "Cancelled", requested: "Waiting for approval" };
+
+  if (reqs === null) return <div style={{ padding: 30, color: C.textDim }}>Loading…</div>;
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: C.textDim, marginBottom: 12, maxWidth: 720 }}>
+        Every free box — samples, gifts, KOL, events, staff use — must be requested here. When the owner or Lita approves, the boxes are taken out of the warehouse under the request number, so nothing goes missing.
+      </div>
+      {err && <div style={{ background: C.roseBg, color: C.rose, padding: "9px 12px", borderRadius: 9, fontSize: 12.5, marginBottom: 12 }}>{err}</div>}
+      {okMsg && <div style={{ background: `${C.emerald}14`, color: C.emerald, padding: "9px 12px", borderRadius: 9, fontSize: 12.5, marginBottom: 12 }}>{okMsg}</div>}
+
+      <div style={card}>
+        <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 10 }}>New request</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+          <select value={form.purpose} onChange={(e) => setForm({ ...form, purpose: e.target.value })} style={{ ...inp, flex: "1 1 200px" }}>
+            {SG_PURPOSES.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+          </select>
+          <input value={form.recipient} onChange={(e) => setForm({ ...form, recipient: e.target.value })} placeholder="For whom? (shop, person, event)" style={{ ...inp, flex: "2 1 240px" }} />
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8, marginBottom: 10 }}>
+          {SKUS.map((x) => (
+            <div key={x.code}>
+              <div style={{ fontSize: 11, color: C.textDim, marginBottom: 3 }}>{x.label} <span style={{ color: C.textFaint }}>· {Number(stock[x.code] || 0).toLocaleString()} in stock</span></div>
+              <input type="number" min="0" inputMode="numeric" value={form.qty[x.code] || ""} onChange={(e) => setForm({ ...form, qty: { ...form.qty, [x.code]: e.target.value } })} placeholder="0" style={{ ...inp, width: "100%", textAlign: "right" }} />
+            </div>
+          ))}
+        </div>
+        <input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="Why? (optional)" style={{ ...inp, width: "100%", marginBottom: 10 }} />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12.5, color: C.textDim }}>{totalAsked ? `${totalAsked} boxes` : ""}</span>
+          <button disabled={busy} onClick={submit} style={btn}>{busy ? "Sending…" : "Send request"}</button>
+        </div>
+      </div>
+
+      <div style={card}>
+        <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 6 }}>Waiting for approval {waiting.length > 0 && <span style={{ color: C.amber }}>({waiting.length})</span>}</div>
+        {waiting.length === 0 ? <div style={{ fontSize: 12.5, color: C.textFaint }}>Nothing waiting.</div> : waiting.map((r) => (
+          <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "8px 0", borderTop: `1px solid ${C.border}`, fontSize: 12.5, flexWrap: "wrap" }}>
+            <span><b>{r.req_no}</b> · {sgPurpose(r.purpose)} · <b>{r.recipient}</b> · {lineText(r.lines)} <span style={{ color: C.textDim }}>· by {nameOf(r.requested_by)} on {r.request_date}{r.note ? ` · “${r.note}”` : ""}</span></span>
+            <span style={{ display: "flex", gap: 8 }}>
+              {canApprove && <button disabled={busy} onClick={() => decide(r, true)} style={{ ...ghost, border: `1px solid ${C.emerald}`, color: C.emerald }}>Approve & take out</button>}
+              {canApprove && <button disabled={busy} onClick={() => decide(r, false)} style={{ ...ghost, color: C.rose }}>Reject</button>}
+              {(String(r.requested_by).toLowerCase() === me || canApprove) && <button disabled={busy} onClick={() => cancel(r)} style={ghost}>Cancel</button>}
+            </span>
+          </div>
+        ))}
+        {!canApprove && waiting.length > 0 && <div style={{ fontSize: 11.5, color: C.textFaint, marginTop: 6 }}>Only the owner or Lita can approve.</div>}
+      </div>
+
+      <div style={card}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13.5, fontWeight: 700 }}>Given out — {givenTotal} boxes</span>
+          <span style={{ display: "flex", gap: 8 }}>
+            <select value={month} onChange={(e) => setMonth(e.target.value)} style={inp}>{months.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}</select>
+            <button onClick={downloadMonth} disabled={!done.length} style={ghost}>⬇ Excel</button>
+          </span>
+        </div>
+        {givenTotal > 0 && (
+          <div style={{ display: "flex", gap: 18, flexWrap: "wrap", fontSize: 12.5, color: C.textDim, marginBottom: 8 }}>
+            <span>{byPurpose.map((p) => `${p.label.split(" /")[0].split(" for")[0]} ${p.boxes}`).join(" · ")}</span>
+            <span>{byProduct.map((x) => `${x.label} ${x.boxes}`).join(" · ")}</span>
+          </div>
+        )}
+        {done.length === 0 ? <div style={{ fontSize: 12.5, color: C.textFaint }}>None this month.</div> : done.map((r) => (
+          <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "7px 0", borderTop: `1px solid ${C.border}`, fontSize: 12.5, flexWrap: "wrap", opacity: r.status === "given" ? 1 : 0.6 }}>
+            <span><b>{r.req_no}</b> · {String(r.decided_at || "").slice(0, 10)} · {sgPurpose(r.purpose)} · <b>{r.recipient}</b> · {lineText(r.lines)} <span style={{ color: C.textDim }}>· asked by {nameOf(r.requested_by)}{r.decided_by ? `, ${r.status === "given" ? "approved" : r.status} by ${nameOf(r.decided_by)}` : ""}{r.decision_note ? ` · “${r.decision_note}”` : ""}</span></span>
+            <span style={{ fontWeight: 700, color: statusTone[r.status] }}>{statusLabel[r.status]}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
