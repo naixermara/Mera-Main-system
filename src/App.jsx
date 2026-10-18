@@ -41,7 +41,19 @@ function setAccessToken(token, refreshToken) {
 // are more than 1000 they fetch all the remaining pages at the same time
 // (not one after another), so big tables like the ledger load quickly.
 const SB_PAGE = 1000;
+// Deleting business records is for the owner, Lita and the accountant only
+// (the database enforces this too). Stop here with a clear message instead of
+// letting the database silently skip the delete.
+const MANAGER_ONLY_DELETE = new Set(["stores", "credit_stores", "bigco_stores", "online_customers", "credit_invoices", "credit_payments", "bigco_reports", "visits", "delivery_notes", "sales_invoices", "online_sales", "chain_sellout", "chain_reports", "province_coverage", "payer_links"]);
+function currentEmail() {
+  try { return String(JSON.parse(atob(String(currentAccessToken || "").split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).email || "").toLowerCase(); } catch (e) { return ""; }
+}
+function canDeleteRecords() { return ACCOUNTING_EMAILS.includes(currentEmail()); }
 async function sbFetch(path, options = {}, retries = 2) {
+  if (options.method === "DELETE" && MANAGER_ONLY_DELETE.has(String(path).split("?")[0]) && !canDeleteRecords()) {
+    alert("Only the owner, Lita or the accountant can delete this. Ask one of them.");
+    throw new Error("NOT_ALLOWED_TO_DELETE");
+  }
   const isRead = !options.method || options.method === "GET";
   if (!isRead || /[?&](limit|offset)=/.test(path)) return sbFetchOnce(path, options, retries);
   const first = await sbFetchOnce(path, { ...options, headers: { ...(options.headers || {}), Prefer: "count=exact" }, wantTotal: true }, retries);
@@ -843,6 +855,29 @@ function MeraConsignmentApp() {
     window.addEventListener("mera-month-locked", onLocked);
     return () => window.removeEventListener("mera-month-locked", onLocked);
   }, [notify]);
+  // Payment bot watch: warn the owner / Lita / accountant when the Telegram
+  // payment bot stops (no heartbeat for 20 min) or no ABA payment has come in
+  // for 36 hours — so a logged-out bot is noticed the same day.
+  const [botWarn, setBotWarn] = useState("");
+  useEffect(() => {
+    if (!canSeeAccounting) return;
+    let live = true;
+    const check = async () => {
+      try {
+        const st = await sbFetch("rpc/payment_bot_status", { method: "POST", body: "{}" });
+        const now = Date.now();
+        const alive = st?.alive_at ? Date.parse(st.alive_at) : null;
+        const lastPay = st?.last_payment_at ? Date.parse(st.last_payment_at) : null;
+        let w = "";
+        if (alive && now - alive > 20 * 60e3) w = `The ABA payment bot stopped ${Math.round((now - alive) / 3600e3) || "<1"}h ago — payments are not coming into the system. Check Railway (remarkable-friendship) or the Telegram login.`;
+        else if (lastPay && now - lastPay > 36 * 3600e3) w = `No ABA payment has come in for ${Math.round((now - lastPay) / 3600e3)} hours. If customers did pay, the payment bot may have a problem.`;
+        if (live) setBotWarn(w);
+      } catch (e) { /* not set up yet */ }
+    };
+    check();
+    const t = setInterval(check, 10 * 60e3);
+    return () => { live = false; clearInterval(t); };
+  }, [canSeeAccounting]);
   const [activityEntries, setActivityEntries] = useState(null);
   const [activityLoading, setActivityLoading] = useState(false);
   const [newStoreForm, setNewStoreForm] = useState({
@@ -1699,6 +1734,11 @@ function MeraConsignmentApp() {
                 <Sparkles size={17} /> MÈRA
               </span>
             </div>
+            {botWarn && (
+              <div style={{ background: C.roseBg, color: C.rose, border: `1px solid ${C.rose}40`, padding: "8px 12px", borderRadius: 9, fontSize: 12.5, fontWeight: 600, margin: "8px 0 4px", maxWidth: 720 }}>
+                ⚠ {botWarn}
+              </div>
+            )}
             <h1 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 34, margin: "6px 0 0", letterSpacing: "-0.01em" }}>
               {pageTitle}
             </h1>
@@ -4299,6 +4339,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
   }
 
   async function deleteSale(id) {
+    if (!canDeleteRecords()) { alert("Only the owner, Lita or the accountant can delete a sale. Ask one of them."); return; }
     if (!window.confirm("Delete this online sale and its product lines? Any boxes it took out of the warehouse go back in.")) return;
     try {
       try {
