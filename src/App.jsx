@@ -12017,6 +12017,8 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
   const [mktKols, setMktKols] = useState([]);
   const [mktVideos, setMktVideos] = useState([]);
   const [mktAds, setMktAds] = useState([]);
+  const [payRuns, setPayRuns] = useState([]); // Payroll — salaries are a cost of the month they are for
+  const [paySlips, setPaySlips] = useState([]);
   const [showExpenseBreakdown, setShowExpenseBreakdown] = useState(false);
   const [expenseForm, setExpenseForm] = useState({ date: todayStr(), description: "", amount: "", declare: false, accountId: "", paidFromId: "" });
   // Declared expenses live in the Accounting ledger (gl_*). Only accounting
@@ -12142,6 +12144,10 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
         setMktKols(kr || []); setMktVideos(vr || []);
       } catch (e) { /* no KOL data yet */ }
       try { setMktAds((await sbFetch("ad_spend?select=*")) || []); } catch (e) { /* no ad spend table yet */ }
+      try {
+        const [pr, ps] = await Promise.all([sbFetch("payroll_runs?select=id,month,status"), sbFetch("payslips?select=run_id,staff_name,net_pay,advance")]);
+        setPayRuns(pr || []); setPaySlips(ps || []);
+      } catch (e) { /* payroll not visible to this user */ }
       await reloadMiscExpenses();
       await reloadLedger();
       try {
@@ -12284,7 +12290,15 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
         return { id: l.id, date: e.entry_date, entryNo: e.entry_no, description: l.memo || e.memo || "", account: `${a.code} · ${a.name}`, amount: Number(l.debit || 0) - Number(l.credit || 0) };
       })
       .filter((x) => Math.abs(x.amount) > 0.005);
-    const declaredExpenseCost = declaredExpenses.reduce((a, x) => a + x.amount, 0);
+    // Salaries — from Payroll, for the month the payroll is for (net pay plus
+    // any advance already handed out). A salary also posted to the books is
+    // not counted twice: salary accounts are left out of the expenses then.
+    const monthRunIds = new Set(payRuns.filter((r) => r.month === selectedMonth).map((r) => r.id));
+    const monthSlips = paySlips.filter((p) => monthRunIds.has(p.run_id));
+    const salaryCost = monthSlips.reduce((a, p) => a + Number(p.net_pay || 0) + Number(p.advance || 0), 0);
+    const isSalaryLine = (x) => /salar|wage|payroll|ប្រាក់ខែ/i.test(x.account);
+    const declaredNoSalary = salaryCost > 0 ? declaredExpenses.filter((x) => !isSalaryLine(x)) : declaredExpenses;
+    const declaredExpenseCost = declaredNoSalary.reduce((a, x) => a + x.amount, 0);
     const otherExpenseCost = privateExpenseCost + declaredExpenseCost;
 
     // Marketing — same rule as the Dashboard: a KOL package is costed per
@@ -12313,19 +12327,19 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
 
     const revenue = consignRevenue + corpRevenue + creditRevenue + onlineRevenue;
     const cogs = lines.reduce((a, l) => a + l.cogs, 0) + onlineCogs;
-    const profit = revenue - cogs - sampleCost - otherExpenseCost - marketingCost;
+    const profit = revenue - cogs - sampleCost - otherExpenseCost - marketingCost - salaryCost;
     const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
     const priced = lines.every((l) => l.perBox > 0);
 
-    return { lines, revenue, consignRevenue, corpRevenue, creditRevenue, onlineRevenue, onlineCogs, cogs, sampleCost, sampleBreakdown, otherExpenseCost, privateExpenseCost, declaredExpenseCost, declaredExpenses, monthExpenses, kolCost, adCost, marketingCost, kolBreakdown, profit, margin, priced, stockValueAll, collectedAll, paidRatio };
+    return { salaryCost, salaryStaff: monthSlips.length, lines, revenue, consignRevenue, corpRevenue, creditRevenue, onlineRevenue, onlineCogs, cogs, sampleCost, sampleBreakdown, otherExpenseCost, privateExpenseCost, declaredExpenseCost, declaredExpenses, monthExpenses, kolCost, adCost, marketingCost, kolBreakdown, profit, margin, priced, stockValueAll, collectedAll, paidRatio };
   };
-  const report = useMemo(() => buildReport(selectedMonth), [selectedMonth, ...[visits, bigcoReports, creditInvoices, stores, costs, stockMoves, miscExpenses, onlineSales, onlineSaleItems, consignBasis, glAccounts, glEntries, glLines, mktKols, mktVideos, mktAds]]);
+  const report = useMemo(() => buildReport(selectedMonth), [selectedMonth, payRuns, paySlips, ...[visits, bigcoReports, creditInvoices, stores, costs, stockMoves, miscExpenses, onlineSales, onlineSaleItems, consignBasis, glAccounts, glEntries, glLines, mktKols, mktVideos, mktAds]]);
   // The selected month and the five before it, oldest first.
   const trend = useMemo(() => {
     const out = []; let [y, m] = selectedMonth.split("-").map(Number);
     for (let i = 0; i < 6; i++) { out.unshift(`${y}-${String(m).padStart(2, "0")}`); m -= 1; if (m === 0) { m = 12; y -= 1; } }
     return out.map((mk) => { const r = buildReport(mk); return { month: mk, revenue: r.revenue, gross: r.revenue - r.cogs - r.sampleCost, marketing: r.marketingCost, kol: r.kolCost, ads: r.adCost, profit: r.profit }; });
-  }, [selectedMonth, ...[visits, bigcoReports, creditInvoices, stores, costs, stockMoves, miscExpenses, onlineSales, onlineSaleItems, consignBasis, glAccounts, glEntries, glLines, mktKols, mktVideos, mktAds]]);
+  }, [selectedMonth, payRuns, paySlips, ...[visits, bigcoReports, creditInvoices, stores, costs, stockMoves, miscExpenses, onlineSales, onlineSaleItems, consignBasis, glAccounts, glEntries, glLines, mktKols, mktVideos, mktAds]]);
 
   const cell = { padding: "10px 8px", textAlign: "right", whiteSpace: "nowrap" };
   const th = { textAlign: "right", padding: "11px 8px", fontWeight: 700 };
@@ -12441,10 +12455,15 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
               <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: C.amber }}>${report.marketingCost.toLocaleString("en-US", MONEY2)}</div>
               <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>KOL ${report.kolCost.toLocaleString("en-US", MONEY2)} · ads ${report.adCost.toLocaleString("en-US", MONEY2)} · from the Marketing page, not declared</div>
             </div>
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "18px 20px" }}>
+              <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Salaries</div>
+              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: C.amber }}>${report.salaryCost.toLocaleString("en-US", MONEY2)}</div>
+              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>{report.salaryStaff ? `${report.salaryStaff} staff · from Payroll` : "No payroll made for this month yet"}</div>
+            </div>
             <div style={{ background: C.surface, border: `1px solid ${C.gold}50`, borderRadius: 12, padding: "18px 20px" }}>
-              <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Gross profit</div>
+              <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Net profit</div>
               <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600, marginTop: 8, color: report.profit >= 0 ? C.emerald : C.rose }}>${report.profit.toLocaleString("en-US", MONEY2)}</div>
-              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>after samples, expenses and marketing</div>
+              <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 4 }}>after product cost, samples, expenses, marketing and salaries</div>
             </div>
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "18px 20px" }}>
               <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Margin</div>
@@ -12622,7 +12641,7 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
             ))}
             <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 10, lineHeight: 1.5 }}>
               This is the value of goods sold, not cash collected — see Sales → Total for what actually came in.
-              KOL and ad spend come from the Marketing page. Salaries and other costs count once they are recorded as expenses — declared in Accounting, or not declared here.
+              KOL and ad spend come from the Marketing page; salaries come from Payroll for the month they are for; other costs count once recorded as expenses.
             </div>
           </div>
           <MoneyLeftSection C={C} sbFetch={sbFetch} month={selectedMonth} glAccounts={glAccounts} glEntries={glEntries} glLines={glLines} glReady={glReady} miscExpenses={miscExpenses} mktAds={mktAds} profit={report.profit} />
@@ -12980,7 +12999,10 @@ function ExpenseClaimsPage({ authUser, C, sbFetch, logActivity, approve }) {
       {err && <div style={{ background: C.roseBg, color: C.rose, padding: "10px 12px", borderRadius: 9, fontSize: 12.5, marginBottom: 12 }}>{err}</div>}
       {msg && <div style={{ background: C.emeraldBg, color: C.emerald, padding: "10px 12px", borderRadius: 9, fontSize: 12.5, marginBottom: 12 }}>{msg}</div>}
 
-      {showForm && (
+      {showForm && (() => {
+        // Correcting (owner / Lita): open the form as a pop-up over the list,
+        // so it is obvious which expense is being changed.
+        const formCard = (
         <div ref={formRef} style={{ ...card, borderColor: form.id ? C.gold : C.border }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>{form.id ? "Correct expense" : "New expense"}</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
@@ -13006,7 +13028,13 @@ function ExpenseClaimsPage({ authUser, C, sbFetch, logActivity, approve }) {
             {form.id && <button type="button" onClick={() => setForm(blank)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 9, padding: "11px 16px", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>}
           </div>
         </div>
-      )}
+        );
+        return isAdmin && form.id ? (
+          <div onClick={() => setForm(blank)} style={{ position: "fixed", inset: 0, background: "rgba(6,7,9,0.7)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, zIndex: 60 }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 560, maxHeight: "92vh", overflowY: "auto" }}>{formCard}</div>
+          </div>
+        ) : formCard;
+      })()}
 
       {isAdmin && (
         <>
@@ -15553,6 +15581,139 @@ const PRODUCT_FALLBACK = SKUS.map((x, i) => ({ code: x.code, name: x.name, barco
 
 const STOCK_PRODUCTS = SKUS.map((x) => ({ key: x.code, label: x.label }));
 
+// ---------------------------------------------------------------------------
+// Stock returns — boxes a store/customer gives back to our staff. Good boxes go
+// back into the warehouse (stock move "return", ref RT00001); damaged ones are
+// recorded but not counted as sellable stock. For a consignment store the
+// boxes can also be taken off the store's shelf.
+// ---------------------------------------------------------------------------
+const RETURN_TYPES = [
+  { key: "consignment", label: "Consignment" },
+  { key: "credit", label: "Credit Term" },
+  { key: "corporate", label: "Corporate" },
+  { key: "cod", label: "COD / Online" },
+];
+function StockReturnsPanel({ C, sbFetch, authUser, logActivity, lists, salespeople, addStockMove }) {
+  const empty = { type: "consignment", storeId: "", condition: "good", reason: "", broughtBy: "", note: "", qty: {}, offShelf: true };
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState(empty);
+  const [rows, setRows] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [ok, setOk] = useState("");
+  async function load() { try { setRows((await sbFetch("stock_returns?select=*&order=id.desc&limit=30")) || []); } catch (e) { /* table missing */ } }
+  useEffect(() => { load(); }, []);
+
+  const list = lists[form.type] || [];
+  const lines = Object.fromEntries(SKUS.map((x) => [x.code, Math.max(0, parseInt(form.qty[x.code] || "0", 10) || 0)]).filter(([, v]) => v > 0));
+  const total = Object.values(lines).reduce((a, b) => a + b, 0);
+  const lineText = (l) => SKUS.filter((x) => Number(l?.[x.code]) > 0).map((x) => `${x.label} ${l[x.code]}`).join(", ");
+
+  async function save() {
+    setErr(""); setOk("");
+    const store = list.find((s) => String(s.id) === String(form.storeId));
+    if (!store) { setErr("Choose the store / customer."); return; }
+    if (!total) { setErr("Type how many boxes came back."); return; }
+    setBusy(true);
+    try {
+      const [row] = (await sbFetch("stock_returns", { method: "POST", body: JSON.stringify({
+        business_type: form.type, store_id: String(store.id), store_name: store.name, lines, condition: form.condition,
+        reason: form.reason.trim() || null, brought_by: form.broughtBy || null, note: form.note.trim() || null, created_by: authUser?.email || "unknown",
+      }) })) || [];
+      const ref = `${row?.ret_no || "RT"} · ${store.name}`;
+      if (form.condition === "good") await addStockMove(SKUS.map((x) => ({ product: x.code, qty: lines[x.code] || 0 })), "return", ref);
+      // Consignment: the boxes also leave the store's shelf (same as "returned" on a visit).
+      if (form.type === "consignment" && form.offShelf) {
+        const today = new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
+        const v = SKUS.filter((x) => lines[x.code]).map((x) => ({ date: today, store_name: store.name, product: x.visitKey, sold: 0, returned: lines[x.code], paid: 0, notes: `Stock return ${row?.ret_no || ""}`, created_by: authUser?.email || "unknown" }));
+        if (v.length) await sbFetch("visits", { method: "POST", body: JSON.stringify(v) });
+      }
+      logActivity?.("Stock returned", store.name, `${row?.ret_no || ""} · ${lineText(lines)} · ${form.condition === "good" ? "back in stock" : "damaged"}`);
+      setOk(`${row?.ret_no || "Return"} saved — ${total} boxes from ${store.name}${form.condition === "good" ? " are back in the warehouse." : " recorded as damaged (not added to sellable stock)."}${form.type !== "consignment" ? " The customer was billed for these boxes — tell the accountant so the bill can be reduced." : ""}`);
+      setForm({ ...empty, type: form.type });
+      setOpen(false);
+      await load();
+    } catch (e) { setErr("Couldn't save the return — try again."); }
+    setBusy(false);
+  }
+
+  const inp = { width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "9px 11px", fontSize: 13.5, background: C.bg2, color: C.text, boxSizing: "border-box" };
+  const lab = { display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 5, textTransform: "uppercase" };
+  const pill = (on) => ({ flex: 1, padding: "8px 4px", fontSize: 11, fontWeight: 700, borderRadius: 8, cursor: "pointer", background: on ? C.gold : "none", color: on ? "#1A1508" : C.textDim, border: `1px solid ${on ? C.gold : C.border}` });
+
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${open ? C.gold : C.border}`, borderRadius: 12, padding: "13px 16px", marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>Stock returns from stores</div>
+        <button onClick={() => { setOpen(!open); setErr(""); setOk(""); }} style={{ background: open ? "none" : C.gold, color: open ? C.textDim : "#1A1508", border: `1px solid ${open ? C.border : C.gold}`, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>{open ? "Close" : "+ Record a return"}</button>
+      </div>
+      {ok && <div style={{ background: `${C.emerald}14`, color: C.emerald, padding: "9px 12px", borderRadius: 9, fontSize: 12.5, marginTop: 10 }}>{ok}</div>}
+      {open && (
+        <div style={{ marginTop: 12 }}>
+          {err && <div style={{ background: C.roseBg, color: C.rose, padding: "9px 12px", borderRadius: 9, fontSize: 12.5, marginBottom: 10 }}>{err}</div>}
+          <label style={lab}>From which kind of customer</label>
+          <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+            {RETURN_TYPES.map((t) => <button key={t.key} type="button" onClick={() => setForm({ ...form, type: t.key, storeId: "" })} style={pill(form.type === t.key)}>{t.label}</button>)}
+          </div>
+          <label style={lab}>Store / customer</label>
+          <select value={form.storeId} onChange={(e) => setForm({ ...form, storeId: e.target.value })} style={{ ...inp, marginBottom: 10 }}>
+            <option value="">Select…</option>
+            {list.map((s) => <option key={s.id} value={s.id}>{storeLabel(s)}</option>)}
+          </select>
+          <label style={lab}>Boxes returned</label>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8, marginBottom: 10 }}>
+            {SKUS.map((x) => (
+              <div key={x.code}>
+                <div style={{ fontSize: 11, color: C.textDim, marginBottom: 3 }}>{x.label}</div>
+                <input type="number" min="0" inputMode="numeric" value={form.qty[x.code] || ""} onChange={(e) => setForm({ ...form, qty: { ...form.qty, [x.code]: e.target.value } })} placeholder="0" style={{ ...inp, textAlign: "right" }} />
+              </div>
+            ))}
+          </div>
+          <label style={lab}>Condition</label>
+          <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+            <button type="button" onClick={() => setForm({ ...form, condition: "good" })} style={pill(form.condition === "good")}>Good — back into stock</button>
+            <button type="button" onClick={() => setForm({ ...form, condition: "damaged" })} style={pill(form.condition === "damaged")}>Damaged — can't resell</button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+            <div>
+              <label style={lab}>Brought back by</label>
+              <select value={form.broughtBy} onChange={(e) => setForm({ ...form, broughtBy: e.target.value })} style={inp}>
+                <option value="">Select…</option>
+                {(salespeople || []).map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={lab}>Why</label>
+              <input value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} placeholder="Not selling, store closing…" style={inp} />
+            </div>
+          </div>
+          {form.type === "consignment" && (
+            <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12.5, color: C.text, marginBottom: 10, cursor: "pointer" }}>
+              <input type="checkbox" checked={form.offShelf} onChange={(e) => setForm({ ...form, offShelf: e.target.checked })} style={{ marginTop: 2 }} />
+              <span>Also take these boxes off the store's shelf count <span style={{ color: C.textFaint }}>(untick if the salesperson already logged them as "returned" on a store visit)</span></span>
+            </label>
+          )}
+          <input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="Note (optional)" style={{ ...inp, marginBottom: 10 }} />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 12.5, color: C.textDim }}>{total ? `${total} boxes` : ""}</span>
+            <button disabled={busy} onClick={save} style={{ background: C.gold, border: "none", color: "#1A1508", borderRadius: 8, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>{busy ? "Saving…" : "Save return"}</button>
+          </div>
+        </div>
+      )}
+      {rows.length > 0 && (
+        <div style={{ marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
+          {rows.slice(0, 8).map((r) => (
+            <div key={r.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 0", fontSize: 12.5, flexWrap: "wrap", borderBottom: `1px solid ${C.border}` }}>
+              <span><b>{r.ret_no}</b> · {r.return_date} · <b>{r.store_name}</b> · {lineText(r.lines)}<span style={{ color: C.textDim }}>{r.brought_by ? ` · by ${r.brought_by}` : ""}{r.reason ? ` · ${r.reason}` : ""}</span></span>
+              <span style={{ fontWeight: 700, color: r.condition === "good" ? C.emerald : C.rose }}>{r.condition === "good" ? "Back in stock" : "Damaged"}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, onStockHandled, onStoreDelivered, openPanel }) {
   const [loading, setLoading] = useState(true);
   const [notes, setNotes] = useState([]);
@@ -16225,8 +16386,12 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
     });
   };
 
+  // Warehouse → Stock on Hand / Products show only warehouse things, not the
+  // list of delivery notes and invoices (those live under Orders & Billing).
+  const warehouseView = openPanel === "stock" || openPanel === "products";
   return (
     <div>
+      {!warehouseView && (<>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 22, marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
         <div>
           <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontWeight: 600, fontSize: 24, margin: 0 }}>Delivery Notes &amp; Invoices</h2>
@@ -16282,6 +16447,8 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
         <span style={{ fontSize: 11, color: C.textFaint, marginLeft: "auto" }}>Tip: check "Also generate the invoice right after" below to do both in one go.</span>
       </div>
 
+      </>)}
+      {warehouseView && <div style={{ height: 22 }} />}
       {/* Warehouse stock — lives here because this is where stock goes out. */}
       <div style={{ background: C.surface, border: `1px solid ${showStock ? C.gold : C.border}`, borderRadius: 12, padding: "13px 16px", marginBottom: 16 }}>
         <div onClick={() => setShowStock(!showStock)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, cursor: "pointer", flexWrap: "wrap" }}>
@@ -16518,6 +16685,8 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
         );
       })()}
 
+      {warehouseView && <StockReturnsPanel C={C} sbFetch={sbFetch} authUser={authUser} logActivity={logActivity} lists={{ consignment: consignmentStores, credit: creditStores, corporate: bigcoStores, cod: onlineCustomers }} salespeople={salespeople} addStockMove={addStockMove} />}
+
       {stockError && (
         <div style={{ background: C.roseBg, color: C.rose, padding: "12px 14px", borderRadius: 9, fontSize: 13, marginBottom: 16, border: `1px solid ${C.rose}30` }}>
           <b>Not enough stock.</b> {stockError}
@@ -16530,7 +16699,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
         </div>
       )}
 
-      {loading ? (
+      {warehouseView ? null : loading ? (
         <div style={{ textAlign: "center", color: C.textFaint, padding: "40px 0" }}>Loading…</div>
       ) : notes.length === 0 ? (
         <div style={{ textAlign: "center", padding: "40px 20px", color: C.textFaint }}>
