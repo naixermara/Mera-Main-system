@@ -728,7 +728,7 @@ function MeraConsignmentApp() {
   const [navMobile, setNavMobile] = useState(false);
   const [consignmentSubView, setConsignmentSubView] = useState(() => loadSavedNav()?.consignmentSubView || "regular");
   // One title for both the page header and the browser tab.
-  const pageTitle = page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : childTab === "invoices" ? "Invoices" : childTab === "notes" ? "Delivery Notes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "salesbyperson" ? "Sales by Person" : page === "fieldvisits" ? "Field Visits" : page === "assignreps" ? "Salesperson Assignment" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "sellout" ? "Sales Analysis" : page === "chainreports" ? "Chain Sales Reports" : page === "close" ? "Month Close" : page === "stockplan" ? "Stock Forecast" : page === "samples" ? "Samples & Gifts" : page === "bigpicture" ? "Big Picture" : page === "cashflow" ? "Cash Forecast" : page === "expenses" ? (childTab === "approve" ? "Expense Register" : "Expenses") : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Term" : salesSubPage === "online" ? "Online & COD" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "cash" ? "Cash Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : (consignmentSubView === "bigco" ? "Corporate Accounts" : "Consignment")) : "Operations";
+  const pageTitle = page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : childTab === "returns" ? "Stock Returns" : childTab === "invoices" ? "Invoices" : childTab === "notes" ? "Delivery Notes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "salesbyperson" ? "Sales by Person" : page === "fieldvisits" ? "Field Visits" : page === "assignreps" ? "Salesperson Assignment" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "sellout" ? "Sales Analysis" : page === "chainreports" ? "Chain Sales Reports" : page === "close" ? "Month Close" : page === "stockplan" ? "Stock Forecast" : page === "samples" ? "Samples & Gifts" : page === "bigpicture" ? "Big Picture" : page === "cashflow" ? "Cash Forecast" : page === "expenses" ? (childTab === "approve" ? "Expense Register" : "Expenses") : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Term" : salesSubPage === "online" ? "Online & COD" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "cash" ? "Cash Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : (consignmentSubView === "bigco" ? "Corporate Accounts" : "Consignment")) : "Operations";
   useEffect(() => { document.title = `Mèra — ${pageTitle}`; }, [pageTitle]);
 
   // Remembers which page/tab was open, purely so a browser refresh lands
@@ -8229,6 +8229,7 @@ const NAV = [
   { name: "Warehouse", items: [
     { label: "Stock on Hand",       page: "delivery", tab: "stock" },
     { label: "Products & Barcodes", page: "delivery", tab: "products" },
+    { label: "Stock Returns",       page: "delivery", tab: "returns" },
     { label: "Stock Forecast",      page: "stockplan" },
     { label: "Samples & Gifts",     page: "samples" },
   ]},
@@ -15593,9 +15594,9 @@ const RETURN_TYPES = [
   { key: "corporate", label: "Corporate" },
   { key: "cod", label: "COD / Online" },
 ];
-function StockReturnsPanel({ C, sbFetch, authUser, logActivity, lists, salespeople, addStockMove }) {
+function StockReturnsPanel({ C, sbFetch, authUser, logActivity, lists, salespeople, addStockMove, defaultOpen }) {
   const empty = { type: "consignment", storeId: "", condition: "good", reason: "", broughtBy: "", note: "", qty: {}, offShelf: true };
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(!!defaultOpen);
   const [form, setForm] = useState(empty);
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -15631,7 +15632,7 @@ function StockReturnsPanel({ C, sbFetch, authUser, logActivity, lists, salespeop
       logActivity?.("Stock returned", store.name, `${row?.ret_no || ""} · ${lineText(lines)} · ${form.condition === "good" ? "back in stock" : "damaged"}`);
       setOk(`${row?.ret_no || "Return"} saved — ${total} boxes from ${store.name}${form.condition === "good" ? " are back in the warehouse." : " recorded as damaged (not added to sellable stock)."}${form.type !== "consignment" ? " The customer was billed for these boxes — tell the accountant so the bill can be reduced." : ""}`);
       setForm({ ...empty, type: form.type });
-      setOpen(false);
+      setOpen(!!defaultOpen);
       await load();
     } catch (e) { setErr("Couldn't save the return — try again."); }
     setBusy(false);
@@ -15702,7 +15703,8 @@ function StockReturnsPanel({ C, sbFetch, authUser, logActivity, lists, salespeop
       )}
       {rows.length > 0 && (
         <div style={{ marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
-          {rows.slice(0, 8).map((r) => (
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", margin: "4px 0 6px" }}>Recent returns</div>
+          {rows.map((r) => (
             <div key={r.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 0", fontSize: 12.5, flexWrap: "wrap", borderBottom: `1px solid ${C.border}` }}>
               <span><b>{r.ret_no}</b> · {r.return_date} · <b>{r.store_name}</b> · {lineText(r.lines)}<span style={{ color: C.textDim }}>{r.brought_by ? ` · by ${r.brought_by}` : ""}{r.reason ? ` · ${r.reason}` : ""}</span></span>
               <span style={{ fontWeight: 700, color: r.condition === "good" ? C.emerald : C.rose }}>{r.condition === "good" ? "Back in stock" : "Damaged"}</span>
@@ -16389,6 +16391,21 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
   // Warehouse → Stock on Hand / Products show only warehouse things, not the
   // list of delivery notes and invoices (those live under Orders & Billing).
   const warehouseView = openPanel === "stock" || openPanel === "products";
+  // Warehouse → Stock Returns: its own page.
+  if (openPanel === "returns") {
+    return (
+      <div style={{ marginTop: 22 }}>
+        <div style={{ fontSize: 12.5, color: C.textDim, marginBottom: 12, maxWidth: 720 }}>
+          Boxes a store or customer gives back. Good boxes go straight back into warehouse stock; damaged ones are recorded but not counted as sellable.
+        </div>
+        <div style={{ display: "flex", gap: 18, flexWrap: "wrap", fontSize: 12.5, color: C.textDim, marginBottom: 14 }}>
+          <b style={{ color: C.textFaint, fontSize: 11, letterSpacing: "0.08em" }}>STOCK NOW</b>
+          {STOCK_PRODUCTS.map((pr) => <span key={pr.key}>{pr.label} <b style={{ color: C.emerald, fontFamily: "'IBM Plex Mono', monospace" }}>{Number(stock[pr.key] || 0).toLocaleString("en-US")}</b></span>)}
+        </div>
+        <StockReturnsPanel C={C} sbFetch={sbFetch} authUser={authUser} logActivity={logActivity} lists={{ consignment: consignmentStores, credit: creditStores, corporate: bigcoStores, cod: onlineCustomers }} salespeople={salespeople} addStockMove={addStockMove} defaultOpen />
+      </div>
+    );
+  }
   return (
     <div>
       {!warehouseView && (<>
@@ -16684,8 +16701,6 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
           </div>
         );
       })()}
-
-      {warehouseView && <StockReturnsPanel C={C} sbFetch={sbFetch} authUser={authUser} logActivity={logActivity} lists={{ consignment: consignmentStores, credit: creditStores, corporate: bigcoStores, cod: onlineCustomers }} salespeople={salespeople} addStockMove={addStockMove} />}
 
       {stockError && (
         <div style={{ background: C.roseBg, color: C.rose, padding: "12px 14px", borderRadius: 9, fontSize: 13, marginBottom: 16, border: `1px solid ${C.rose}30` }}>
