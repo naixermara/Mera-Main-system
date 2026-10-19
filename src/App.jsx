@@ -728,7 +728,7 @@ function MeraConsignmentApp() {
   const [navMobile, setNavMobile] = useState(false);
   const [consignmentSubView, setConsignmentSubView] = useState(() => loadSavedNav()?.consignmentSubView || "regular");
   // One title for both the page header and the browser tab.
-  const pageTitle = page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : childTab === "invoices" ? "Invoices" : childTab === "notes" ? "Delivery Notes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "salesbyperson" ? "Sales by Person" : page === "fieldvisits" ? "Field Visits" : page === "assignreps" ? "Salesperson Assignment" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "sellout" ? "Sales Analysis" : page === "chainreports" ? "Chain Sales Reports" : page === "close" ? "Month Close" : page === "stockplan" ? "Stock Forecast" : page === "samples" ? "Samples & Gifts" : page === "cashflow" ? "Cash Forecast" : page === "expenses" ? (childTab === "approve" ? "Expense Register" : "Expenses") : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Term" : salesSubPage === "online" ? "Online & COD" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "cash" ? "Cash Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : (consignmentSubView === "bigco" ? "Corporate Accounts" : "Consignment")) : "Operations";
+  const pageTitle = page === "overview" ? "Overview" : page === "kol" ? "KOL & Content" : page === "delivery" ? (childTab === "stock" ? "Stock on Hand" : childTab === "products" ? "Products & Barcodes" : childTab === "invoices" ? "Invoices" : childTab === "notes" ? "Delivery Notes" : "Orders & Billing") : page === "stores" ? "Store Directory" : page === "accounting" ? "Accounting" : page === "profit" ? "Profit & Margin" : page === "salesbyperson" ? "Sales by Person" : page === "fieldvisits" ? "Field Visits" : page === "assignreps" ? "Salesperson Assignment" : page === "payroll" ? "Payroll" : page === "bills" ? "Bill Register" : page === "sellout" ? "Sales Analysis" : page === "chainreports" ? "Chain Sales Reports" : page === "close" ? "Month Close" : page === "stockplan" ? "Stock Forecast" : page === "samples" ? "Samples & Gifts" : page === "bigpicture" ? "Big Picture" : page === "cashflow" ? "Cash Forecast" : page === "expenses" ? (childTab === "approve" ? "Expense Register" : "Expenses") : page === "sales" ? (salesSubPage === "total" ? "Sales Summary" : salesSubPage === "report" ? "Sales Report" : salesSubPage === "credit" ? "Credit Term" : salesSubPage === "online" ? "Online & COD" : salesSubPage === "payments" ? "Payments Received" : salesSubPage === "cash" ? "Cash Received" : salesSubPage === "owed" ? "Accounts Receivable" : salesSubPage === "retention" ? "Customer Retention" : salesSubPage === "pending" ? "Pending Payments" : salesSubPage === "coverage" ? "Province Coverage" : (consignmentSubView === "bigco" ? "Corporate Accounts" : "Consignment")) : "Operations";
   useEffect(() => { document.title = `Mèra — ${pageTitle}`; }, [pageTitle]);
 
   // Remembers which page/tab was open, purely so a browser refresh lands
@@ -1854,6 +1854,10 @@ function MeraConsignmentApp() {
           canSeePayroll
             ? <SalesByPersonPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} />
             : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>You don't have access to sales by person.</div>
+        ) : page === "bigpicture" ? (
+          canSeePayroll
+            ? <BigPicturePage C={C} sbFetch={sbFetch} />
+            : <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>The Big Picture is in the Executive Office.</div>
         ) : page === "samples" ? (
           <SamplesGiftsPage authUser={authUser} C={C} sbFetch={sbFetch} logActivity={logActivity} canApprove={canSeeProfit} />
         ) : page === "stockplan" ? (
@@ -4306,7 +4310,9 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
     const act = activeOnlineLines(editing.lines);
     setBusy(true); setError("");
     try {
-      const stockOk = await saveOnlineSaleLines(sbFetch, editing.id, editing.lines, true, sale?.date, authUser?.email);
+      // A COD sale made from a delivery note already left the warehouse on that note.
+      const fromDN = /CH\d{4}-\d{6,}/.test(String(sale?.description || ""));
+      const stockOk = await saveOnlineSaleLines(sbFetch, editing.id, editing.lines, !fromDN, sale?.date, authUser?.email);
       // A sale logged by hand is worth exactly its lines. One that came from a
       // bank payment keeps the amount actually received.
       await sbFetch(`online_sales?id=eq.${editing.id}`, { method: "PATCH", body: JSON.stringify({ promo_note: freeOnlineLines(editing.lines).length ? (editing.promo || "").trim() || null : null, sale_rep: (editing.saleRep || "").trim() || null }) });
@@ -4564,7 +4570,7 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
                 {expanded && !(editing && editing.id === s.id) && (
                   <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
                     {lines.length === 0 && <div style={{ fontSize: 12, color: C.amber }}>No products recorded yet — click the pencil to add them.</div>}
-                    {lines.length > 0 && <div style={{ fontSize: 11, color: stockRefs.has(onlineRef(s.id)) ? C.emerald : C.textFaint, marginBottom: 4 }}>{stockRefs.has(onlineRef(s.id)) ? "✓ Taken out of the warehouse" : "Not taken out of the warehouse"}</div>}
+                    {lines.length > 0 && <div style={{ fontSize: 11, color: stockRefs.has(onlineRef(s.id)) ? C.emerald : C.textFaint, marginBottom: 4 }}>{stockRefs.has(onlineRef(s.id)) ? "✓ Taken out of the warehouse" : /CH\d{4}-\d{6,}/.test(String(s.description || "")) ? `✓ Taken out on delivery note ${String(s.description).match(/CH\d{4}-\d{6,}/)[0]}` : "Not taken out of the warehouse"}</div>}
                     {lines.map((l) => (
                       <div key={l.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0", color: C.textDim }}>
                         <span>{labelFor(l.product)} × {l.qty} @ ${Number(l.price).toFixed(2)}</span>
@@ -8259,6 +8265,7 @@ const NAV = [
   // Executive Office — everything sensitive in one place: profit, sales
   // report, marketing spend, salaries and expense approval. Rosa and Lita only.
   { name: "Executive Office", needs: "payroll", items: [
+    { label: "Big Picture",     page: "bigpicture" },
     { label: "Profit & Margin", page: "profit", needs: "profit" },
     { label: "Sales by Person", page: "salesbyperson" },
     { label: "Sales Analysis",  page: "sellout" },
@@ -11149,6 +11156,196 @@ function SamplesGiftsPage({ C, sbFetch, authUser, logActivity, canApprove }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Big Picture — the whole company in one page: every channel (Online & COD,
+// Credit Term, Corporate, Consignment), every product, every salesperson,
+// month by month, with automatic feedback. Executive Office only.
+// ---------------------------------------------------------------------------
+const BP_CHANNELS = ["Online & COD", "Credit Term", "Corporate", "Consignment"];
+const BP_COLORS = { "Online & COD": "#B79CE8", "Credit Term": "#5FC79A", "Corporate": "#E8B85C", "Consignment": "#E8829C" };
+
+function BigPicturePage({ C, sbFetch }) {
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
+  const thisMonth = new Date().toISOString().slice(0, 7);
+  const lastMonth = (() => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 7); })();
+  const [month, setMonth] = useState(lastMonth);
+  const [narrow, setNarrow] = useState(typeof window !== "undefined" && window.innerWidth < 640);
+  useEffect(() => { const f = () => setNarrow(window.innerWidth < 640); window.addEventListener("resize", f); return () => window.removeEventListener("resize", f); }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 12);
+        const r = await sbFetch("rpc/company_sales", { method: "POST", body: JSON.stringify({ p_from: d.toISOString().slice(0, 10), p_to: new Date().toISOString().slice(0, 10) }) });
+        setRows((r || []).map((x) => ({ ...x, boxes: Number(x.boxes || 0), amount: Number(x.amount || 0) })));
+      } catch (e) { setRows([]); setErr("Couldn't load — only the owner and Lita can open the Big Picture."); }
+    })();
+  }, []);
+
+  if (rows === null) return <div style={{ padding: 30, color: C.textDim }}>Loading the whole company…</div>;
+
+  const usd = (n) => `$${Math.round(Number(n || 0)).toLocaleString("en-US")}`;
+  const num = (n) => Math.round(Number(n || 0)).toLocaleString("en-US");
+  const pct = (a, b) => (b > 0 ? Math.round(((a - b) / b) * 100) : null);
+  const months = Array.from(new Set([thisMonth, lastMonth, ...rows.map((r) => r.month)])).sort().reverse();
+  const prevOf = (m) => { const [y, mo] = m.split("-").map(Number); const d = new Date(y, mo - 2, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; };
+  const prev = prevOf(month);
+  const inM = (m) => rows.filter((r) => r.month === m);
+  const now = inM(month), before = inM(prev);
+  const sum = (list, k) => list.reduce((a, r) => a + r[k], 0);
+  const custCount = (list) => new Set(list.map((r) => `${r.channel}|${r.customer}`)).size;
+  const isPartial = month === thisMonth;
+  const dayNow = new Date().getDate(), daysIn = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
+
+  const tot = { amount: sum(now, "amount"), boxes: sum(now, "boxes"), cust: custCount(now) };
+  const totPrev = { amount: sum(before, "amount"), boxes: sum(before, "boxes"), cust: custCount(before) };
+
+  const byChannel = BP_CHANNELS.map((ch) => {
+    const a = now.filter((r) => r.channel === ch), b = before.filter((r) => r.channel === ch);
+    return { ch, amount: sum(a, "amount"), boxes: sum(a, "boxes"), cust: custCount(a), prevAmount: sum(b, "amount") };
+  });
+  const byProduct = SKUS.map((x) => {
+    const a = now.filter((r) => r.product === x.code), b = before.filter((r) => r.product === x.code);
+    return { code: x.code, label: x.label, amount: sum(a, "amount"), boxes: sum(a, "boxes"), prevBoxes: sum(b, "boxes") };
+  });
+  const reps = Array.from(new Set(now.map((r) => r.rep || "— no salesperson"))).map((rp) => {
+    const a = now.filter((r) => (r.rep || "— no salesperson") === rp), b = before.filter((r) => (r.rep || "— no salesperson") === rp);
+    return { rep: rp, amount: sum(a, "amount"), boxes: sum(a, "boxes"), cust: custCount(a), prevAmount: sum(b, "amount") };
+  }).sort((a, b) => b.amount - a.amount);
+  const custs = Array.from(new Map(now.map((r) => [`${r.channel}|${r.customer}`, { customer: r.customer || "—", channel: r.channel }])).values()).map((c) => {
+    const a = now.filter((r) => r.channel === c.channel && (r.customer || "—") === c.customer);
+    return { ...c, amount: sum(a, "amount"), boxes: sum(a, "boxes") };
+  }).sort((a, b) => b.amount - a.amount);
+
+  // 6-month trend, stacked by channel
+  const trendMonths = months.filter((m) => m <= month).slice(0, 6).reverse();
+  const trend = trendMonths.map((m) => ({ m, parts: BP_CHANNELS.map((ch) => ({ ch, amount: sum(inM(m).filter((r) => r.channel === ch), "amount") })) }));
+  const trendMax = Math.max(1, ...trend.map((t) => t.parts.reduce((a, p) => a + p.amount, 0)));
+
+  // Automatic feedback
+  const tips = [];
+  if (isPartial) tips.push({ tone: "info", text: `${monthLabel(month)} is not finished (day ${dayNow} of ${daysIn}). At this pace the month ends near ${usd((tot.amount / dayNow) * daysIn)}.` });
+  if (tot.amount > 0) {
+    const top = [...byChannel].sort((a, b) => b.amount - a.amount)[0];
+    tips.push({ tone: "good", text: `${top.ch} is your biggest channel: ${Math.round((top.amount / tot.amount) * 100)}% of sales (${usd(top.amount)}).` });
+  }
+  byChannel.forEach((c) => {
+    if (c.prevAmount === 0 && c.amount > 0 && rows.some((r) => r.channel === c.ch && r.month < prev)) tips.push({ tone: "warn", text: `${c.ch}: nothing was recorded in ${monthLabel(prev)}, so the comparison with last month is not fair. If ${monthLabel(prev)} orders are missing, ask the office to enter them.` });
+    if (c.amount === 0 && c.prevAmount > 0 && !isPartial) tips.push({ tone: "warn", text: `${c.ch}: nothing recorded this month (last month ${usd(c.prevAmount)}). Check that the sales were entered — or find out why they stopped.` });
+    else if (!isPartial) { const p = pct(c.amount, c.prevAmount); if (p !== null && p <= -25) tips.push({ tone: "warn", text: `${c.ch} dropped ${Math.abs(p)}% vs ${monthLabel(prev)} (${usd(c.prevAmount)} → ${usd(c.amount)}).` }); else if (p !== null && p >= 30) tips.push({ tone: "good", text: `${c.ch} grew ${p}% vs ${monthLabel(prev)}.` }); }
+  });
+  if (custs[0] && tot.amount > 0 && custs[0].amount / tot.amount > 0.15) tips.push({ tone: "warn", text: `${custs[0].customer} alone is ${Math.round((custs[0].amount / tot.amount) * 100)}% of sales — keep them happy, and grow others so you don't depend on one customer.` });
+  const deadProducts = byProduct.filter((x) => x.boxes === 0 && !isPartial);
+  if (deadProducts.length) tips.push({ tone: "warn", text: `Sold 0 boxes of ${deadProducts.map((x) => x.label).join(", ")} this month.` });
+  const noRep = reps.find((r) => r.rep === "— no salesperson");
+  if (noRep && tot.amount > 0 && noRep.amount / tot.amount > 0.1) tips.push({ tone: noRep.amount / tot.amount > 0.5 ? "warn" : "info", text: `${Math.round((noRep.amount / tot.amount) * 100)}% of sales (${usd(noRep.amount)}) has no salesperson recorded, so the salesperson table can't judge performance. Set the salesperson on each store/customer in Store Directory (or on each bill).` });
+
+  const card = (label, value, sub, tone) => (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px" }}>
+      <div style={{ fontSize: 10.5, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 }}>{label}</div>
+      <div style={{ fontSize: 24, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", marginTop: 4, color: tone || C.text }}>{value}</div>
+      <div style={{ fontSize: 11.5, color: C.textDim, marginTop: 2 }}>{sub}</div>
+    </div>
+  );
+  const change = (a, b) => { const p = pct(a, b); return p === null ? "—" : <span style={{ color: p >= 0 ? C.emerald : C.rose, fontWeight: 700 }}>{p >= 0 ? "▲" : "▼"} {Math.abs(p)}%</span>; };
+  const box = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", marginBottom: 14 };
+  const th = { padding: "6px 8px", fontSize: 11, color: C.textFaint, fontWeight: 600, textAlign: "right", whiteSpace: "nowrap" };
+  const td = { padding: "7px 8px", fontSize: 12.5, textAlign: "right", borderTop: `1px solid ${C.border}`, whiteSpace: "nowrap" };
+  const share = (a) => (tot.amount > 0 ? `${Math.round((a / tot.amount) * 100)}%` : "—");
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: C.textDim, marginBottom: 12, maxWidth: 720 }}>
+        Every sale from every channel — online & COD, credit term, corporate and consignment — in one place, with automatic feedback.
+      </div>
+      {err && <div style={{ background: C.roseBg, color: C.rose, padding: "9px 12px", borderRadius: 9, fontSize: 12.5, marginBottom: 12 }}>{err}</div>}
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <select value={month} onChange={(e) => setMonth(e.target.value)} style={{ background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 9, padding: "10px 12px", fontSize: 13, fontWeight: 600 }}>
+          {months.map((m) => <option key={m} value={m}>{monthLabel(m)}{m === thisMonth ? " (so far)" : ""}</option>)}
+        </select>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr 1fr" : "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+        {card("Total sales", usd(tot.amount), <>vs {monthLabel(prev)}: {change(tot.amount, totPrev.amount)}</>)}
+        {card("Boxes sold", num(tot.boxes), <>vs {monthLabel(prev)}: {change(tot.boxes, totPrev.boxes)}</>)}
+        {card("Customers buying", num(tot.cust), `${monthLabel(prev)}: ${num(totPrev.cust)}`)}
+        {card("Average per box", tot.boxes ? `$${(tot.amount / tot.boxes).toFixed(2)}` : "—", "all channels together")}
+      </div>
+
+      <div style={box}>
+        <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>Feedback</div>
+        {tips.length === 0 ? <div style={{ fontSize: 12.5, color: C.textFaint }}>No sales recorded for this month yet.</div> : tips.map((t, i) => (
+          <div key={i} style={{ display: "flex", gap: 8, fontSize: 12.5, padding: "4px 0", color: C.text }}>
+            <span style={{ color: t.tone === "good" ? C.emerald : t.tone === "warn" ? C.amber : C.goldBright }}>{t.tone === "good" ? "▲" : t.tone === "warn" ? "⚠" : "•"}</span><span>{t.text}</span>
+          </div>
+        ))}
+      </div>
+
+      <div style={box}>
+        <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 10 }}>Last 6 months</div>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: narrow ? 8 : 18, height: 170, padding: "0 4px" }}>
+          {trend.map((t) => {
+            const total = t.parts.reduce((a, p) => a + p.amount, 0);
+            return (
+              <div key={t.m} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, minWidth: 0 }}>
+                <div style={{ fontSize: 10.5, color: C.textDim, fontFamily: "'IBM Plex Mono', monospace" }}>{usd(total)}</div>
+                <div style={{ width: "100%", maxWidth: 56, height: Math.max(2, (total / trendMax) * 120), display: "flex", flexDirection: "column-reverse", borderRadius: 4, overflow: "hidden", outline: t.m === month ? `2px solid ${C.goldBright}` : "none", outlineOffset: 2 }}>
+                  {t.parts.map((p) => <div key={p.ch} title={`${p.ch}: ${usd(p.amount)}`} style={{ height: total ? `${(p.amount / total) * 100}%` : 0, background: BP_COLORS[p.ch] }} />)}
+                </div>
+                <div style={{ fontSize: 10.5, color: t.m === month ? C.goldBright : C.textFaint, whiteSpace: "nowrap" }}>{monthLabel(t.m).replace(/ \d{4}$/, "")}</div>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 10, fontSize: 11.5, color: C.textDim }}>
+          {BP_CHANNELS.map((ch) => <span key={ch} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: BP_COLORS[ch] }} />{ch}</span>)}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1fr 1fr", gap: 14 }}>
+        <div style={{ ...box, overflowX: "auto" }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 6 }}>By channel</div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead><tr><th style={{ ...th, textAlign: "left" }}>Channel</th><th style={th}>Sales</th><th style={th}>Share</th><th style={th}>Boxes</th><th style={th}>Customers</th><th style={th}>vs last</th></tr></thead>
+            <tbody>{byChannel.map((c) => (
+              <tr key={c.ch}><td style={{ ...td, textAlign: "left" }}><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: BP_COLORS[c.ch], marginRight: 6 }} />{c.ch}</td><td style={td}>{usd(c.amount)}</td><td style={td}>{share(c.amount)}</td><td style={td}>{num(c.boxes)}</td><td style={td}>{c.cust}</td><td style={td}>{change(c.amount, c.prevAmount)}</td></tr>
+            ))}</tbody>
+          </table>
+        </div>
+        <div style={{ ...box, overflowX: "auto" }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 6 }}>By product</div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead><tr><th style={{ ...th, textAlign: "left" }}>Product</th><th style={th}>Boxes</th><th style={th}>Sales</th><th style={th}>Share</th><th style={th}>vs last</th></tr></thead>
+            <tbody>{byProduct.map((x) => (
+              <tr key={x.code}><td style={{ ...td, textAlign: "left" }}>{x.label}</td><td style={td}>{num(x.boxes)}</td><td style={td}>{usd(x.amount)}</td><td style={td}>{share(x.amount)}</td><td style={td}>{change(x.boxes, x.prevBoxes)}</td></tr>
+            ))}</tbody>
+          </table>
+        </div>
+        <div style={{ ...box, overflowX: "auto" }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 6 }}>By salesperson</div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead><tr><th style={{ ...th, textAlign: "left" }}>Salesperson</th><th style={th}>Sales</th><th style={th}>Share</th><th style={th}>Customers</th><th style={th}>vs last</th></tr></thead>
+            <tbody>{reps.map((r) => (
+              <tr key={r.rep}><td style={{ ...td, textAlign: "left" }}>{r.rep}</td><td style={td}>{usd(r.amount)}</td><td style={td}>{share(r.amount)}</td><td style={td}>{r.cust}</td><td style={td}>{change(r.amount, r.prevAmount)}</td></tr>
+            ))}</tbody>
+          </table>
+        </div>
+        <div style={{ ...box, overflowX: "auto" }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 6 }}>Top 10 customers</div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead><tr><th style={{ ...th, textAlign: "left" }}>Customer</th><th style={{ ...th, textAlign: "left" }}>Channel</th><th style={th}>Sales</th><th style={th}>Boxes</th></tr></thead>
+            <tbody>{custs.slice(0, 10).map((c) => (
+              <tr key={c.channel + c.customer}><td style={{ ...td, textAlign: "left", whiteSpace: "normal", maxWidth: 220 }}>{c.customer}</td><td style={{ ...td, textAlign: "left", color: C.textDim }}>{c.channel}</td><td style={td}>{usd(c.amount)}</td><td style={td}>{num(c.boxes)}</td></tr>
+            ))}</tbody>
+          </table>
+        </div>
+      </div>
+      <div style={{ fontSize: 11, color: C.textFaint }}>Sales are the amounts on each bill. For credit and corporate bills, the $ per product is the bill split by boxes. Consignment = boxes the shops sold × that shop's price.</div>
     </div>
   );
 }
@@ -15362,6 +15559,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
   const [invoices, setInvoices] = useState([]);
   const [consignmentStores, setConsignmentStores] = useState([]);
   const [creditStores, setCreditStores] = useState([]);
+  const [onlineCustomers, setOnlineCustomers] = useState([]); // COD / Online customers
   const [bigcoStores, setBigcoStores] = useState([]);
   const [salespeople, setSalespeople] = useState([]);
   const [showAddSalesperson, setShowAddSalesperson] = useState(false);
@@ -15430,6 +15628,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
   useEffect(() => {
     (async () => {
       try {
+        sbFetch("online_customers?select=id,name,phone,email,address&order=name.asc").then((r) => setOnlineCustomers(r || [])).catch(() => {});
         const [dnRows, invRows, storeRows, creditRows, bigcoRows, salespeopleRows] = await Promise.all([
           sbFetch("delivery_notes?select=*&order=created_at.desc"),
           sbFetch("sales_invoices?select=*&order=created_at.desc"),
@@ -15488,6 +15687,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
   }, [stockForStore, loading]);
 
   function storeListFor(businessType) {
+    if (businessType === "cod") return onlineCustomers;
     if (businessType === "credit") return creditStores;
     if (businessType === "corporate") return bigcoStores;
     return consignmentStores;
@@ -15554,6 +15754,14 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
         body: JSON.stringify({ name: trimmed, credit_days: parseInt(form.newStoreCreditDays, 10) || 30, notes: "", ...contactInfo }),
       });
       setCreditStores((prev) => [...prev, inserted]);
+      return inserted.id;
+    }
+    if (businessType === "cod") {
+      const [inserted] = await sbFetch("online_customers", {
+        method: "POST",
+        body: JSON.stringify({ name: trimmed, ...contactInfo, salesperson: form.saleRep || null }),
+      });
+      setOnlineCustomers((prev) => [...prev, inserted]);
       return inserted.id;
     }
     if (businessType === "corporate") {
@@ -16349,7 +16557,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                       <div style={{ fontWeight: 600, fontSize: 15 }}>{dn.dn_number} · {dn.customer_name}</div>
                       <div style={{ fontSize: 11, color: C.textFaint }}>
                         {new Date(dn.sale_date + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}
-                        {" · "}{dn.business_type === "credit" ? "Credit Term" : dn.business_type === "corporate" ? "Corporate Accounts" : "Consignment"}
+                        {" · "}{dn.business_type === "credit" ? "Credit Term" : dn.business_type === "corporate" ? "Corporate Accounts" : dn.business_type === "cod" ? "COD / Online" : "Consignment"}
                         {linkedInvoices.length > 0 && ` · ${linkedInvoices.length} invoice${linkedInvoices.length === 1 ? "" : "s"} generated`}
                       </div>
                       {SKUS.some((x) => (Number(dn[x.freeCol]) || 0) > 0) && (
@@ -16468,6 +16676,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                   { key: "consignment", label: "Consignment" },
                   { key: "credit", label: "Credit Term" },
                   { key: "corporate", label: "Corporate" },
+                  { key: "cod", label: "COD / Online" },
                 ].map((t) => (
                   <button
                     key={t.key}
@@ -16967,7 +17176,7 @@ function EditDocumentModal({ doc, C, salespeople, canChangeAmounts, amountsLocke
 }
 
 function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, logActivity, onClose, onCreated }) {
-  const [invoiceType, setInvoiceType] = useState(dn.business_type === "credit" || dn.business_type === "corporate" ? "commercial" : "consignment");
+  const [invoiceType, setInvoiceType] = useState(dn.business_type === "credit" || dn.business_type === "corporate" || dn.business_type === "cod" ? "commercial" : "consignment");
   const [form, setForm] = useState({
     ...Object.fromEntries(SKUS.map((x) => [x.formPrice, dn[x.priceCol] ? String(dn[x.priceCol]) : ""])),
     discountPercent: "0",
@@ -17049,6 +17258,21 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
           if (dn.sale_rep) await rememberStoreSalesperson(sbFetch, dn.business_type === "credit" ? "credit_stores" : "bigco_stores", dn.store_id, dn.sale_rep);
         } catch (e) {
           alert(`Invoice ${invoiceNumber} was created, but it couldn't be added to ${dn.business_type === "credit" ? "Credit Term" : "Corporate Accounts"}. Add it there by hand with number ${invoiceNumber}.`);
+        }
+      }
+      // COD / Online: the invoice also becomes an unpaid sale in Online & COD,
+      // so it counts in sales and the customer's ABA payment can be matched to it.
+      // The boxes already left the warehouse on the delivery note — no second stock move.
+      if (dn.business_type === "cod") {
+        try {
+          const [os] = await sbFetch("online_sales", {
+            method: "POST",
+            body: JSON.stringify({ date: dn.sale_date, customer_name: dn.customer_name, description: `${invoiceNumber} · delivered on ${dn.dn_number}`, amount: grand, bill_no: invoiceNumber, channel: "online", payment_status: "unpaid", sale_rep: dn.sale_rep || null, created_by: authUser?.email || "unknown" }),
+          });
+          const lines = SKUS.map((x) => ({ product: x.code, qty: Number(dn[x.qtyCol]) || 0, price: parseFloat(form[x.formPrice]) || 0 })).filter((l) => l.qty > 0);
+          if (os?.id && lines.length) await sbFetch("online_sale_items", { method: "POST", body: JSON.stringify(lines.map((l) => ({ sale_id: os.id, ...l, line_total: Math.round(l.qty * l.price * 100) / 100 }))) });
+        } catch (e) {
+          alert(`Invoice ${invoiceNumber} was created, but it couldn't be added to Online & COD. Add it there by hand with number ${invoiceNumber} (don't take stock out again).`);
         }
       }
       logActivity?.("Generated invoice", dn.customer_name, `${inserted.invoice_number} (${invoiceType}) from ${dn.dn_number}`);
@@ -20492,7 +20716,7 @@ function FieldVisitsPage({ authUser, C, sbFetch, logActivity, canManage }) {
         const addBill = (k, d) => { if (k && d) (billDates[k] = billDates[k] || new Set()).add(d); };
         (ciB || []).forEach((r) => addBill(`credit_stores:${r.store_id}`, r.invoice_date));
         (brB || []).forEach((r) => addBill(`bigco_stores:${r.store_id}`, r.report_date));
-        (dnB || []).forEach((r) => addBill(`${r.business_type === "credit" ? "credit_stores" : r.business_type === "corporate" ? "bigco_stores" : "stores"}:${r.store_id}`, r.sale_date));
+        (dnB || []).forEach((r) => addBill(`${r.business_type === "credit" ? "credit_stores" : r.business_type === "corporate" ? "bigco_stores" : r.business_type === "cod" ? "online_customers" : "stores"}:${r.store_id}`, r.sale_date));
         const stIdByName = Object.fromEntries((st || []).map((x) => [x.name, x.id]));
         (viB || []).forEach((r) => addBill(stIdByName[r.store_name] != null ? `stores:${stIdByName[r.store_name]}` : null, r.date));
         const bById = Object.fromEntries((bs || []).map((b) => [b.id, b]));
