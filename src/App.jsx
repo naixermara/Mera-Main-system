@@ -4897,10 +4897,19 @@ function MoneyOwedPage({ authUser, C, sbFetch, logActivity }) {
               <div style={{ fontSize: 11.5, color: C.textFaint, marginTop: 2 }}>{MO_CHANNEL[c.channel]} · {c.bills.length} open invoice{c.bills.length === 1 ? "" : "s"}{c.phone ? " · " : ""}{c.phone && <a href={`tel:${c.phone}`} onClick={(e) => e.stopPropagation()} style={{ color: C.goldBright }}>{c.phone}</a>}</div>
             </div>
             <div style={{ textAlign: "right", flexShrink: 0 }}>
-              <div style={{ fontWeight: 700, fontSize: 15, fontFamily: "'IBM Plex Mono', monospace" }}>{moMoney(c.total)}</div>
-              <div style={{ fontSize: 11.5, fontWeight: 700, color: c.late > 0 ? C.rose : C.emerald }}>
-                {c.late > 0 ? `${moMoney(c.late)} overdue · ${c.maxLate} day${c.maxLate === 1 ? "" : "s"}` : c.nextDue ? `Due ${fmtDate(c.nextDue)}` : "Current"}
-              </div>
+              {/* What to collect now first, in big; the full balance (incl. bills not yet due) below it. */}
+              {c.late > 0 ? (
+                <>
+                  <div style={{ fontWeight: 700, fontSize: 15, fontFamily: "'IBM Plex Mono', monospace", color: C.rose }}>{moMoney(c.late)} <span style={{ fontSize: 11, fontFamily: "inherit" }}>due now</span></div>
+                  <div style={{ fontSize: 11.5, color: C.rose }}>{c.maxLate} day{c.maxLate === 1 ? "" : "s"} late</div>
+                  {c.total - c.late > 0.005 && <div style={{ fontSize: 11, color: C.textFaint }}>+ {moMoney(c.total - c.late)} not due yet · total {moMoney(c.total)}</div>}
+                </>
+              ) : (
+                <>
+                  <div style={{ fontWeight: 700, fontSize: 15, fontFamily: "'IBM Plex Mono', monospace" }}>{moMoney(c.total)}</div>
+                  <div style={{ fontSize: 11.5, fontWeight: 700, color: C.emerald }}>{c.nextDue ? `Not due yet · due ${fmtDate(c.nextDue)}` : "Current"}</div>
+                </>
+              )}
             </div>
           </div>
           {lastNote && (
