@@ -842,6 +842,23 @@ function MeraConsignmentApp() {
     const interval = setInterval(checkCorpDue, 60000);
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
+  // COD not paid after COD_GRACE_DAYS days — shown on Accounts Receivable in the
+  // sidebar and as a warning on every page, so nobody forgets to collect it.
+  const [codOverdue, setCodOverdue] = useState({ count: 0, amount: 0 });
+  useEffect(() => {
+    let live = true;
+    const check = async () => {
+      try {
+        const rows = (await sbFetch("online_sales?select=date,amount&payment_status=eq.unpaid")) || [];
+        const cutoff = Date.now() - COD_GRACE_DAYS * 86400e3;
+        const late = rows.filter((r) => Date.parse(r.date + "T23:59:59") < cutoff && Number(r.amount || 0) > 0);
+        if (live) setCodOverdue({ count: late.length, amount: late.reduce((a, r) => a + Number(r.amount || 0), 0) });
+      } catch (e) { /* not signed in yet */ }
+    };
+    check();
+    const t = setInterval(check, 5 * 60e3);
+    return () => { live = false; clearInterval(t); };
+  }, []);
   const [toast, setToast] = useState(null); // { message, kind: "success" | "error" }
   const toastTimerRef = useRef(null);
   const notify = useCallback((message, kind = "success") => {
@@ -1712,7 +1729,7 @@ function MeraConsignmentApp() {
         mobileOpen={navMobile}
         onCloseMobile={() => setNavMobile(false)}
         pendingCount={PENDING_PAYMENTS_ENABLED ? pendingPaymentCount : 0}
-        badges={{ "Pending Payments": PENDING_PAYMENTS_ENABLED ? pendingPaymentCount : 0, "Corporate Accounts": corpPaymentDueCount, "Payments Received": newPaymentCount }}
+        badges={{ "Pending Payments": PENDING_PAYMENTS_ENABLED ? pendingPaymentCount : 0, "Corporate Accounts": corpPaymentDueCount, "Payments Received": newPaymentCount, "Accounts Receivable": codOverdue.count }}
       />
 
       <div className="mera-shell" style={{ maxWidth: 920, margin: "0 auto", padding: "40px 20px 0" }}>
@@ -1734,6 +1751,11 @@ function MeraConsignmentApp() {
                 <Sparkles size={17} /> MÈRA
               </span>
             </div>
+            {codOverdue.count > 0 && (
+              <div onClick={() => goTo({ label: "Accounts Receivable", page: "sales", sub: "owed" })} style={{ background: `${C.amber}18`, color: C.amber, border: `1px solid ${C.amber}55`, padding: "8px 12px", borderRadius: 9, fontSize: 12.5, fontWeight: 600, margin: "8px 0 4px", maxWidth: 720, cursor: "pointer" }}>
+                ⚠ {codOverdue.count} COD order{codOverdue.count === 1 ? "" : "s"} not paid after {COD_GRACE_DAYS} days — ${codOverdue.amount.toLocaleString("en-US", MONEY2)} to collect. Tap to see who.
+              </div>
+            )}
             {botWarn && (
               <div style={{ background: C.roseBg, color: C.rose, border: `1px solid ${C.rose}40`, padding: "8px 12px", borderRadius: 9, fontSize: 12.5, fontWeight: 600, margin: "8px 0 4px", maxWidth: 720 }}>
                 ⚠ {botWarn}
