@@ -1730,7 +1730,7 @@ function MeraConsignmentApp() {
         mobileOpen={navMobile}
         onCloseMobile={() => setNavMobile(false)}
         pendingCount={PENDING_PAYMENTS_ENABLED ? pendingPaymentCount : 0}
-        badges={{ "Pending Payments": PENDING_PAYMENTS_ENABLED ? pendingPaymentCount : 0, "Corporate Accounts": corpPaymentDueCount, "Payments Received": newPaymentCount, "Accounts Receivable": codOverdue.count }}
+        badges={{ "Pending Payments": PENDING_PAYMENTS_ENABLED ? pendingPaymentCount : 0, "Corporate Accounts": corpPaymentDueCount, "Payments Received": newPaymentCount, "Online & COD": codOverdue.count }}
       />
 
       <div className="mera-shell" style={{ maxWidth: 920, margin: "0 auto", padding: "40px 20px 0" }}>
@@ -1753,7 +1753,7 @@ function MeraConsignmentApp() {
               </span>
             </div>
             {codOverdue.count > 0 && (
-              <div onClick={() => goTo({ label: "Accounts Receivable", page: "sales", sub: "owed" })} style={{ background: `${C.amber}18`, color: C.amber, border: `1px solid ${C.amber}55`, padding: "8px 12px", borderRadius: 9, fontSize: 12.5, fontWeight: 600, margin: "8px 0 4px", maxWidth: 720, cursor: "pointer" }}>
+              <div onClick={() => goTo({ label: "Online & COD", page: "sales", sub: "online" })} style={{ background: `${C.amber}18`, color: C.amber, border: `1px solid ${C.amber}55`, padding: "8px 12px", borderRadius: 9, fontSize: 12.5, fontWeight: 600, margin: "8px 0 4px", maxWidth: 720, cursor: "pointer" }}>
                 ⚠ {codOverdue.count} COD order{codOverdue.count === 1 ? "" : "s"} not paid after {COD_GRACE_DAYS} days — ${codOverdue.amount.toLocaleString("en-US", MONEY2)} to collect. Tap to see who.
               </div>
             )}
