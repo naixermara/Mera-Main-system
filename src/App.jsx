@@ -846,6 +846,7 @@ function MeraConsignmentApp() {
   // sidebar and as a warning on every page, so nobody forgets to collect it.
   const [codOverdue, setCodOverdue] = useState({ count: 0, amount: 0 });
   useEffect(() => {
+    if (!authUser?.email) return; // wait for login — before that the database returns nothing
     let live = true;
     const check = async () => {
       try {
@@ -858,7 +859,7 @@ function MeraConsignmentApp() {
     check();
     const t = setInterval(check, 5 * 60e3);
     return () => { live = false; clearInterval(t); };
-  }, []);
+  }, [authUser?.email]);
   const [toast, setToast] = useState(null); // { message, kind: "success" | "error" }
   const toastTimerRef = useRef(null);
   const notify = useCallback((message, kind = "success") => {
