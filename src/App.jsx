@@ -4649,7 +4649,7 @@ function BillNumbersPage({ C, sbFetch, showAmounts }) {
         // Amounts come back empty for staff — the database decides, not the app.
         const [r, c] = await Promise.all([
           sbFetch("rpc/list_bill_numbers", { method: "POST", body: "{}" }),
-          sbFetch("document_counters?select=*&series_key=in.(bill-B,bill-INV)").catch(() => []),
+          sbFetch("document_counters?select=*&series_key=in.(bill-B,bill-INV,bill-CN)").catch(() => []),
         ]);
         setRows(r || []); setCounters(c || []);
       } catch (e) { setRows([]); }
@@ -4677,9 +4677,9 @@ function BillNumbersPage({ C, sbFetch, showAmounts }) {
         </div>
       ) : (
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-          {["B", "INV"].map((k) => (
+          {["B", "INV", "CN"].map((k) => (
             <div key={k} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 16px", minWidth: 160 }}>
-              <div style={{ fontSize: 10.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase" }}>Next {k === "B" ? "bill" : "tax invoice"}</div>
+              <div style={{ fontSize: 10.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase" }}>Next {k === "B" ? "bill" : k === "CN" ? "consignment note" : "tax invoice"}</div>
               <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", color: C.goldBright }}>{next(k)}</div>
             </div>
           ))}
@@ -17499,6 +17499,8 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
   const [saving, setSaving] = useState(false);
   // Invoice number: shows the next number; owner, Lita, accountant and Nea may type another.
   const canChooseNo = canRenumberDocs();
+  // Tax invoice INV…, commercial invoice B…, consignment note CN… (stock placed at a store — not a sale).
+  const seriesOf = (t) => (t === "tax" ? "INV" : t === "consignment" ? "CN" : "B");
   const [suggestedNo, setSuggestedNo] = useState("");
   const [invNo, setInvNo] = useState("");
   const [invNoTouched, setInvNoTouched] = useState(false);
@@ -17507,8 +17509,7 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
     let alive = true;
     setSuggestedNo(""); setNoErr("");
     if (!invNoTouched) setInvNo("");
-    if (invoiceType === "consignment") return undefined;
-    sbFetch("rpc/peek_bill_number", { method: "POST", body: JSON.stringify({ p_series: invoiceType === "tax" ? "INV" : "B" }) })
+    sbFetch("rpc/peek_bill_number", { method: "POST", body: JSON.stringify({ p_series: seriesOf(invoiceType) }) })
       .then((r) => { const v = Array.isArray(r) ? r[0] : r; if (alive && typeof v === "string") { setSuggestedNo(v); if (!invNoTouched) setInvNo(v); } })
       .catch(() => {});
     return () => { alive = false; };
@@ -17538,14 +17539,14 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
       // BizAdvisor's B / INV numbers. Before that, the old numbering is used.
       let invoiceNumber = null;
       const typed = String(invNo || "").trim().toUpperCase();
-      if (invoiceType !== "consignment" && canChooseNo && typed && typed !== suggestedNo) {
-        const wantPrefix = invoiceType === "tax" ? "INV" : "B";
-        if (!new RegExp(`^${wantPrefix}\\d{7}$`).test(typed)) { setNoErr(`${invoiceType === "tax" ? "Tax" : "Commercial"} invoice numbers look like ${wantPrefix}${"0".repeat(7 - 3)}618 (${wantPrefix} + 7 digits).`); setSaving(false); return; }
+      if (canChooseNo && typed && typed !== suggestedNo) {
+        const wantPrefix = seriesOf(invoiceType);
+        if (!new RegExp(`^${wantPrefix}\\d{7}$`).test(typed)) { setNoErr(`${invoiceType === "tax" ? "Tax invoice" : invoiceType === "consignment" ? "Consignment note" : "Commercial invoice"} numbers look like ${wantPrefix}${"0".repeat(7 - 3)}618 (${wantPrefix} + 7 digits).`); setSaving(false); return; }
         try {
           const r = await sbFetch("rpc/issue_custom_bill_number", { method: "POST", body: JSON.stringify({ p_number: typed, p_source: `invoice from ${dn.dn_number}`, p_customer: dn.customer_name, p_amount: grand }) });
           invoiceNumber = Array.isArray(r) ? r[0] : r;
         } catch (e) { setNoErr(friendlyDbError(e)); setSaving(false); return; }
-      } else if (invoiceType !== "consignment") invoiceNumber = await issueBillNumber(invoiceType === "tax" ? "INV" : "B", `invoice from ${dn.dn_number}`, dn.customer_name, grand);
+      } else invoiceNumber = await issueBillNumber(seriesOf(invoiceType), `${invoiceType === "consignment" ? "consignment note" : "invoice"} from ${dn.dn_number}`, dn.customer_name, grand);
       const billed = !!invoiceNumber;
       if (!invoiceNumber) {
         const n = await claimNextNumber(seriesKey);
@@ -17653,9 +17654,9 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
           </div>
         </div>
 
-        {invoiceType !== "consignment" && (
+        {(
           <div style={{ marginBottom: 16 }}>
-            <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase" }}>Invoice number</label>
+            <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase" }}>{invoiceType === "consignment" ? "Consignment note number" : "Invoice number"}</label>
             <input type="text" value={invNo} readOnly={!canChooseNo} placeholder={suggestedNo || "Given when you create"}
               onChange={(e) => { setInvNo(e.target.value.toUpperCase()); setInvNoTouched(true); setNoErr(""); }}
               style={{ width: "100%", background: C.bg2, border: `1px solid ${noErr ? C.rose : C.border}`, color: C.text, borderRadius: 8, padding: "10px 12px", fontSize: 14, fontFamily: "'IBM Plex Mono', monospace", boxSizing: "border-box", opacity: canChooseNo ? 1 : 0.75 }} />
