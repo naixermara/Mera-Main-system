@@ -16267,24 +16267,26 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
   }
   const invoicePaid = (inv) => linkedBillsFor(inv).reduce((a, r) => a + (Number(r.paid) || 0), 0);
 
+  // After release, details (phone, address, send-to, notes, salesperson…) can
+  // always be corrected. Quantities and prices follow the money:
+  //  · a delivery note that has an invoice → change them on the invoice (it updates the note)
+  //  · a paid invoice → locked; use a credit note instead.
   function startEdit(type, data) {
-    if (type === "dn") {
-      const invs = invoicesForNote(data.id);
-      if (invs.length) {
-        alert(`${data.dn_number} can't be edited — invoice ${invs.map((i) => i.invoice_number).join(", ")} has already been issued from it. Edit the invoice instead.`);
-        return;
-      }
-    } else if (invoicePaid(data) > 0.005) {
-      alert(`${data.invoice_number} can't be edited — a payment of $${invoicePaid(data).toLocaleString("en-US", MONEY2)} has already been recorded against it.`);
-      return;
-    }
     setEditingDoc({ type, data });
   }
 
   function editRules(doc) {
     if (!doc) return {};
-    if (doc.type === "dn") return { canChangeAmounts: true };
+    if (doc.type === "dn") {
+      const invs = invoicesForNote(doc.data.id);
+      return invs.length
+        ? { canChangeAmounts: false, amountsLockedReason: `Invoice ${invs.map((i) => i.invoice_number).join(", ")} was issued from this note. To change quantities or prices, edit the invoice — it updates this note too. Details above can still be corrected.` }
+        : { canChangeAmounts: true };
+    }
     const inv = doc.data;
+    if (invoicePaid(inv) > 0.005) {
+      return { canChangeAmounts: false, amountsLockedReason: `A payment of $${invoicePaid(inv).toLocaleString("en-US", MONEY2)} is already recorded on this invoice, so quantities and prices are locked. To change the amount, issue a credit note. Details above can still be corrected.` };
+    }
     const dn = notes.find((n) => n.id === inv.delivery_note_id);
     const billed = linkedBillsFor(inv).length > 0;
     return {
@@ -16318,9 +16320,10 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
     const rules = editRules(doc);
     try {
       // Re-check the lock against the database, not just what this screen loaded.
+      let dnHasInvoice = false;
       if (isDN) {
         const invs = await sbFetch(`sales_invoices?select=id&delivery_note_id=eq.${encodeURIComponent(d.id)}`);
-        if (invs && invs.length) return "An invoice has just been issued from this delivery note, so it can no longer be edited. Edit the invoice instead.";
+        dnHasInvoice = !!(invs && invs.length);
       }
       let links = [];
       if (!isDN) {
@@ -16333,8 +16336,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
           ...(cr || []).map((r) => ({ ...r, table: "credit_invoices", dateCol: "invoice_date" })),
           ...(co || []).map((r) => ({ ...r, table: "bigco_reports", dateCol: "report_date" })),
         ];
-        const paid = links.reduce((a, r) => a + (Number(r.paid) || 0), 0);
-        if (paid > 0.005) return `A payment of $${paid.toLocaleString("en-US", MONEY2)} has already been recorded on ${d.invoice_number}, so it can no longer be edited.`;
+        var paidNow = links.reduce((a, r) => a + (Number(r.paid) || 0), 0);
       }
 
       const dn = isDN ? d : notes.find((n) => n.id === d.delivery_note_id);
@@ -16344,6 +16346,9 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
       const pricesChanged = SKUS.some((x) => num(form[x.formPrice]) !== (Number(d[x.priceCol]) || 0))
         || (!isDN && (num(form.discountPercent) !== (Number(d.discount_percent) || 0) || num(form.vatPercent) !== (Number(d.vat_percent) || 0)));
       if ((qtyChanged || pricesChanged) && !rules.canChangeAmounts) return rules.amountsLockedReason;
+      // Checked again against the database, not just this screen.
+      if ((qtyChanged || pricesChanged) && isDN && dnHasInvoice) return "An invoice has been issued from this delivery note. Change quantities or prices on the invoice instead.";
+      if ((qtyChanged || pricesChanged) && !isDN && (paidNow || 0) > 0.005) return `A payment of $${paidNow.toLocaleString("en-US", MONEY2)} is recorded on ${d.invoice_number}, so quantities and prices can't change. Use a credit note.`;
       if (qtyChanged && rules.qtyLockedReason) return rules.qtyLockedReason;
 
       // Stock moves follow the delivery note: how much more (or less) leaves the warehouse.
@@ -16810,10 +16815,10 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                     </button>
                     <button
                       onClick={() => startEdit("dn", dn)}
-                      title={linkedInvoices.length ? "Locked — an invoice has been issued from this note" : "Edit this delivery note"}
-                      style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 14px", fontSize: 12, fontWeight: 700, color: linkedInvoices.length ? C.textFaint : C.text, cursor: "pointer", opacity: linkedInvoices.length ? 0.6 : 1 }}
+                      title={linkedInvoices.length ? "Invoice issued — details can be corrected; change quantities on the invoice" : "Edit this delivery note"}
+                      style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 14px", fontSize: 12, fontWeight: 700, color: C.text, cursor: "pointer", opacity: linkedInvoices.length ? 0.6 : 1 }}
                     >
-                      {linkedInvoices.length ? "🔒 Edit" : "Edit"}
+                      Edit
                     </button>
                     <button
                       onClick={() => { setGenInvoiceFor(dn); }}
@@ -16857,10 +16862,10 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                             return (
                               <button
                                 onClick={() => startEdit("invoice", inv)}
-                                title={paidLocked ? "Locked — payment already recorded" : "Edit this invoice"}
-                                style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 10px", fontSize: 11, color: paidLocked ? C.textFaint : C.text, cursor: "pointer", opacity: paidLocked ? 0.6 : 1 }}
+                                title={paidLocked ? "Paid — details can be corrected; amounts are locked" : "Edit this invoice"}
+                                style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 10px", fontSize: 11, color: C.text, cursor: "pointer" }}
                               >
-                                {paidLocked ? "🔒 Paid" : "Edit"}
+                                {paidLocked ? "Edit (paid)" : "Edit"}
                               </button>
                             );
                           })()}
