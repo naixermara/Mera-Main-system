@@ -49,6 +49,9 @@ function currentEmail() {
   try { return String(JSON.parse(atob(String(currentAccessToken || "").split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).email || "").toLowerCase(); } catch (e) { return ""; }
 }
 function canDeleteRecords() { return ACCOUNTING_EMAILS.includes(currentEmail()); }
+// Who may correct a delivery note or invoice NUMBER: owner, Lita, accountant, and Nea.
+const RENUMBER_EXTRA_EMAILS = ["choumheantrading@gmail.com"];
+function canRenumberDocs() { return canDeleteRecords() || RENUMBER_EXTRA_EMAILS.includes(currentEmail()); }
 async function sbFetch(path, options = {}, retries = 2) {
   if (options.method === "DELETE" && MANAGER_ONLY_DELETE.has(String(path).split("?")[0]) && !canDeleteRecords()) {
     alert("Only the owner, Lita or the accountant can delete this. Ask one of them.");
@@ -4335,6 +4338,18 @@ function OnlineSalesPage({ authUser, C, sbFetch, logActivity }) {
     try {
       // A COD sale made from a delivery note already left the warehouse on that note.
       const fromDN = /CH\d{4}-\d{6,}/.test(String(sale?.description || ""));
+      // Boxes and prices of an invoiced COD sale belong to the invoice + delivery note.
+      // Changing them here would make the three disagree — change them on the invoice.
+      if (fromDN) {
+        const sig = (ls) => ls.map((l) => `${l.product || l.code}:${Number(l.qty)}:${Number(l.price).toFixed(2)}`).filter((x) => !/:0:/.test(x)).sort().join("|");
+        const before = sig(items.filter((i) => i.sale_id === editing.id && Number(i.qty) > 0));
+        const after = sig(act.map((l) => ({ code: l.code, qty: l.qty, price: l.price })));
+        if (before !== after) {
+          setError(`${sale?.bill_no || "This sale"} came from a delivery note. To change boxes or prices, edit the invoice (Orders & Billing → Delivery Notes → Edit invoice) — it updates the delivery note, the stock and this sale together.`);
+          setBusy(false);
+          return;
+        }
+      }
       const stockOk = await saveOnlineSaleLines(sbFetch, editing.id, editing.lines, !fromDN, sale?.date, authUser?.email);
       // A sale logged by hand is worth exactly its lines. One that came from a
       // bank payment keeps the amount actually received.
@@ -16412,12 +16427,20 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
         savedInv = await patchRow("sales_invoices", d.id, invBody);
         // 3) its delivery note keeps the same quantities
         if (dn && qtyChanged) savedDN = await patchRow("delivery_notes", dn.id, qtyCols);
+        // 4) a corrected invoice number — changed everywhere at once; the old number stays VOID, never reused
+        const newInvNo = String(form.dnNumber || "").trim().toUpperCase();
+        if (newInvNo && newInvNo !== String(d.invoice_number || "").trim().toUpperCase()) {
+          if (!canRenumberDocs()) return "Only the owner, Lita, the accountant or Nea can change an invoice number.";
+          await sbFetch("rpc/renumber_bill", { method: "POST", body: JSON.stringify({ p_old: d.invoice_number, p_new: newInvNo }) });
+          if (savedInv) savedInv = { ...savedInv, invoice_number: newInvNo };
+          if (links.length || (onlineLinks || []).length) loadBillLinks();
+        }
       } else {
         // Correct the delivery note number (owner / Lita / accountant only).
         const newNo = String(form.dnNumber || "").trim().toUpperCase();
         const renumber = newNo && newNo !== d.dn_number;
         if (renumber) {
-          if (!canDeleteRecords()) return "Only the owner, Lita or the accountant can change a delivery note number.";
+          if (!canRenumberDocs()) return "Only the owner, Lita, the accountant or Nea can change a delivery note number.";
           if (!/^CH\d{4}-\d{4,10}$/.test(newNo)) return "Delivery note number must look like CH2026-00004460.";
           const clash = await sbFetch(`delivery_notes?select=id&dn_number=eq.${encodeURIComponent(newNo)}`);
           if (clash && clash.length) return `${newNo} is already used by another delivery note.`;
@@ -16432,6 +16455,10 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
             try { await sbFetch(`stock_moves?reference=eq.${encodeURIComponent(from)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ reference: to }) }); } catch (e) { /* history only */ }
           }
           setStockMoves((prev) => prev.map((m) => (m.reference === d.dn_number ? { ...m, reference: newNo } : m.reference === `${d.dn_number} (edited)` ? { ...m, reference: `${newNo} (edited)` } : m)));
+          try {
+            const os = (await sbFetch(`online_sales?select=id,description&description=like.*${encodeURIComponent(d.dn_number)}*`)) || [];
+            for (const o of os) await sbFetch(`online_sales?id=eq.${o.id}`, { method: "PATCH", body: JSON.stringify({ description: String(o.description || "").split(d.dn_number).join(newNo) }) });
+          } catch (e) { /* description only */ }
           logActivity?.("Changed delivery note number", d.customer_name, `${d.dn_number} → ${newNo}`);
         }
       }
@@ -17307,9 +17334,10 @@ function EditDocumentModal({ doc, C, salespeople, canChangeAmounts, amountsLocke
   const d = doc.data;
   // A delivery note's number can be corrected (owner, Lita, accountant) while
   // no invoice has been made from it. Invoice numbers never change.
-  const canRenumber = isDN && canDeleteRecords();
+  const canRenumber = canRenumberDocs();
+  const docNo = (isDN ? d.dn_number : d.invoice_number) || "";
   const [form, setForm] = useState(() => ({
-    dnNumber: isDN ? d.dn_number || "" : "",
+    dnNumber: docNo,
     customerPhone: d.customer_phone || "",
     customerAddress: d.customer_address || "",
     sendTo: d.send_to || "",
@@ -17369,13 +17397,13 @@ function EditDocumentModal({ doc, C, salespeople, canChangeAmounts, amountsLocke
         </div>
         <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 16 }}>
           {isDN ? d.dn_number : d.invoice_number} · {d.customer_name}
-          <div style={{ fontSize: 11, marginTop: 3 }}>{canRenumber ? "Customer cannot be changed. To change it, delete and re-issue the delivery note." : isDN ? "Delivery note number: only the owner, Lita or the accountant can correct it. Customer cannot be changed." : "Invoice number and customer cannot be changed. To change them, delete and re-issue the document."}</div>
+          <div style={{ fontSize: 11, marginTop: 3 }}>{canRenumber ? `Customer cannot be changed. To change it, delete and re-issue the ${isDN ? "delivery note" : "invoice"}.` : `${isDN ? "Delivery note" : "Invoice"} number: only the owner, Lita, the accountant or Nea can correct it. Customer cannot be changed.`}</div>
         </div>
         {canRenumber && (
           <div style={{ marginBottom: 12 }}>
-            <label style={lbl}>Delivery note number</label>
+            <label style={lbl}>{isDN ? "Delivery note number" : "Invoice number"}</label>
             <input type="text" value={form.dnNumber} onChange={(e) => setForm({ ...form, dnNumber: e.target.value.toUpperCase() })} style={{ ...inp, fontFamily: "'IBM Plex Mono', monospace" }} />
-            {form.dnNumber.trim() !== (d.dn_number || "") && <div style={{ fontSize: 11, color: C.amber, marginTop: 4 }}>Will change {d.dn_number} → {form.dnNumber.trim() || "…"}. Its stock history moves to the new number too.</div>}
+            {form.dnNumber.trim() !== docNo && <div style={{ fontSize: 11, color: C.amber, marginTop: 4 }}>Will change {docNo} → {form.dnNumber.trim() || "…"}. {isDN ? "Its stock history moves to the new number too." : `${docNo} becomes VOID and can never be used again. The customer's balance and payments move to the new number.`}</div>}
           </div>
         )}
 
