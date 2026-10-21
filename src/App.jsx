@@ -4664,7 +4664,7 @@ function BillNumbersPage({ C, sbFetch, showAmounts }) {
   const who = (email) => !email ? "—" : names[email] || (email === "unknown" ? "Unknown" : email.split("@")[0]);
   if (!rows) return <div style={{ padding: 40, color: C.textFaint }}>Loading…</div>;
   const started = counters.length > 0;
-  const next = (k) => { const c = counters.find((x) => x.series_key === `bill-${k}`); return c ? `${k}${String(c.next_number).padStart(7, "0")}` : "—"; };
+  const next = (k) => { const c = counters.find((x) => x.series_key === `bill-${k}`); if (!c) return "—"; const n = String(c.next_number).padStart(7, "0"); return k === "CN" ? `CH${new Date().getFullYear()}-${n}` : `${k}${n}`; };
   const months = Array.from(new Set([currentMonthKey(), ...rows.map((r) => String(r.issued_at).slice(0, 7))])).sort().reverse();
   const shown = rows.filter((r) => String(r.issued_at).slice(0, 7) === month);
   const cell = { padding: "8px 10px", borderTop: `1px solid ${C.border}`, fontSize: 12.5 };
@@ -16049,7 +16049,13 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
       // Only claims a real number from the database right here, at the
       // moment of actually saving — never earlier, so cancelling this form
       // never burns a number that was only ever previewed.
-      let dnNumber = dnForm.dnNumber.trim();
+      let dnNumber = dnForm.dnNumber.trim().toUpperCase();
+      // A typed number must not belong to a consignment note or any other document.
+      if (dnNumber) {
+        let used = false;
+        try { const r = await sbFetch("rpc/bill_number_used", { method: "POST", body: JSON.stringify({ p_no: dnNumber }) }); used = (Array.isArray(r) ? r[0] : r) === true; } catch (e) { used = false; }
+        if (used) { alert(`${dnNumber} is already used by another delivery note, consignment note or bill. Use a different number.`); return false; }
+      }
       if (!dnNumber) {
         const year = new Date().getFullYear();
         const n = await claimNextNumber(`delivery-note-${year}`);
@@ -16453,6 +16459,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
           if (!canRenumberDocs()) return "Only the owner, Lita, the accountant or Nea can change a delivery note number.";
           if (!/^CH\d{4}-\d{4,10}$/.test(newNo)) return "Delivery note number must look like CH2026-00004460.";
           const clash = await sbFetch(`delivery_notes?select=id&dn_number=eq.${encodeURIComponent(newNo)}`);
+          try { const u = await sbFetch("rpc/bill_number_used", { method: "POST", body: JSON.stringify({ p_no: newNo }) }); if ((Array.isArray(u) ? u[0] : u) === true) return `${newNo} is already used by another document.`; } catch (e) { /* checked below */ }
           if (clash && clash.length) return `${newNo} is already used by another delivery note.`;
         }
         savedDN = await patchRow("delivery_notes", d.id, {
@@ -17540,8 +17547,9 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
       let invoiceNumber = null;
       const typed = String(invNo || "").trim().toUpperCase();
       if (canChooseNo && typed && typed !== suggestedNo) {
-        const wantPrefix = seriesOf(invoiceType);
-        if (!new RegExp(`^${wantPrefix}\\d{7}$`).test(typed)) { setNoErr(`${invoiceType === "tax" ? "Tax invoice" : invoiceType === "consignment" ? "Consignment note" : "Commercial invoice"} numbers look like ${wantPrefix}${"0".repeat(7 - 3)}618 (${wantPrefix} + 7 digits).`); setSaving(false); return; }
+        const pattern = invoiceType === "consignment" ? /^CH\d{4}-\d{7}$/ : invoiceType === "tax" ? /^INV\d{7}$/ : /^B\d{7}$/;
+        const example = invoiceType === "consignment" ? "CH2026-0000193" : invoiceType === "tax" ? "INV0000315" : "B0000620";
+        if (!pattern.test(typed)) { setNoErr(`${invoiceType === "tax" ? "Tax invoice" : invoiceType === "consignment" ? "Consignment note" : "Commercial invoice"} numbers look like ${example}.`); setSaving(false); return; }
         try {
           const r = await sbFetch("rpc/issue_custom_bill_number", { method: "POST", body: JSON.stringify({ p_number: typed, p_source: `invoice from ${dn.dn_number}`, p_customer: dn.customer_name, p_amount: grand }) });
           invoiceNumber = Array.isArray(r) ? r[0] : r;
