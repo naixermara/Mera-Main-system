@@ -12399,6 +12399,11 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
     const onlineSaleIds = new Set(monthOnlineSales.map((s) => s.id));
     const monthOnlineItems = onlineSaleItems.filter((i) => onlineSaleIds.has(i.sale_id));
     const onlineCogs = monthOnlineItems.reduce((a, i) => a + (costOf(i.product).perBox * (Number(i.qty) || 0)), 0);
+    // Show Online & COD boxes on each product line too (COGS above already includes them).
+    lines.forEach((l) => {
+      l.onlineBoxes = monthOnlineItems.filter((i) => i.product === l.key).reduce((a, i) => a + (Number(i.qty) || 0), 0);
+      l.onlineCogs = l.onlineBoxes * l.perBox;
+    });
 
     const revenue = consignRevenue + corpRevenue + creditRevenue + onlineRevenue;
     const cogs = lines.reduce((a, l) => a + l.cogs, 0) + onlineCogs;
@@ -12674,6 +12679,7 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
                   <th style={th}>Consignment<br />(packs)</th>
                   <th style={th}>Corporate<br />(boxes)</th>
                   <th style={th}>Credit<br />(boxes)</th>
+                  <th style={th}>Online &amp; COD<br />(boxes)</th>
                   <th style={th}>Total<br />(boxes)</th>
                   <th style={th}>Cost / box</th>
                   <th style={{ ...th, padding: "11px 14px" }}>COGS</th>
@@ -12693,9 +12699,10 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
                     </td>
                     <td style={cell}>{l.corpBoxes || "—"}</td>
                     <td style={cell}>{l.creditBoxes || "—"}</td>
-                    <td style={{ ...cell, color: C.text, fontWeight: 600 }}>{l.boxEquivalent ? l.boxEquivalent.toFixed(1) : "—"}</td>
+                    <td style={cell}>{l.onlineBoxes || "—"}</td>
+                    <td style={{ ...cell, color: C.text, fontWeight: 600 }}>{(l.boxEquivalent + (l.onlineBoxes || 0)) ? (l.boxEquivalent + (l.onlineBoxes || 0)).toFixed(1) : "—"}</td>
                     <td style={{ ...cell, color: l.perBox > 0 ? C.textDim : C.rose }}>{l.perBox > 0 ? `$${l.perBox.toLocaleString("en-US", MONEY2)}` : "not set"}</td>
-                    <td style={{ ...cell, padding: "10px 14px", color: C.amber, fontWeight: 700 }}>${l.cogs.toLocaleString("en-US", MONEY2)}</td>
+                    <td style={{ ...cell, padding: "10px 14px", color: C.amber, fontWeight: 700 }}>${(l.cogs + (l.onlineCogs || 0)).toLocaleString("en-US", MONEY2)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -12708,6 +12715,8 @@ function ProfitPage({ authUser, C, sbFetch, logActivity }) {
               [consignBasis === "collected" ? "Consignment (paid by stores)" : "Consignment (packs × store price)", report.consignRevenue],
               ["Corporate Accounts (invoiced)", report.corpRevenue],
               ["Credit Term (invoiced)", report.creditRevenue],
+              ["Online & COD", report.onlineRevenue],
+              ["Total sales", report.revenue],
             ].map(([label, v]) => (
               <div key={label} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: `1px solid ${C.border}`, fontSize: 13 }}>
                 <span style={{ color: C.textDim }}>{label}</span>
