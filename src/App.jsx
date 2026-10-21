@@ -16341,7 +16341,11 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
           ...(cr || []).map((r) => ({ ...r, table: "credit_invoices", dateCol: "invoice_date" })),
           ...(co || []).map((r) => ({ ...r, table: "bigco_reports", dateCol: "report_date" })),
         ];
-        var paidNow = links.reduce((a, r) => a + (Number(r.paid) || 0), 0);
+        // COD / Online: the invoice is also an Online & COD sale (same bill number).
+        var onlineLinks = [];
+        try { onlineLinks = (await sbFetch(`online_sales?select=id,amount,payment_status&bill_no=eq.${n}`)) || []; } catch (e) { onlineLinks = []; }
+        var paidNow = links.reduce((a, r) => a + (Number(r.paid) || 0), 0)
+          + onlineLinks.filter((o) => o.payment_status === "paid").reduce((a, o) => a + (Number(o.amount) || 0), 0);
       }
 
       const dn = isDN ? d : notes.find((n) => n.id === d.delivery_note_id);
@@ -16389,6 +16393,20 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
             ...(rules.canChangeAmounts ? { amount: grand } : {}),
             ...(rules.canChangeAmounts && !rules.qtyLockedReason ? Object.fromEntries(SKUS.map((x) => [x.soldCol, newQty[x.code]])) : {}),
           });
+        }
+        // 1b) the Online & COD sale made from this invoice keeps the same date, boxes and total
+        for (const o of onlineLinks || []) {
+          await sbFetch(`online_sales?id=eq.${o.id}`, { method: "PATCH", body: JSON.stringify({ date: form.date, ...(rules.canChangeAmounts ? { amount: grand } : {}) }) });
+          if (rules.canChangeAmounts && !rules.qtyLockedReason && (qtyChanged || pricesChanged)) {
+            const have = (await sbFetch(`online_sale_items?select=id,product&sale_id=eq.${o.id}`)) || [];
+            for (const x of SKUS) {
+              const qty = newQty[x.code] || 0, price = num(form[x.formPrice]);
+              const row = { qty, price, line_total: Math.round(qty * price * 100) / 100 };
+              const ex = have.find((h) => h.product === x.code);
+              if (ex) await sbFetch(`online_sale_items?id=eq.${ex.id}`, { method: "PATCH", body: JSON.stringify(row) });
+              else if (qty > 0) await sbFetch("online_sale_items", { method: "POST", body: JSON.stringify({ sale_id: o.id, product: x.code, ...row }) });
+            }
+          }
         }
         // 2) the invoice itself
         savedInv = await patchRow("sales_invoices", d.id, invBody);
