@@ -15871,7 +15871,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
           sbFetch("sales_invoices?select=*&order=created_at.desc"),
           sbFetch("stores?select=id,name,phone,email,address"),
           sbFetch("credit_stores?select=id,name,nickname,phone,email,address"),
-          sbFetch("bigco_stores?select=id,name,nickname,phone,email,address,parent_id"),
+          sbFetch("bigco_stores?select=id,name,nickname,phone,email,address,vat_tin,parent_id"),
           sbFetch("salespeople?select=*&order=name.asc"),
         ]);
         setNotes(dnRows || []);
@@ -17050,7 +17050,8 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                         const groupId = e.target.value;
                         const hasBranches = bigcoStores.some((b) => b.parent_id === groupId);
                         // A group with no branches selects itself directly — no pointless second step.
-                        const selected = hasBranches ? null : bigcoStores.find((s) => s.id === groupId);
+                        // The company's legal details fill the form; a branch with its own details overrides them.
+                        const selected = bigcoStores.find((s) => s.id === groupId);
                         setDnForm({
                           ...dnForm,
                           corpGroupId: groupId,
@@ -17072,12 +17073,14 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
                         value={dnForm.storeId}
                         onChange={(e) => {
                           const selected = bigcoStores.find((s) => s.id === e.target.value);
+                          const head = bigcoStores.find((s) => s.id === dnForm.corpGroupId) || {};
+                          // Invoices carry the company's registered (patent) details, not the branch nickname.
                           setDnForm({
                             ...dnForm,
                             storeId: e.target.value,
-                            customerPhone: selected?.phone || "",
-                            customerEmail: selected?.email || "",
-                            customerAddress: selected?.address || "",
+                            customerPhone: head.phone || selected?.phone || "",
+                            customerEmail: head.email || selected?.email || "",
+                            customerAddress: head.address || selected?.address || "",
                           });
                         }}
                         style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 14, background: C.bg2, color: C.text }}
@@ -17526,6 +17529,26 @@ function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, 
     paymentTerm: "",
   });
   const [saving, setSaving] = useState(false);
+  // VAT TIN: the registered company's (for a corporate branch, its head company's).
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        if (!dn.store_id) return;
+        const table = dn.business_type === "corporate" ? "bigco_stores" : dn.business_type === "credit" ? "credit_stores" : dn.business_type === "consignment" ? "stores" : null;
+        if (!table) return;
+        const cols = table === "bigco_stores" ? "vat_tin,parent_id" : "vat_tin";
+        const [row] = (await sbFetch(`${table}?select=${cols}&id=eq.${encodeURIComponent(dn.store_id)}`)) || [];
+        let tin = row?.vat_tin || "";
+        if (table === "bigco_stores" && row?.parent_id) {
+          const [head] = (await sbFetch(`bigco_stores?select=vat_tin&id=eq.${encodeURIComponent(row.parent_id)}`)) || [];
+          tin = head?.vat_tin || tin;
+        }
+        if (alive && tin) setForm((f) => (f.vatTin ? f : { ...f, vatTin: tin }));
+      } catch (e) { /* optional */ }
+    })();
+    return () => { alive = false; };
+  }, []); // eslint-disable-line
   // Invoice number: shows the next number; owner, Lita, accountant and Nea may type another.
   const canChooseNo = canRenumberDocs();
   // Tax invoice INV…, commercial invoice B…, consignment note CN… (stock placed at a store — not a sale).
