@@ -6039,7 +6039,11 @@ function ApplyPaymentPanel({ r, h, ctx, C, sbFetch, authUser, logActivity, onDon
     }
   }
 
-  const custBills = channel === "consignment" ? [] : openBills.filter((b) => b.channel === channel && (!who || prNorm(b.who) === prNorm(who)));
+  // Online & COD money often comes from a collector (Kimly, a courier, "Online & COD Sales")
+  // who pays for several customers at once — then show every unpaid online bill to tick.
+  const whoHasBills = !!who && openBills.some((b) => b.channel === channel && prNorm(b.who) === prNorm(who));
+  const showAllOnline = channel === "online" && !!who && !whoHasBills;
+  const custBills = channel === "consignment" ? [] : openBills.filter((b) => b.channel === channel && (!who || showAllOnline || prNorm(b.who) === prNorm(who)));
   const chosen = custBills.filter((b) => picked.includes(b.key));
   // Oldest first: fill each chosen bill until the money runs out.
   let left = amount;
@@ -6093,8 +6097,9 @@ function ApplyPaymentPanel({ r, h, ctx, C, sbFetch, authUser, logActivity, onDon
         <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inp, flex: "1 1 130px" }} />
       </div>
       {channel !== "consignment" && (
-        custBills.length === 0 ? <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 8 }}>{who ? "No unpaid bills for this customer." : "Choose the customer to see their unpaid bills."}</div> : (
+        custBills.length === 0 ? <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 8 }}>{channel === "online" ? "No unpaid Online & COD bills at all. Make the invoice first (Delivery Notes → COD / Online → Generate invoice), then apply this payment." : who ? "No unpaid bills for this customer." : "Choose the customer to see their unpaid bills."}</div> : (
           <div style={{ display: "grid", gap: 4, marginBottom: 8 }}>
+            {showAllOnline && <div style={{ fontSize: 11.5, color: C.amber, marginBottom: 2 }}>Collected for several customers — tick every Online & COD bill this money pays.</div>}
             {custBills.map((b) => {
               const a = alloc.find((x) => x.key === b.key);
               return (
@@ -6102,7 +6107,7 @@ function ApplyPaymentPanel({ r, h, ctx, C, sbFetch, authUser, logActivity, onDon
                   <input type="checkbox" checked={picked.includes(b.key)} onChange={(e) => setPicked(e.target.checked ? [...picked, b.key] : picked.filter((k) => k !== b.key))} />
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{b.no || "—"}</span>
-                    <span style={{ display: "block", fontSize: 10.5, color: C.textFaint }}>{fmtDate(b.date)}{!who ? ` · ${b.who}` : ""}</span>
+                    <span style={{ display: "block", fontSize: 10.5, color: C.textFaint }}>{fmtDate(b.date)}{!who || showAllOnline ? ` · ${b.who}` : ""}</span>
                   </span>
                   <span style={{ textAlign: "right" }}>
                     <span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{fm(b.owed)}</span>
