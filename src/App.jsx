@@ -15816,6 +15816,11 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
   const [stockMoves, setStockMoves] = useState([]);
   const [stockMissing, setStockMissing] = useState(false);
   const [showStock, setShowStock] = useState(false);
+  // Boxes per carton (set in Stock Forecast) — shows how many cartons are left too.
+  const [boxesPerCarton, setBoxesPerCarton] = useState({});
+  useEffect(() => {
+    sbFetch("stock_plan_settings?select=boxes_per_carton&id=eq.1").then((r) => setBoxesPerCarton((r && r[0] && r[0].boxes_per_carton) || {})).catch(() => {});
+  }, []); // eslint-disable-line
   const [stockForm, setStockForm] = useState({ product: "pl", qty: "", reason: "opening", reference: "" });
   const [stockBusy, setStockBusy] = useState(false);
   const [stockError, setStockError] = useState("");
@@ -16629,7 +16634,11 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
               return (
                 <div key={pr.key} style={{ fontSize: 12.5 }}>
                   <span style={{ color: C.textFaint }}>{pr.label} </span>
-                  <b style={{ fontFamily: "'IBM Plex Mono', monospace", color: n <= 0 ? C.rose : n <= 5 ? C.amber : C.emerald }}>{n}</b>
+                  <b style={{ fontFamily: "'IBM Plex Mono', monospace", color: n <= 0 ? C.rose : n <= 5 ? C.amber : C.emerald }}>{Number(n).toLocaleString("en-US")}</b>
+                  {Number(boxesPerCarton[pr.key]) > 0 && n > 0 && (() => {
+                    const per = Number(boxesPerCarton[pr.key]); const full = Math.floor(n / per); const loose = n - full * per;
+                    return <span style={{ color: C.textFaint, fontSize: 11 }}> ({full.toLocaleString("en-US")} ctn{loose ? ` + ${loose}` : ""})</span>;
+                  })()}
                 </div>
               );
             })}
