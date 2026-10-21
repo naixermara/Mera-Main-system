@@ -623,6 +623,7 @@ function payKindFor(d, dn) {
   if (bt === "cod") return "COD";
   return "";
 }
+const VISIT_BILLING_START = "2026-10-10"; // consignment visits from this day are invoiced in this app
 const CONSIGN_VAT = 10; // VAT % added on a tax invoice for consignment sales
 // Builds a printable invoice (same shape as a sales_invoices row) for the boxes
 // a consignment store sold on one visit. Nothing extra is saved — the visit
@@ -1159,6 +1160,41 @@ function MeraConsignmentApp() {
     }
   }
 
+  // Office releases the commercial / tax invoice for the boxes a store sold on one visit.
+  async function releaseVisitInvoice(store, visit, opts) {
+    if (!canRenumberDocs()) return "Only the owner, Lita, the accountant or Nea can release invoices.";
+    const cn = String(opts.consignmentNote || "").trim().toUpperCase();
+    if (!cn) return "Choose the Consignment Note these boxes came from.";
+    const soldRows = visit.rows.filter((r) => r.sold > 0);
+    if (!soldRows.length) return "This visit has no boxes sold.";
+    const amount = soldRows.reduce((a, r) => {
+      const p = PRODUCTS.find((x) => x.key === r.product);
+      return a + r.sold * (Number(p ? store[p.priceKey] : 0) || 0);
+    }, 0);
+    const isTax = opts.billType === "tax";
+    const series = isTax ? "INV" : "B";
+    const typed = String(opts.number || "").trim().toUpperCase();
+    const total = isTax ? Math.round(amount * (1 + CONSIGN_VAT / 100) * 100) / 100 : Math.round(amount * 100) / 100;
+    let no = null;
+    try {
+      if (typed && typed !== opts.suggested) {
+        if (!(isTax ? /^INV\d{7}$/ : /^B\d{7}$/).test(typed)) return `${isTax ? "Tax invoice" : "Commercial invoice"} numbers look like ${series}0000620.`;
+        const r = await sbFetch("rpc/issue_custom_bill_number", { method: "POST", body: JSON.stringify({ p_number: typed, p_source: isTax ? "consignment visit (tax invoice)" : "consignment visit", p_customer: store.name, p_amount: total }) });
+        no = Array.isArray(r) ? r[0] : r;
+      } else {
+        no = await issueBillNumber(series, isTax ? "consignment visit (tax invoice)" : "consignment visit", store.name, total);
+      }
+    } catch (e) { return friendlyDbError(e); }
+    if (!no) return "Couldn't get an invoice number — try again.";
+    const target = soldRows[soldRows.length - 1];
+    try {
+      await sbFetch(`visits?id=eq.${target.id}`, { method: "PATCH", body: JSON.stringify({ invoice_number: no, consignment_note: cn, updated_by: authUser?.email || "unknown", updated_at: new Date().toISOString() }) });
+    } catch (e) { return `Invoice ${no} was issued but couldn't be attached to the visit. Write down ${no} and tell the owner.`; }
+    setVisits((prev) => (prev || []).map((v) => (v.id === target.id ? { ...v, invoiceNumber: no, consignmentNote: cn } : v)));
+    logActivity("Released invoice", store.name, `${no} for visit ${visit.date} · $${total.toLocaleString("en-US", MONEY2)} · from ${cn}`);
+    return "";
+  }
+
   async function updateVisit(id, changes) {
     const before = (visits || []).find((v) => v.id === id);
     try {
@@ -1399,32 +1435,8 @@ function MeraConsignmentApp() {
     rows[rows.length - 1].owed = parseFloat(logForm.owed) || 0;
     rows[rows.length - 1].notes = logForm.notes;
     rows[rows.length - 1].invoiceNumber = logForm.invoiceNumber;
-    const cnRef = String(logForm.consignmentNote || "").trim().toUpperCase();
-    if (rows.some((r) => r.sold > 0) && !cnRef) {
-      setLogFormError("Choose the Consignment Note (CH…) these sold boxes came from — it is printed on the store's invoice.");
-      return;
-    }
-    if (cnRef) rows[rows.length - 1].consignmentNote = cnRef;
-    const saleRep = (logForm.saleRep != null ? logForm.saleRep : store.salesperson || "").trim();
-    rows.forEach((r) => { r.saleRep = saleRep || null; });
-
-    // A collection with boxes sold gets its B bill number here — the same
-    // moment BizAdvisor used to issue it. Skipped if a number was typed in.
-    if (!String(logForm.invoiceNumber || "").trim() && rows.some((r) => r.sold > 0)) {
-      try {
-        const amount = rows.reduce((a, r) => {
-          const p = PRODUCTS.find((x) => x.key === r.product);
-          return a + r.sold * (Number(p ? store[p.priceKey] : 0) || 0);
-        }, 0);
-        const isTax = logForm.billType === "tax";
-        const no = await issueBillNumber(isTax ? "INV" : "B", isTax ? "consignment visit (tax invoice)" : "consignment visit", store.name, isTax ? Math.round(amount * (1 + CONSIGN_VAT / 100) * 100) / 100 : amount);
-        if (no) rows[rows.length - 1].invoiceNumber = no;
-      } catch (err) {
-        setLogFormError("Couldn't get a bill number — check the connection and try again.");
-        return;
-      }
-    }
-
+    // Saving a visit records boxes and money only. The store's commercial invoice is
+    // released later by the office (store → Visits & invoices → Release invoice).
     await addVisits(rows);
     if (saleRep && saleRep !== (store.salesperson || "")) {
       rememberStoreSalesperson(sbFetch, "stores", store.name, saleRep);
@@ -2290,6 +2302,7 @@ function MeraConsignmentApp() {
                   onToggleAllTimePayments={() => setShowAllTimePayments(showAllTimePayments === s.id ? null : s.id)}
                   onDeleteVisit={deleteVisit}
                   onUpdateVisit={updateVisit}
+                  onReleaseInvoice={releaseVisitInvoice}
                   onUpdatePrices={updateStorePrices}
                   onUpdateStoreDetails={updateStoreDetails}
                   salespeople={salespeople}
@@ -2322,6 +2335,7 @@ function MeraConsignmentApp() {
                 onToggleAllTimePayments={() => setShowAllTimePayments(showAllTimePayments === s.id ? null : s.id)}
                 onDeleteVisit={deleteVisit}
                 onUpdateVisit={updateVisit}
+                onReleaseInvoice={releaseVisitInvoice}
                 onUpdatePrices={updateStorePrices}
                 onUpdateStoreDetails={updateStoreDetails}
                 salespeople={salespeople}
@@ -2406,39 +2420,9 @@ function MeraConsignmentApp() {
               style={{ marginBottom: 14 }}
             />
 
-            {SKUS.some((x) => parseFloat(logForm[x.formSold]) > 0) && !String(logForm.invoiceNumber || "").trim() && (
-              <Field label="Invoice to bill the store">
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                  {[{ k: "commercial", t: "Commercial invoice (B)" }, { k: "tax", t: `Tax invoice (INV, +${CONSIGN_VAT}% VAT)` }].map((o) => (
-                    <button key={o.k} type="button" onClick={() => setLogForm({ ...logForm, billType: o.k })}
-                      style={{ padding: "9px 8px", borderRadius: 8, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-                        border: `1.5px solid ${logForm.billType === o.k ? C.gold : C.border}`,
-                        background: logForm.billType === o.k ? C.gold + "22" : C.bg2, color: logForm.billType === o.k ? C.goldBright : C.textDim }}>
-                      {o.t}
-                    </button>
-                  ))}
-                </div>
-                <div style={{ fontSize: 11, color: C.textFaint, marginTop: 5 }}>The number is issued when you save. Print it from the store's visit list.</div>
-              </Field>
+            {SKUS.some((x) => parseFloat(logForm[x.formSold]) > 0) && (
+              <div style={{ fontSize: 11.5, color: C.textFaint, marginBottom: 12 }}>The store's invoice for these sold boxes is released later by the office — from the store's <b>Visits &amp; invoices</b>.</div>
             )}
-
-            {SKUS.some((x) => parseFloat(logForm[x.formSold]) > 0) && (() => {
-              const st = stores.find((s) => s.id === logForm.storeId);
-              const fromVisits = (visits || []).filter((v) => st && v.store === st.name && v.consignmentNote).map((v) => v.consignmentNote);
-              const opts = Array.from(new Set([...(storeCNs || []), ...fromVisits])).sort().reverse();
-              return (
-                <Field label="Consignment Note these boxes came from *">
-                  <input list="cn-options" type="text" value={logForm.consignmentNote} onChange={(e) => setLogForm({ ...logForm, consignmentNote: e.target.value.toUpperCase() })}
-                    style={{ ...inputStyle, fontFamily: "'IBM Plex Mono', monospace" }} placeholder="CH2026-0000193" />
-                  <datalist id="cn-options">{opts.map((n) => <option key={n} value={n} />)}</datalist>
-                  <div style={{ fontSize: 11, color: C.textFaint, marginTop: 5 }}>{opts.length ? `This store's notes: ${opts.slice(0, 4).join(", ")}${opts.length > 4 ? "…" : ""}` : "Type the number from the paper consignment note."} Printed on the store's invoice.</div>
-                </Field>
-              );
-            })()}
-
-            <Field label="Invoice number (optional)">
-              <input type="text" value={logForm.invoiceNumber} onChange={(e) => setLogForm({ ...logForm, invoiceNumber: e.target.value })} style={inputStyle} placeholder="e.g. INV-0042" />
-            </Field>
 
             <Field label="Notes (optional)">
               <textarea value={logForm.notes} onChange={(e) => setLogForm({ ...logForm, notes: e.target.value })} style={{ ...inputStyle, minHeight: 55 }} />
@@ -18692,9 +18676,38 @@ function StatCard({ icon: Icon, label, value, subtitle, onClick, active }) {
   );
 }
 
-function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, showAllTimePayments, onToggleAllTimePayments, onDeleteVisit, onUpdateVisit, onUpdatePrices, onUpdateStoreDetails, salespeople, onAddSalesperson, onLogVisit, onNewDeliveryNote }) {
+function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, showAllTimePayments, onToggleAllTimePayments, onDeleteVisit, onUpdateVisit, onReleaseInvoice, onUpdatePrices, onUpdateStoreDetails, salespeople, onAddSalesperson, onLogVisit, onNewDeliveryNote }) {
   const [showHistory, setShowHistory] = useState(false);
   const [printVisit, setPrintVisit] = useState(null);
+  const [releasing, setReleasing] = useState(null); // release-invoice form for one visit
+  const canRelease = canRenumberDocs();
+  // Visits before the app started billing (10 Oct 2026) were invoiced in BizAdvisor.
+  const needsInvoice = (v) => !v.invoiceNumber && v.date >= VISIT_BILLING_START && v.products.some((p) => p.sold > 0);
+  const waitingInvoice = (store.fullHistory || []).filter(needsInvoice).length;
+  async function peekNo(t) {
+    try { const r = await sbFetch("rpc/peek_bill_number", { method: "POST", body: JSON.stringify({ p_series: t === "tax" ? "INV" : "B" }) }); return (Array.isArray(r) ? r[0] : r) || ""; } catch (e) { return ""; }
+  }
+  async function openRelease(visit) {
+    setReleasing({ visit, billType: "commercial", consignmentNote: "", number: "", suggested: "", err: "", busy: false, cns: [] });
+    const [sug, cns] = await Promise.all([
+      peekNo("commercial"),
+      sbFetch(`sales_invoices?select=invoice_number&invoice_type=eq.consignment&customer_name=eq.${encodeURIComponent(store.name)}&order=invoice_date.desc`).catch(() => []),
+    ]);
+    const old = (store.fullHistory || []).flatMap((v) => (v.consignmentNote ? [v.consignmentNote] : []));
+    setReleasing((cur) => (cur && cur.visit === visit ? { ...cur, suggested: sug, number: sug, cns: Array.from(new Set([...(cns || []).map((x) => x.invoice_number), ...old])) } : cur));
+  }
+  async function switchReleaseType(t) {
+    setReleasing((cur) => ({ ...cur, billType: t, number: "", suggested: "" }));
+    const sug = await peekNo(t);
+    setReleasing((cur) => (cur ? { ...cur, suggested: sug, number: sug } : cur));
+  }
+  async function doRelease() {
+    const cur = releasing;
+    setReleasing({ ...cur, busy: true, err: "" });
+    const err = await onReleaseInvoice(store, cur.visit, cur);
+    if (err) setReleasing({ ...cur, busy: false, err });
+    else setReleasing(null);
+  }
   const [editingVisitId, setEditingVisitId] = useState(null);
   const [editForm, setEditForm] = useState(null);
   const [editVisitError, setEditVisitError] = useState(null);
@@ -19010,7 +19023,7 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
             onClick={(e) => { e.stopPropagation(); setShowHistory(!showHistory); }}
             style={{ background: "none", border: "none", padding: 0, color: C.textFaint, fontSize: 11, cursor: "pointer", textDecoration: "underline", textDecorationColor: C.textFaint + "60", textUnderlineOffset: 3 }}
           >
-            {showHistory ? "Hide" : "Edit"} all logged visits ({store.fullHistory.length})
+            {showHistory ? "Hide visits & invoices" : `Visits & invoices (${store.fullHistory.length})`}{waitingInvoice > 0 && canRelease ? ` · ${waitingInvoice} waiting for invoice` : ""}
           </button>
 
           {showHistory && (
@@ -19148,6 +19161,18 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
                         <div style={{ marginTop: 3, color: C.amber, fontStyle: "italic" }}>{visit.notes}</div>
                       )}
                     </div>
+                    {needsInvoice(visit) && canRelease && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); openRelease(visit); }}
+                        style={{ background: C.gold, border: "none", borderRadius: 6, padding: "0 9px", height: 28, fontSize: 11, fontWeight: 700, color: "#1A1508", flexShrink: 0, cursor: "pointer", whiteSpace: "nowrap" }}
+                      >
+                        Release invoice
+                      </button>
+                    )}
+                    {needsInvoice(visit) && !canRelease && (
+                      <span style={{ fontSize: 10.5, color: C.amber, flexShrink: 0, whiteSpace: "nowrap" }}>Invoice not released</span>
+                    )}
                     {visit.invoiceNumber && visit.products.some((p) => p.sold > 0) && (
                       <button
                         type="button"
@@ -19177,6 +19202,36 @@ function StoreRow({ store, expanded, onToggle, showPayments, onTogglePayments, s
               })}
             </div>
           )}
+        </div>
+      )}
+      {releasing && (
+        <div onClick={() => !releasing.busy && setReleasing(null)} style={{ position: "fixed", inset: 0, background: "rgba(6,7,9,0.7)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18, zIndex: 60 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 24, width: "100%", maxWidth: 420, color: C.text }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <h2 style={{ fontFamily: "'Bodoni Moda', serif", fontSize: 21, margin: 0, fontWeight: 600 }}>Release invoice</h2>
+              <button onClick={() => setReleasing(null)} style={{ background: "none", border: "none", color: C.textDim, cursor: "pointer" }}><X size={20} /></button>
+            </div>
+            <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>
+              {store.name} · visit {new Date(releasing.visit.date + "T00:00:00").toLocaleDateString("en-GB")} · {releasing.visit.products.filter((p) => p.sold > 0).map((p) => `${p.sold} ${p.label || p.product}`).join(", ")} sold
+            </div>
+            <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase" }}>Invoice type</label>
+            <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+              {[["commercial", "Commercial invoice (B)"], ["tax", `Tax invoice (INV, +${CONSIGN_VAT}% VAT)`]].map(([k, l]) => (
+                <button key={k} type="button" onClick={() => switchReleaseType(k)} style={{ flex: 1, padding: "9px 4px", fontSize: 11, fontWeight: 700, borderRadius: 8, cursor: "pointer", background: releasing.billType === k ? C.gold : "none", color: releasing.billType === k ? "#1A1508" : C.textDim, border: `1px solid ${releasing.billType === k ? C.gold : C.border}` }}>{l}</button>
+              ))}
+            </div>
+            <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase" }}>Invoice number</label>
+            <input type="text" value={releasing.number} onChange={(e) => setReleasing({ ...releasing, number: e.target.value.toUpperCase(), err: "" })} placeholder={releasing.suggested || "Given when you release"}
+              style={{ width: "100%", background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "10px 12px", fontSize: 14, fontFamily: "'IBM Plex Mono', monospace", boxSizing: "border-box", marginBottom: 4 }} />
+            <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 12 }}>Next number. You can type a different one if needed — it must never have been used.</div>
+            <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase" }}>Consignment Note these boxes came from *</label>
+            <input list={`rel-cn-${store.id}`} type="text" value={releasing.consignmentNote} onChange={(e) => setReleasing({ ...releasing, consignmentNote: e.target.value.toUpperCase(), err: "" })} placeholder="CH2026-0000193"
+              style={{ width: "100%", background: C.bg2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "10px 12px", fontSize: 14, fontFamily: "'IBM Plex Mono', monospace", boxSizing: "border-box", marginBottom: 4 }} />
+            <datalist id={`rel-cn-${store.id}`}>{(releasing.cns || []).map((n) => <option key={n} value={n} />)}</datalist>
+            <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 14 }}>{(releasing.cns || []).length ? `This store's notes: ${releasing.cns.slice(0, 4).join(", ")}${releasing.cns.length > 4 ? "…" : ""}.` : "Type the number from the paper consignment note."} Printed on the invoice.</div>
+            {releasing.err && <div style={{ background: C.roseBg, color: C.rose, padding: "9px 12px", borderRadius: 8, fontSize: 12, marginBottom: 12 }}>{releasing.err}</div>}
+            <button type="button" disabled={releasing.busy} onClick={doRelease} style={{ width: "100%", background: C.gold, border: "none", borderRadius: 10, padding: "12px", fontSize: 14, fontWeight: 700, color: "#1A1508", cursor: "pointer" }}>{releasing.busy ? "Releasing…" : "Release invoice"}</button>
+          </div>
         </div>
       )}
       {printVisit && (
