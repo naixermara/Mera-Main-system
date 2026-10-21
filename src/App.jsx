@@ -16385,9 +16385,27 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
         // 3) its delivery note keeps the same quantities
         if (dn && qtyChanged) savedDN = await patchRow("delivery_notes", dn.id, qtyCols);
       } else {
+        // Correct the delivery note number (owner / Lita / accountant only).
+        const newNo = String(form.dnNumber || "").trim().toUpperCase();
+        const renumber = newNo && newNo !== d.dn_number;
+        if (renumber) {
+          if (!canDeleteRecords()) return "Only the owner, Lita or the accountant can change a delivery note number.";
+          if (!/^CH\d{4}-\d{4,10}$/.test(newNo)) return "Delivery note number must look like CH2026-00004460.";
+          const clash = await sbFetch(`delivery_notes?select=id&dn_number=eq.${encodeURIComponent(newNo)}`);
+          if (clash && clash.length) return `${newNo} is already used by another delivery note.`;
+        }
         savedDN = await patchRow("delivery_notes", d.id, {
           ...shared, sale_date: form.date, payment_method: PAYMENT_METHOD, ...qtyCols, ...priceCols,
+          ...(renumber ? { dn_number: newNo } : {}),
         });
+        if (renumber) {
+          // Keep the warehouse history pointing at the right document.
+          for (const [from, to] of [[d.dn_number, newNo], [`${d.dn_number} (edited)`, `${newNo} (edited)`]]) {
+            try { await sbFetch(`stock_moves?reference=eq.${encodeURIComponent(from)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ reference: to }) }); } catch (e) { /* history only */ }
+          }
+          setStockMoves((prev) => prev.map((m) => (m.reference === d.dn_number ? { ...m, reference: newNo } : m.reference === `${d.dn_number} (edited)` ? { ...m, reference: `${newNo} (edited)` } : m)));
+          logActivity?.("Changed delivery note number", d.customer_name, `${d.dn_number} → ${newNo}`);
+        }
       }
 
       // 4) warehouse stock and the consignment store's shelf
@@ -17259,7 +17277,11 @@ function invoiceGrandTotal(d) {
 function EditDocumentModal({ doc, C, salespeople, canChangeAmounts, amountsLockedReason, qtyLockedReason, onClose, onSave }) {
   const isDN = doc.type === "dn";
   const d = doc.data;
+  // A delivery note's number can be corrected (owner, Lita, accountant) while
+  // no invoice has been made from it. Invoice numbers never change.
+  const canRenumber = isDN && canDeleteRecords();
   const [form, setForm] = useState(() => ({
+    dnNumber: isDN ? d.dn_number || "" : "",
     customerPhone: d.customer_phone || "",
     customerAddress: d.customer_address || "",
     sendTo: d.send_to || "",
@@ -17319,8 +17341,15 @@ function EditDocumentModal({ doc, C, salespeople, canChangeAmounts, amountsLocke
         </div>
         <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 16 }}>
           {isDN ? d.dn_number : d.invoice_number} · {d.customer_name}
-          <div style={{ fontSize: 11, marginTop: 3 }}>Document number and customer cannot be changed. To change them, delete and re-issue the document.</div>
+          <div style={{ fontSize: 11, marginTop: 3 }}>{canRenumber ? "Customer cannot be changed. To change it, delete and re-issue the delivery note." : isDN ? "Delivery note number: only the owner, Lita or the accountant can correct it. Customer cannot be changed." : "Invoice number and customer cannot be changed. To change them, delete and re-issue the document."}</div>
         </div>
+        {canRenumber && (
+          <div style={{ marginBottom: 12 }}>
+            <label style={lbl}>Delivery note number</label>
+            <input type="text" value={form.dnNumber} onChange={(e) => setForm({ ...form, dnNumber: e.target.value.toUpperCase() })} style={{ ...inp, fontFamily: "'IBM Plex Mono', monospace" }} />
+            {form.dnNumber.trim() !== (d.dn_number || "") && <div style={{ fontSize: 11, color: C.amber, marginTop: 4 }}>Will change {d.dn_number} → {form.dnNumber.trim() || "…"}. Its stock history moves to the new number too.</div>}
+          </div>
+        )}
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
           {field(isDN ? "Sale date" : "Invoice date", "date", "date")}
