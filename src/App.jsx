@@ -413,6 +413,7 @@ const emptyLogForm = {
   paid: "",
   owed: "",
   invoiceNumber: "",
+  consignmentNote: "", // the Consignment Note (CH…) the sold boxes came from — required when boxes are sold
   billType: "commercial", // "commercial" → B bill, "tax" → INV tax invoice (+VAT)
   notes: "",
   saleRep: null, // null = use the store's assigned salesperson
@@ -654,6 +655,7 @@ function consignmentInvoiceDoc(store, visit) {
     sale_rep: visit.rows.find((r) => r.saleRep)?.saleRep || store.salesperson || "",
     payment_term: "",
     pay_kind: "Consignment",
+    consignment_ref: visit.consignmentNote || "",
   };
 }
 const PAYMENT_METHOD = "ABA Choumhean Trading"; // the only payment method on delivery notes
@@ -906,6 +908,17 @@ function MeraConsignmentApp() {
     ...Object.fromEntries(SKUS.flatMap((x) => [[x.initKey, ""], [x.priceKey, ""]])),
   });
   const [logForm, setLogForm] = useState(emptyLogForm);
+  // Consignment Notes (CH…) issued to the store being logged — offered when billing sold boxes.
+  const [storeCNs, setStoreCNs] = useState([]);
+  useEffect(() => {
+    const st = (stores || []).find((x) => x.id === logForm.storeId);
+    if (!st) { setStoreCNs([]); return; }
+    let alive = true;
+    sbFetch(`sales_invoices?select=invoice_number&invoice_type=eq.consignment&customer_name=eq.${encodeURIComponent(st.name)}&order=invoice_date.desc`)
+      .then((r) => { if (alive) setStoreCNs((r || []).map((x) => x.invoice_number).filter(Boolean)); })
+      .catch(() => { if (alive) setStoreCNs([]); });
+    return () => { alive = false; };
+  }, [logForm.storeId]); // eslint-disable-line
   const [logFormError, setLogFormError] = useState(null);
   const [storeQuery, setStoreQuery] = useState("");
   const [showStoreList, setShowStoreList] = useState(false);
@@ -1006,6 +1019,7 @@ function MeraConsignmentApp() {
           owed: Number(r.owed || 0),
           notes: r.notes || "",
           invoiceNumber: r.invoice_number || "",
+          consignmentNote: r.consignment_note || "",
           createdBy: r.created_by || "",
           saleRep: r.sale_rep || "",
         }))
@@ -1089,6 +1103,7 @@ function MeraConsignmentApp() {
             owed: v.owed,
             notes: v.notes,
             invoice_number: v.invoiceNumber || null,
+            consignment_note: v.consignmentNote || null,
             sale_rep: v.saleRep || null,
             created_by: authUser?.email || "unknown",
           }))
@@ -1107,6 +1122,7 @@ function MeraConsignmentApp() {
           owed: Number(r.owed || 0),
           notes: r.notes || "",
           invoiceNumber: r.invoice_number || "",
+          consignmentNote: r.consignment_note || "",
         })),
       ]);
       setSaveError(false);
@@ -1383,6 +1399,12 @@ function MeraConsignmentApp() {
     rows[rows.length - 1].owed = parseFloat(logForm.owed) || 0;
     rows[rows.length - 1].notes = logForm.notes;
     rows[rows.length - 1].invoiceNumber = logForm.invoiceNumber;
+    const cnRef = String(logForm.consignmentNote || "").trim().toUpperCase();
+    if (rows.some((r) => r.sold > 0) && !cnRef) {
+      setLogFormError("Choose the Consignment Note (CH…) these sold boxes came from — it is printed on the store's invoice.");
+      return;
+    }
+    if (cnRef) rows[rows.length - 1].consignmentNote = cnRef;
     const saleRep = (logForm.saleRep != null ? logForm.saleRep : store.salesperson || "").trim();
     rows.forEach((r) => { r.saleRep = saleRep || null; });
 
@@ -1497,7 +1519,9 @@ function MeraConsignmentApp() {
           const notes = notedRows.length ? notedRows[notedRows.length - 1].notes : "";
           const invoicedRows = rowsForDate.filter((v) => v.invoiceNumber && v.invoiceNumber.trim());
           const invoiceNumber = invoicedRows.length ? invoicedRows[invoicedRows.length - 1].invoiceNumber : "";
-          return { date, ids: rowsForDate.map((v) => v.id), rows: rowsForDate, products, paid, owed, notes, invoiceNumber };
+          const cnRows = rowsForDate.filter((v) => v.consignmentNote && v.consignmentNote.trim());
+          const consignmentNote = cnRows.length ? cnRows[cnRows.length - 1].consignmentNote : "";
+          return { date, ids: rowsForDate.map((v) => v.id), rows: rowsForDate, products, paid, owed, notes, invoiceNumber, consignmentNote };
         });
       return { ...s, products, totalRemaining, totalValue, hasPricing, totalCollected, allTimeCollected, lastVisitDate, visitedThisMonth, latestNote, visitCount: storeVisits.length, paymentHistory, allTimePaymentHistory, fullHistory };
     });
@@ -2397,6 +2421,20 @@ function MeraConsignmentApp() {
                 <div style={{ fontSize: 11, color: C.textFaint, marginTop: 5 }}>The number is issued when you save. Print it from the store's visit list.</div>
               </Field>
             )}
+
+            {SKUS.some((x) => parseFloat(logForm[x.formSold]) > 0) && (() => {
+              const st = stores.find((s) => s.id === logForm.storeId);
+              const fromVisits = (visits || []).filter((v) => st && v.store === st.name && v.consignmentNote).map((v) => v.consignmentNote);
+              const opts = Array.from(new Set([...(storeCNs || []), ...fromVisits])).sort().reverse();
+              return (
+                <Field label="Consignment Note these boxes came from *">
+                  <input list="cn-options" type="text" value={logForm.consignmentNote} onChange={(e) => setLogForm({ ...logForm, consignmentNote: e.target.value.toUpperCase() })}
+                    style={{ ...inputStyle, fontFamily: "'IBM Plex Mono', monospace" }} placeholder="CH2026-0000193" />
+                  <datalist id="cn-options">{opts.map((n) => <option key={n} value={n} />)}</datalist>
+                  <div style={{ fontSize: 11, color: C.textFaint, marginTop: 5 }}>{opts.length ? `This store's notes: ${opts.slice(0, 4).join(", ")}${opts.length > 4 ? "…" : ""}` : "Type the number from the paper consignment note."} Printed on the store's invoice.</div>
+                </Field>
+              );
+            })()}
 
             <Field label="Invoice number (optional)">
               <input type="text" value={logForm.invoiceNumber} onChange={(e) => setLogForm({ ...logForm, invoiceNumber: e.target.value })} style={inputStyle} placeholder="e.g. INV-0042" />
@@ -17858,6 +17896,7 @@ function SingleDocument({ d, isDN, pageBreak, catalog }) {
               <td style={{ ...cell, verticalAlign: "top" }}>
                 <div><b>{isDN ? "DN:" : "លេខវិក្កយបត្រ:"}</b> {docNumber}</div>
                 {d.order_no && <div style={{ marginTop: 2 }}><b>{isDN ? "Order No :" : "លេខបញ្ជាទិញ:"}</b> {d.order_no}</div>}
+                {!isDN && d.consignment_ref && <div style={{ marginTop: 2 }}><b>Consignment Note :</b> {d.consignment_ref}</div>}
                 <div style={{ marginTop: 2 }}><b>{isDN ? "Sale Date :" : "កាលបរិច្ឆេទលក់:"}</b> {new Date(docDate + "T00:00:00").toLocaleDateString("en-GB")}</div>
                 <div style={{ marginTop: 2 }}><b>{isDN ? "Issued By :" : "ចេញដោយ:"}</b> {d.issued_by}</div>
                 <div style={{ marginTop: 2 }}><b>{isDN ? "Sale Rep :" : "តំណាងលក់:"}</b> {d.sale_rep}</div>
