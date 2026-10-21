@@ -16304,15 +16304,20 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
         : { canChangeAmounts: true };
     }
     const inv = doc.data;
-    if (invoicePaid(inv) > 0.005) {
-      return { canChangeAmounts: false, amountsLockedReason: `A payment of $${invoicePaid(inv).toLocaleString("en-US", MONEY2)} is already recorded on this invoice, so quantities and prices are locked. To change the amount, issue a credit note. Details above can still be corrected.` };
-    }
     const dn = notes.find((n) => n.id === inv.delivery_note_id);
     const billed = linkedBillsFor(inv).length > 0;
+    const canFixAmounts = isAccountingUser || canRenumberDocs(); // owner, Lita, accountant, Nea
+    const paid = invoicePaid(inv);
+    if (paid > 0.005) {
+      // Store asked for a different price after paying something: managers + Nea may change
+      // PRICES (not boxes). The new total can't go below what was already paid.
+      if (!canFixAmounts) return { canChangeAmounts: false, amountsLockedReason: `A payment of $${paid.toLocaleString("en-US", MONEY2)} is already recorded on this invoice. Only the owner, Lita, the accountant or Nea can change its prices.` };
+      return { canChangeAmounts: true, qtyLockedReason: `A payment of $${paid.toLocaleString("en-US", MONEY2)} is already recorded — you can change prices or discount, not boxes. The new total can't be less than what was paid.` };
+    }
     return {
-      canChangeAmounts: !billed || isAccountingUser,
-      amountsLockedReason: billed && !isAccountingUser
-        ? "This bill is already in the customer's balance. Only the owner or the accountant can change its quantities, prices or discount. You can still edit the details above."
+      canChangeAmounts: !billed || canFixAmounts,
+      amountsLockedReason: billed && !canFixAmounts
+        ? "This bill is already in the customer's balance. Only the owner, Lita, the accountant or Nea can change its quantities, prices or discount. You can still edit the details above."
         : "",
       qtyLockedReason: !dn
         ? "The delivery note for this invoice no longer exists, so quantities can't be changed here."
@@ -16372,7 +16377,11 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
       if ((qtyChanged || pricesChanged) && !rules.canChangeAmounts) return rules.amountsLockedReason;
       // Checked again against the database, not just this screen.
       if ((qtyChanged || pricesChanged) && isDN && dnHasInvoice) return "An invoice has been issued from this delivery note. Change quantities or prices on the invoice instead.";
-      if ((qtyChanged || pricesChanged) && !isDN && (paidNow || 0) > 0.005) return `A payment of $${paidNow.toLocaleString("en-US", MONEY2)} is recorded on ${d.invoice_number}, so quantities and prices can't change. Use a credit note.`;
+      if ((qtyChanged || pricesChanged) && !isDN && (paidNow || 0) > 0.005) {
+        if (!(isAccountingUser || canRenumberDocs())) return `A payment of $${paidNow.toLocaleString("en-US", MONEY2)} is recorded on ${d.invoice_number}. Only the owner, Lita, the accountant or Nea can change its prices.`;
+        if (qtyChanged) return `A payment is already recorded on ${d.invoice_number} — boxes can't change, only prices or discount.`;
+        if ((onlineLinks || []).some((o) => o.payment_status === "paid")) return `${d.invoice_number} is an Online & COD sale that is already paid in full, so its price can't change here. Record the difference as a new sale or a refund.`;
+      }
       if (qtyChanged && rules.qtyLockedReason) return rules.qtyLockedReason;
 
       // Stock moves follow the delivery note: how much more (or less) leaves the warehouse.
@@ -16402,6 +16411,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
         };
         // 1) the customer's balance record (Credit Term / Corporate), if any
         const grand = invoiceGrandTotal({ ...d, ...invBody });
+        if ((paidNow || 0) > 0.005 && grand < paidNow - 0.005) return `New total $${grand.toLocaleString("en-US", MONEY2)} is less than the $${paidNow.toLocaleString("en-US", MONEY2)} already paid. Use a credit note for the difference instead.`;
         for (const l of links) {
           await patchRow(l.table, l.id, {
             [l.dateCol]: form.date,
