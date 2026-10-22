@@ -15856,6 +15856,7 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
   useEffect(() => { loadBillLinks(); }, []);
 
   const emptyDNForm = {
+    invoiceKind: "commercial", // "commercial" → SO0096xx series · "tax" → SO2659xx series
     storeMode: "existing", // "existing" or "new"
     businessType: "consignment",
     storeId: "",
@@ -15967,14 +15968,16 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
     return `${yearPrefix}${String(next).padStart(8, "0")}`;
   }
 
-  function nextOrderNo() {
-    // Starts at SO009518 and counts up from whichever SO0##### number is highest so far —
-    // covers both our own auto-generated numbers and any store-supplied SO numbers already logged.
-    const START = 9518;
+  // Two order-number series: commercial invoices continue SO009672…, tax invoices SO265956….
+  function nextOrderNo(kind = "commercial") {
+    const tax = kind === "tax";
+    const START = tax ? 265955 : 9518;
+    const inSeries = (n) => (tax ? n >= 200000 && n < 1000000 : n < 100000);
     const existingNums = notes
       .map((n) => n.order_no)
       .filter((o) => o && /^SO\d+$/.test(o))
-      .map((o) => parseInt(o.slice(2), 10));
+      .map((o) => parseInt(o.slice(2), 10))
+      .filter(inSeries);
     const highest = existingNums.length ? Math.max(...existingNums) : START - 1;
     const next = Math.max(highest + 1, START);
     return `SO${String(next).padStart(6, "0")}`;
@@ -17181,6 +17184,18 @@ function DeliveryNotePage({ authUser, C, sbFetch, logActivity, stockForStore, on
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
               <div>
                 <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: "uppercase" }}>Order No</label>
+                {dnForm.businessType !== "consignment" && (
+                  <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                    {[["commercial", "Commercial"], ["tax", "Tax invoice"]].map(([k, l]) => (
+                      <button key={k} type="button"
+                        onClick={() => {
+                          const wasAuto = !dnForm.orderNo || dnForm.orderNo === nextOrderNo(dnForm.invoiceKind || "commercial");
+                          setDnForm({ ...dnForm, invoiceKind: k, orderNo: wasAuto ? nextOrderNo(k) : dnForm.orderNo });
+                        }}
+                        style={{ flex: 1, padding: "6px 4px", fontSize: 11, fontWeight: 700, borderRadius: 7, cursor: "pointer", background: (dnForm.invoiceKind || "commercial") === k ? C.gold : "none", color: (dnForm.invoiceKind || "commercial") === k ? "#1A1508" : C.textDim, border: `1px solid ${(dnForm.invoiceKind || "commercial") === k ? C.gold : C.border}` }}>{l}</button>
+                    ))}
+                  </div>
+                )}
                 <input type="text" value={dnForm.orderNo} onChange={(e) => setDnForm({ ...dnForm, orderNo: e.target.value })} placeholder="Auto-generated, or type the store's own number" style={{ width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 14, background: C.bg2, color: C.text }} />
               </div>
               <div>
@@ -17537,7 +17552,10 @@ function EditDocumentModal({ doc, C, salespeople, canChangeAmounts, amountsLocke
 }
 
 function GenerateInvoiceModal({ dn, C, authUser, sbFetch, nextNumber, invoices, logActivity, onClose, onCreated }) {
-  const [invoiceType, setInvoiceType] = useState(dn.business_type === "credit" || dn.business_type === "corporate" || dn.business_type === "cod" ? "commercial" : "consignment");
+  const [invoiceType, setInvoiceType] = useState(dn.business_type === "consignment" ? "consignment"
+    // An order number from the tax series (SO2659xx…) means the note was made for a tax invoice.
+    : /^SO\d+$/.test(String(dn.order_no || "")) && parseInt(String(dn.order_no).slice(2), 10) >= 200000 ? "tax"
+    : "commercial");
   const [form, setForm] = useState({
     ...Object.fromEntries(SKUS.map((x) => [x.formPrice, dn[x.priceCol] ? String(dn[x.priceCol]) : ""])),
     discountPercent: "0",
