@@ -6058,7 +6058,8 @@ function ApplyPaymentPanel({ r, h, ctx, C, sbFetch, authUser, logActivity, onDon
   // recording the sale a second time.
   const dayNum = (d) => (d ? new Date(String(d).slice(0, 10) + "T00:00:00Z").getTime() / 86400000 : NaN);
   const recordedMatches = (ctx.online || []).filter((o) => o.payment_status === "paid"
-    && Math.abs(Number(o.amount || 0) - amount) < 0.01
+    // Riel payments convert with a few cents of rounding, so allow up to 50 cents.
+    && Math.abs(Number(o.amount || 0) - amount) < 0.5
     && !/ABA|Cash/i.test(String(o.paid_note || ""))
     && Math.abs(dayNum(o.date) - dayNum(day)) <= 7);
   async function linkRecorded(o) {
@@ -6261,7 +6262,15 @@ function PaymentsReceivedPage({ authUser, C, sbFetch, logActivity, onSeen, mode 
     const link = lookup.linkBy[key];
     if (link) return { who: link.customer, channel: link.channel, why: link.note ? link.note : "Identified payer", sure: true, tagged: true };
     const prev = lookup.assignedBy[key];
-    if (prev) return { who: String(prev.assigned_note).split(" · ").pop(), channel: prev.assigned_type, why: "Matched to previous assignment", sure: false };
+    if (prev) {
+      // A note looks like "B0000613 · Store name" (older ones: "Credit Term · Store · Invoice INV…").
+      // Pick the part that is a real customer, never a bill number or a description.
+      const parts = String(prev.assigned_note || "").split(" · ").map((x) => x.trim()).filter(Boolean);
+      const known = new Set([...lookup.open.map((x) => prNorm(x.who)), ...Object.keys(lookup.byName || {})]);
+      const notName = /^(invoice\b|inv\d|b\d{5,}|ch\d{4}-|credit term|corporate|online|consignment|\d+\s+\w+\s+visit|.*already recorded)/i;
+      const who = parts.find((x) => known.has(prNorm(x))) || parts.filter((x) => !notName.test(x)).pop() || parts.pop();
+      return { who, channel: prev.assigned_type, why: "Matched to previous assignment", sure: false };
+    }
     const name = lookup.byName[key];
     if (name) return { who: name.who, channel: name.channel, why: "Payer name matches customer", sure: false };
     const paidDay = String(r.paid_at || "").slice(0, 10);
@@ -21219,6 +21228,12 @@ function FieldVisitsPage({ authUser, C, sbFetch, logActivity, canManage }) {
           sbFetch(`delivery_notes?select=store_id,business_type,sale_date&${between("sale_date")}`).catch(() => []),
           sbFetch(`pending_payments?select=amount,paid_at,created_at,channel,status,assigned_type,assigned_note,raw_message&created_at=gte.${range[0]}&created_at=lt.${plus4}`).catch(() => []),
         ]);
+        // Visits the office logged (consignment visit log) and deliveries also count as the store being visited —
+        // Telegram check-ins only started mid-October.
+        const [offV, offDN] = await Promise.all([
+          sbFetch("visits?select=store_name,date&order=date.desc&limit=20000").catch(() => []),
+          sbFetch("delivery_notes?select=store_id,business_type,sale_date&order=sale_date.desc").catch(() => []),
+        ]);
         if (!alive) return;
         // Bills by store and date — a "sale" visit should have one the same day or the next.
         const billDates = {};
@@ -21249,7 +21264,11 @@ function FieldVisitsPage({ authUser, C, sbFetch, logActivity, canManage }) {
           if (!who) { const m = /\bfor (.+?)(?: \(|$)/.exec(String(r.raw_message || "")); if (m) who = m[1]; }
           return { who: norm(who), amount: Number(r.amount || 0), day: String(r.paid_at || r.created_at || "").slice(0, 10) };
         }).filter((x) => x.who);
-        setData({ visits: visits || [], reports: reports || [], stores, lastBy, links: links || [], billDates, payments, namesByKey, norm });
+        const officeLast = {};
+        const noteOffice = (k, d) => { if (k && d && (!officeLast[k] || d > officeLast[k])) officeLast[k] = d; };
+        (offV || []).forEach((r) => noteOffice(stIdByName[r.store_name] != null ? `stores:${stIdByName[r.store_name]}` : null, r.date));
+        (offDN || []).forEach((r) => noteOffice(r.store_id ? `${r.business_type === "credit" ? "credit_stores" : r.business_type === "corporate" ? "bigco_stores" : r.business_type === "cod" ? "online_customers" : "stores"}:${r.store_id}` : null, r.sale_date));
+        setData({ visits: visits || [], reports: reports || [], stores, lastBy, officeLast, links: links || [], billDates, payments, namesByKey, norm });
       } catch (e) { if (alive) setError(friendlyDbError(e)); }
     })();
     return () => { alive = false; };
@@ -21465,13 +21484,15 @@ function FieldVisitsPage({ authUser, C, sbFetch, logActivity, canManage }) {
 
       {data && tab === "skipped" && (() => {
         const visitedKeys = new Set(data.visits.filter((v) => v.store_table).map((v) => `${v.store_table}:${v.store_id}`));
+        // A visit the office logged, or a delivery, in this month also counts.
+        Object.entries(data.officeLast || {}).forEach(([k, d]) => { if (d >= range[0] && d <= range[1]) visitedKeys.add(k); });
         const groups = [...shownPeople.filter((n) => person !== "all" || true), ...(person === "all" ? [""] : [])];
         return (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div style={{ fontSize: 12, color: C.textFaint }}>Stores with no visit reported in {monthLabel(month)}, grouped by the salesperson they're assigned to. A store counts as visited if anyone reported it. Inactive stores are left out — mark them in Office → Salesperson Assignment.</div>
             {groups.map((n) => {
               const list = data.stores.filter((s) => s.rep === n && !visitedKeys.has(s.key))
-                .map((s) => ({ ...s, last: data.lastBy[s.key]?.visit_date || null }))
+                .map((s) => { const a = data.lastBy[s.key]?.visit_date || null; const b = (data.officeLast || {})[s.key] || null; return { ...s, last: a && b ? (a > b ? a : b) : a || b }; })
                 .sort((a, b) => (a.last || "0").localeCompare(b.last || "0"));
               if (!list.length) return n ? <div key={n} style={{ ...card, fontSize: 13 }}><b>{n}</b> — every assigned store visited ✓</div> : null;
               return (
