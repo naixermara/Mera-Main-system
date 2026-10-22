@@ -1943,7 +1943,7 @@ function MeraConsignmentApp() {
         ) : page === "sales" ? (
           <>
             {!["payments", "cash", "owed", "pending", "coverage"].includes(salesSubPage) && <div className="mera-subtabs" style={{ display: "flex", gap: 6, marginBottom: 18, marginTop: 4, flexWrap: "wrap" }}>
-              <button
+              {canSeePayroll && <button
                 onClick={() => setSalesSubPage("total")}
                 style={{
                   background: "none", border: "none", padding: "6px 2px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginRight: 14,
@@ -1952,7 +1952,7 @@ function MeraConsignmentApp() {
                 }}
               >
                 Summary
-              </button>
+              </button>}
               {canSeeSalesReport && <button
                 onClick={() => setSalesSubPage("report")}
                 style={{
@@ -2004,7 +2004,9 @@ function MeraConsignmentApp() {
                 Retention
               </button>
             </div>}
-            {salesSubPage === "total" ? (
+            {salesSubPage === "total" && !canSeePayroll ? (
+              <div style={{ padding: 40, color: C.textFaint, fontSize: 14 }}>Sales Summary is only for the owner and Lita.</div>
+            ) : salesSubPage === "total" ? (
               <SalesTotalPage
                 authUser={authUser}
                 C={C}
@@ -8301,7 +8303,6 @@ const NAV = [
     { label: "Overview", page: "overview" },
   ]},
   { name: "Sales", items: [
-    { label: "Sales Summary",              page: "sales", sub: "total" },
     { label: "Consignment",        page: "sales", sub: "consignment", view: "regular" },
     { label: "Corporate Accounts", page: "sales", sub: "consignment", view: "bigco" },
     { label: "Credit Term",        page: "sales", sub: "credit" },
@@ -8350,6 +8351,7 @@ const NAV = [
   // report, marketing spend, salaries and expense approval. Rosa and Lita only.
   { name: "Executive Office", needs: "payroll", items: [
     { label: "Big Picture",     page: "bigpicture" },
+    { label: "Sales Summary",   page: "sales", sub: "total" },
     { label: "Profit & Margin", page: "profit", needs: "profit" },
     { label: "Sales by Person", page: "salesbyperson" },
     { label: "Sales Analysis",  page: "sellout" },
@@ -14336,7 +14338,7 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
         <div style={{ textAlign: "center", color: C.textFaint, padding: "40px 0" }}>Loading…</div>
       ) : (
         <>
-          <div style={{ background: C.surface, border: `1px solid ${C.gold}50`, borderRadius: 14, padding: "22px 24px", marginBottom: 24 }}>
+          {canSeeMarketing && <div style={{ background: C.surface, border: `1px solid ${C.gold}50`, borderRadius: 14, padding: "22px 24px", marginBottom: 24 }}>
             <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>{canSeeMarketing ? "Net" : "Collected"} — {monthLabel(selectedMonth)}</div>
             <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 32, fontWeight: 600, marginTop: 8, color: netTotal >= 0 ? C.emerald : C.rose }}>
               {netTotal >= 0 ? "+" : "-"}${Math.abs(netTotal).toLocaleString("en-US", MONEY2)}
@@ -14353,7 +14355,7 @@ function OverviewPage({ authUser, C, sbFetch, onNavigate }) {
             >
               See the sales breakdown →
             </button>
-          </div>
+          </div>}
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 14 }}>
             <button
