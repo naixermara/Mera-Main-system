@@ -11082,10 +11082,20 @@ const SG_PURPOSES = [
 ];
 const sgPurpose = (k) => SG_PURPOSES.find((p) => p.key === k)?.label || k;
 
+// Sample stock is a separate pool from the sales warehouse. A sample request
+// (approved by the owner or Lita) moves boxes warehouse → sample stock; after
+// that, samples and gifts are given out of sample stock only and never touch
+// the sales warehouse. Travel Pack lives only in sample stock.
+const SAMPLE_ITEMS = [...SKUS.map((x) => ({ code: x.code, label: x.label })), { code: "travel", label: "Travel Pack", sampleOnly: true }];
+const sampleItemLabel = (k) => SAMPLE_ITEMS.find((x) => x.code === k)?.label || k;
+
 function SamplesGiftsPage({ C, sbFetch, authUser, logActivity, canApprove }) {
   const [reqs, setReqs] = useState(null);
   const [stock, setStock] = useState({});
+  const [sMoves, setSMoves] = useState([]);
   const [form, setForm] = useState({ purpose: "sample", recipient: "", note: "", qty: {} });
+  const [outForm, setOutForm] = useState({ purpose: "sample", recipient: "", note: "", qty: {} });
+  const [adj, setAdj] = useState({ item: "travel", qty: "", note: "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [okMsg, setOkMsg] = useState("");
@@ -11094,48 +11104,89 @@ function SamplesGiftsPage({ C, sbFetch, authUser, logActivity, canApprove }) {
 
   async function load() {
     try {
-      const [r, m] = await Promise.all([
+      const [r, m, sm] = await Promise.all([
         sbFetch("sample_requests?select=*&order=id.desc"),
         sbFetch("stock_moves?select=product,qty").catch(() => []),
+        sbFetch("sample_stock_moves?select=*&order=id.desc").catch(() => []),
       ]);
       setReqs(r || []);
       const s = {}; (m || []).forEach((x) => { s[x.product] = (s[x.product] || 0) + Number(x.qty || 0); });
       setStock(s);
+      setSMoves(sm || []);
     } catch (e) { setReqs([]); setErr("Couldn't load samples & gifts. Ask Claude to check the sample_requests table."); }
   }
   useEffect(() => { load(); }, []);
 
-  const lines = Object.fromEntries(SKUS.map((x) => [x.code, Math.max(0, parseInt(form.qty[x.code] || "0", 10) || 0)]).filter(([, v]) => v > 0));
+  const sampleBal = {}; sMoves.forEach((x) => { sampleBal[x.item] = (sampleBal[x.item] || 0) + Number(x.qty || 0); });
+  const pick = (q, items) => Object.fromEntries(items.map((x) => [x.code, Math.max(0, parseInt(q[x.code] || "0", 10) || 0)]).filter(([, v]) => v > 0));
+  const lines = pick(form.qty, SKUS);
+  const outLines = pick(outForm.qty, SAMPLE_ITEMS);
   const totalAsked = Object.values(lines).reduce((a, b) => a + b, 0);
+  const totalOut = Object.values(outLines).reduce((a, b) => a + b, 0);
   const sumLines = (l) => Object.values(l || {}).reduce((a, b) => a + Number(b || 0), 0);
-  const lineText = (l) => SKUS.filter((x) => Number(l?.[x.code]) > 0).map((x) => `${x.label} ${l[x.code]}`).join(", ");
+  const lineText = (l) => Object.keys(l || {}).filter((k) => Number(l[k]) > 0).map((k) => `${sampleItemLabel(k)} ${l[k]}`).join(", ");
   const msg = (e, d) => String(e?.message || "").match(/"message":"([^"]+)"/)?.[1] || d;
 
   async function submit() {
     setErr(""); setOkMsg("");
-    if (!form.recipient.trim()) { setErr("Who is it for? Type the shop, person or event."); return; }
+    if (!form.recipient.trim()) { setErr("What is it for? Type the campaign, event or reason."); return; }
     if (!totalAsked) { setErr("Type how many boxes."); return; }
     const short = SKUS.filter((x) => (lines[x.code] || 0) > (stock[x.code] || 0));
     if (short.length) { setErr(`Not enough in the warehouse: ${short.map((x) => `${x.label} (have ${stock[x.code] || 0})`).join(", ")}.`); return; }
     setBusy(true);
     try {
       const [row] = (await sbFetch("sample_requests", { method: "POST", body: JSON.stringify({ purpose: form.purpose, recipient: form.recipient.trim(), note: form.note.trim() || null, lines, requested_by: me || "unknown" }) })) || [];
-      logActivity?.("Sample / gift requested", row?.req_no || "", `${sgPurpose(form.purpose)} · ${form.recipient.trim()} · ${totalAsked} boxes`);
+      logActivity?.("Sample stock requested", row?.req_no || "", `${sgPurpose(form.purpose)} · ${form.recipient.trim()} · ${totalAsked} boxes`);
       setForm({ purpose: form.purpose, recipient: "", note: "", qty: {} });
-      setOkMsg(`Request ${row?.req_no || ""} sent — the owner or Lita will approve it, then the boxes come out of the warehouse.`);
+      setOkMsg(`Request ${row?.req_no || ""} sent — once the owner or Lita approves, the boxes move from the warehouse into sample stock.`);
       await load();
     } catch (e) { setErr(msg(e, "Couldn't send the request.")); }
+    setBusy(false);
+  }
+
+  async function giveOut() {
+    setErr(""); setOkMsg("");
+    if (!outForm.recipient.trim()) { setErr("Given to whom? Type the KOL, shop, person or event."); return; }
+    if (!totalOut) { setErr("Type how many boxes were given out."); return; }
+    const short = SAMPLE_ITEMS.filter((x) => (outLines[x.code] || 0) > (sampleBal[x.code] || 0));
+    if (short.length) { setErr(`Not enough in sample stock: ${short.map((x) => `${x.label} (have ${sampleBal[x.code] || 0})`).join(", ")}.`); return; }
+    setBusy(true);
+    const ref = `OUT-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`;
+    try {
+      const rows = Object.entries(outLines).map(([item, q]) => ({ item, qty: -q, kind: "out", reference: ref, purpose: outForm.purpose, recipient: outForm.recipient.trim(), note: outForm.note.trim() || null, created_by: me || "unknown" }));
+      await sbFetch("sample_stock_moves", { method: "POST", body: JSON.stringify(rows) });
+      logActivity?.("Sample stock given out", ref, `${sgPurpose(outForm.purpose)} · ${outForm.recipient.trim()} · ${totalOut} boxes`);
+      setOutForm({ purpose: outForm.purpose, recipient: "", note: "", qty: {} });
+      setOkMsg(`Recorded — ${totalOut} boxes out of sample stock. The sales warehouse is not touched.`);
+      await load();
+    } catch (e) { setErr(msg(e, "Couldn't record it.")); }
+    setBusy(false);
+  }
+
+  async function adjust() {
+    setErr(""); setOkMsg("");
+    const q = parseInt(adj.qty, 10);
+    if (!q) { setErr("Type the number to add (e.g. 200) or remove (e.g. -5)."); return; }
+    if (!adj.note.trim()) { setErr("Add a short note why (e.g. opening count, counted short)."); return; }
+    setBusy(true);
+    try {
+      await sbFetch("sample_stock_moves", { method: "POST", body: JSON.stringify({ item: adj.item, qty: q, kind: "adjust", note: adj.note.trim(), created_by: me || "unknown" }) });
+      logActivity?.("Sample stock adjusted", sampleItemLabel(adj.item), `${q > 0 ? "+" : ""}${q} · ${adj.note.trim()}`);
+      setAdj({ item: adj.item, qty: "", note: "" });
+      setOkMsg("Sample stock updated.");
+      await load();
+    } catch (e) { setErr(msg(e, "Couldn't save the adjustment.")); }
     setBusy(false);
   }
 
   async function decide(r, approve) {
     let note = null;
     if (!approve) { note = window.prompt(`Reject ${r.req_no}? Reason:`); if (note === null) return; }
-    else if (!window.confirm(`Approve ${r.req_no}? ${sumLines(r.lines)} boxes (${lineText(r.lines)}) will be taken out of the warehouse now.`)) return;
+    else if (!window.confirm(`Approve ${r.req_no}? ${sumLines(r.lines)} boxes (${lineText(r.lines)}) will move from the warehouse into sample stock now.`)) return;
     setBusy(true); setErr(""); setOkMsg("");
     try {
       await sbFetch("rpc/decide_sample_request", { method: "POST", body: JSON.stringify({ p_id: r.id, p_approve: approve, p_note: note }) });
-      logActivity?.(approve ? "Sample / gift approved" : "Sample / gift rejected", r.req_no, `${r.recipient} · ${sumLines(r.lines)} boxes`);
+      logActivity?.(approve ? "Sample stock request approved" : "Sample stock request rejected", r.req_no, `${r.recipient} · ${sumLines(r.lines)} boxes`);
       await load();
     } catch (e) { setErr(msg(e, "Couldn't save.")); }
     setBusy(false);
@@ -11151,19 +11202,29 @@ function SamplesGiftsPage({ C, sbFetch, authUser, logActivity, canApprove }) {
   const all = reqs || [];
   const waiting = all.filter((r) => r.status === "requested");
   const done = all.filter((r) => r.status !== "requested" && String(r.decided_at || r.created_at).slice(0, 7) === month);
-  const given = done.filter((r) => r.status === "given");
-  const months = Array.from(new Set([new Date().toISOString().slice(0, 7), ...all.map((r) => String(r.decided_at || r.created_at).slice(0, 7))])).sort().reverse();
-  const byPurpose = SG_PURPOSES.map((p) => ({ ...p, boxes: given.filter((r) => r.purpose === p.key).reduce((a, r) => a + sumLines(r.lines), 0) })).filter((p) => p.boxes > 0);
-  const byProduct = SKUS.map((x) => ({ ...x, boxes: given.reduce((a, r) => a + Number(r.lines?.[x.code] || 0), 0) })).filter((x) => x.boxes > 0);
-  const givenTotal = given.reduce((a, r) => a + sumLines(r.lines), 0);
+  const moved = done.filter((r) => r.status === "given");
+  const movedTotal = moved.reduce((a, r) => a + sumLines(r.lines), 0);
+  // give-outs this month, grouped by reference
+  const outsMonth = sMoves.filter((x) => x.kind === "out" && String(x.move_date).slice(0, 7) === month);
+  const outGroups = Object.values(outsMonth.reduce((acc, x) => {
+    const g = acc[x.reference] || (acc[x.reference] = { reference: x.reference, date: x.move_date, purpose: x.purpose, recipient: x.recipient, note: x.note, by: x.created_by, lines: {} });
+    g.lines[x.item] = (g.lines[x.item] || 0) - Number(x.qty || 0); return acc;
+  }, {})).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const outTotal = outGroups.reduce((a, g) => a + sumLines(g.lines), 0);
+  const byPurpose = SG_PURPOSES.map((p) => ({ ...p, boxes: outGroups.filter((g) => g.purpose === p.key).reduce((a, g) => a + sumLines(g.lines), 0) })).filter((p) => p.boxes > 0);
+  const months = Array.from(new Set([new Date().toISOString().slice(0, 7), ...all.map((r) => String(r.decided_at || r.created_at).slice(0, 7)), ...sMoves.map((x) => String(x.move_date).slice(0, 7))])).sort().reverse();
 
   function downloadMonth() {
-    const rows = done.map((r) => ({
+    const outRows = outGroups.map((g) => ({
+      Reference: g.reference, Date: g.date, Purpose: sgPurpose(g.purpose), "Given to": g.recipient,
+      ...Object.fromEntries(SAMPLE_ITEMS.map((x) => [x.label, Number(g.lines[x.code] || 0)])), "Total boxes": sumLines(g.lines), "Recorded by": nameOf(g.by), Note: g.note || "",
+    }));
+    const inRows = done.map((r) => ({
       "Request no": r.req_no, "Requested on": r.request_date, "Requested by": nameOf(r.requested_by), Purpose: sgPurpose(r.purpose), "For": r.recipient,
       ...Object.fromEntries(SKUS.map((x) => [x.label, Number(r.lines?.[x.code] || 0)])), "Total boxes": sumLines(r.lines),
-      Status: r.status === "given" ? "Given (out of warehouse)" : r.status, "Decided by": nameOf(r.decided_by), "Decided on": String(r.decided_at || "").slice(0, 10), Note: [r.note, r.decision_note].filter(Boolean).join(" · "),
+      Status: r.status === "given" ? "Moved to sample stock" : r.status, "Decided by": nameOf(r.decided_by), "Decided on": String(r.decided_at || "").slice(0, 10), Note: [r.note, r.decision_note].filter(Boolean).join(" · "),
     }));
-    downloadBlob(`samples-gifts-${month}.xls`, buildWorkbook({ "Samples & gifts": rows }), "application/vnd.ms-excel");
+    downloadBlob(`sample-stock-${month}.xls`, buildWorkbook({ "Given out": outRows, "Moved in from warehouse": inRows }), "application/vnd.ms-excel");
   }
 
   const card = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", marginBottom: 14 };
@@ -11171,34 +11232,76 @@ function SamplesGiftsPage({ C, sbFetch, authUser, logActivity, canApprove }) {
   const btn = { background: C.gold, border: "none", color: "#1A1508", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" };
   const ghost = { background: "none", border: `1px solid ${C.border}`, color: C.text, borderRadius: 7, padding: "5px 10px", fontSize: 11.5, cursor: "pointer" };
   const statusTone = { given: C.emerald, rejected: C.rose, cancelled: C.textFaint, requested: C.amber };
-  const statusLabel = { given: "✓ Given — out of warehouse", rejected: "Rejected", cancelled: "Cancelled", requested: "Waiting for approval" };
+  const statusLabel = { given: "✓ Moved to sample stock", rejected: "Rejected", cancelled: "Cancelled", requested: "Waiting for approval" };
+  const qtyGrid = (items, f, setF, have, haveLabel) => (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8, marginBottom: 10 }}>
+      {items.map((x) => (
+        <div key={x.code}>
+          <div style={{ fontSize: 11, color: C.textDim, marginBottom: 3 }}>{x.label} <span style={{ color: C.textFaint }}>· {Number(have[x.code] || 0).toLocaleString()} {haveLabel}</span></div>
+          <input type="number" min="0" inputMode="numeric" value={f.qty[x.code] || ""} onChange={(e) => setF({ ...f, qty: { ...f.qty, [x.code]: e.target.value } })} placeholder="0" style={{ ...inp, width: "100%", textAlign: "right" }} />
+        </div>
+      ))}
+    </div>
+  );
 
   if (reqs === null) return <div style={{ padding: 30, color: C.textDim }}>Loading…</div>;
 
   return (
     <div>
-      <div style={{ fontSize: 13, color: C.textDim, marginBottom: 12, maxWidth: 720 }}>
-        Every free box — samples, gifts, KOL, events, staff use — must be requested here. When the owner or Lita approves, the boxes are taken out of the warehouse under the request number, so nothing goes missing.
+      <div style={{ fontSize: 13, color: C.textDim, marginBottom: 12, maxWidth: 760 }}>
+        Sample stock is kept separate from the sales warehouse. <b>1.</b> Request boxes from the warehouse into sample stock — the owner or Lita approves. <b>2.</b> Every sample, gift or KOL gift is then recorded as given out from sample stock. The sales warehouse only goes down at step 1.
       </div>
       {err && <div style={{ background: C.roseBg, color: C.rose, padding: "9px 12px", borderRadius: 9, fontSize: 12.5, marginBottom: 12 }}>{err}</div>}
       {okMsg && <div style={{ background: `${C.emerald}14`, color: C.emerald, padding: "9px 12px", borderRadius: 9, fontSize: 12.5, marginBottom: 12 }}>{okMsg}</div>}
 
       <div style={card}>
-        <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 10 }}>New request</div>
+        <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 10 }}>Sample stock now</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
+          {SAMPLE_ITEMS.map((x) => (
+            <div key={x.code} style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 9, padding: "8px 10px" }}>
+              <div style={{ fontSize: 11, color: C.textDim }}>{x.label}{x.sampleOnly ? " · sample only" : ""}</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: (sampleBal[x.code] || 0) > 0 ? C.text : C.textFaint }}>{Number(sampleBal[x.code] || 0).toLocaleString()}</div>
+            </div>
+          ))}
+        </div>
+        {canApprove && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
+            <span style={{ fontSize: 11.5, color: C.textDim }}>Count / adjust:</span>
+            <select value={adj.item} onChange={(e) => setAdj({ ...adj, item: e.target.value })} style={inp}>{SAMPLE_ITEMS.map((x) => <option key={x.code} value={x.code}>{x.label}</option>)}</select>
+            <input type="number" inputMode="numeric" value={adj.qty} onChange={(e) => setAdj({ ...adj, qty: e.target.value })} placeholder="+200 / -5" style={{ ...inp, width: 100, textAlign: "right" }} />
+            <input value={adj.note} onChange={(e) => setAdj({ ...adj, note: e.target.value })} placeholder="Why? (opening count, counted short…)" style={{ ...inp, flex: "1 1 200px" }} />
+            <button disabled={busy} onClick={adjust} style={ghost}>Save</button>
+          </div>
+        )}
+      </div>
+
+      <div style={card}>
+        <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 4 }}>Give out from sample stock</div>
+        <div style={{ fontSize: 11.5, color: C.textFaint, marginBottom: 10 }}>Record every sample, gift or KOL gift handed out. Comes out of sample stock only.</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+          <select value={outForm.purpose} onChange={(e) => setOutForm({ ...outForm, purpose: e.target.value })} style={{ ...inp, flex: "1 1 200px" }}>
+            {SG_PURPOSES.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+          </select>
+          <input value={outForm.recipient} onChange={(e) => setOutForm({ ...outForm, recipient: e.target.value })} placeholder="Given to (KOL, shop, person, event)" style={{ ...inp, flex: "2 1 240px" }} />
+        </div>
+        {qtyGrid(SAMPLE_ITEMS, outForm, setOutForm, sampleBal, "in sample stock")}
+        <input value={outForm.note} onChange={(e) => setOutForm({ ...outForm, note: e.target.value })} placeholder="Note (optional)" style={{ ...inp, width: "100%", marginBottom: 10 }} />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12.5, color: C.textDim }}>{totalOut ? `${totalOut} boxes` : ""}</span>
+          <button disabled={busy} onClick={giveOut} style={btn}>{busy ? "Saving…" : "Record give-out"}</button>
+        </div>
+      </div>
+
+      <div style={card}>
+        <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 4 }}>Request from warehouse → sample stock</div>
+        <div style={{ fontSize: 11.5, color: C.textFaint, marginBottom: 10 }}>Needs approval from the owner or Lita. This is the only step that takes boxes out of the sales warehouse.</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
           <select value={form.purpose} onChange={(e) => setForm({ ...form, purpose: e.target.value })} style={{ ...inp, flex: "1 1 200px" }}>
             {SG_PURPOSES.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
           </select>
-          <input value={form.recipient} onChange={(e) => setForm({ ...form, recipient: e.target.value })} placeholder="For whom? (shop, person, event)" style={{ ...inp, flex: "2 1 240px" }} />
+          <input value={form.recipient} onChange={(e) => setForm({ ...form, recipient: e.target.value })} placeholder="For what? (campaign, event, top-up)" style={{ ...inp, flex: "2 1 240px" }} />
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8, marginBottom: 10 }}>
-          {SKUS.map((x) => (
-            <div key={x.code}>
-              <div style={{ fontSize: 11, color: C.textDim, marginBottom: 3 }}>{x.label} <span style={{ color: C.textFaint }}>· {Number(stock[x.code] || 0).toLocaleString()} in stock</span></div>
-              <input type="number" min="0" inputMode="numeric" value={form.qty[x.code] || ""} onChange={(e) => setForm({ ...form, qty: { ...form.qty, [x.code]: e.target.value } })} placeholder="0" style={{ ...inp, width: "100%", textAlign: "right" }} />
-            </div>
-          ))}
-        </div>
+        {qtyGrid(SKUS, form, setForm, stock, "in warehouse")}
         <input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="Why? (optional)" style={{ ...inp, width: "100%", marginBottom: 10 }} />
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <span style={{ fontSize: 12.5, color: C.textDim }}>{totalAsked ? `${totalAsked} boxes` : ""}</span>
@@ -11212,7 +11315,7 @@ function SamplesGiftsPage({ C, sbFetch, authUser, logActivity, canApprove }) {
           <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "8px 0", borderTop: `1px solid ${C.border}`, fontSize: 12.5, flexWrap: "wrap" }}>
             <span><b>{r.req_no}</b> · {sgPurpose(r.purpose)} · <b>{r.recipient}</b> · {lineText(r.lines)} <span style={{ color: C.textDim }}>· by {nameOf(r.requested_by)} on {r.request_date}{r.note ? ` · “${r.note}”` : ""}</span></span>
             <span style={{ display: "flex", gap: 8 }}>
-              {canApprove && <button disabled={busy} onClick={() => decide(r, true)} style={{ ...ghost, border: `1px solid ${C.emerald}`, color: C.emerald }}>Approve & take out</button>}
+              {canApprove && <button disabled={busy} onClick={() => decide(r, true)} style={{ ...ghost, border: `1px solid ${C.emerald}`, color: C.emerald }}>Approve & move</button>}
               {canApprove && <button disabled={busy} onClick={() => decide(r, false)} style={{ ...ghost, color: C.rose }}>Reject</button>}
               {(String(r.requested_by).toLowerCase() === me || canApprove) && <button disabled={busy} onClick={() => cancel(r)} style={ghost}>Cancel</button>}
             </span>
@@ -11223,18 +11326,22 @@ function SamplesGiftsPage({ C, sbFetch, authUser, logActivity, canApprove }) {
 
       <div style={card}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 13.5, fontWeight: 700 }}>Given out — {givenTotal} boxes</span>
+          <span style={{ fontSize: 13.5, fontWeight: 700 }}>Given out — {outTotal} boxes</span>
           <span style={{ display: "flex", gap: 8 }}>
             <select value={month} onChange={(e) => setMonth(e.target.value)} style={inp}>{months.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}</select>
-            <button onClick={downloadMonth} disabled={!done.length} style={ghost}>⬇ Excel</button>
+            <button onClick={downloadMonth} disabled={!outGroups.length && !done.length} style={ghost}>⬇ Excel</button>
           </span>
         </div>
-        {givenTotal > 0 && (
-          <div style={{ display: "flex", gap: 18, flexWrap: "wrap", fontSize: 12.5, color: C.textDim, marginBottom: 8 }}>
-            <span>{byPurpose.map((p) => `${p.label.split(" /")[0].split(" for")[0]} ${p.boxes}`).join(" · ")}</span>
-            <span>{byProduct.map((x) => `${x.label} ${x.boxes}`).join(" · ")}</span>
+        {byPurpose.length > 0 && <div style={{ fontSize: 12.5, color: C.textDim, marginBottom: 8 }}>{byPurpose.map((p) => `${p.label.split(" /")[0].split(" for")[0]} ${p.boxes}`).join(" · ")}</div>}
+        {outGroups.length === 0 ? <div style={{ fontSize: 12.5, color: C.textFaint }}>Nothing given out this month.</div> : outGroups.map((g) => (
+          <div key={g.reference} style={{ padding: "7px 0", borderTop: `1px solid ${C.border}`, fontSize: 12.5 }}>
+            {g.date} · {sgPurpose(g.purpose)} · <b>{g.recipient}</b> · {lineText(g.lines)} <span style={{ color: C.textDim }}>· recorded by {nameOf(g.by)}{g.note ? ` · “${g.note}”` : ""}</span>
           </div>
-        )}
+        ))}
+      </div>
+
+      <div style={card}>
+        <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>Moved in from warehouse — {movedTotal} boxes</div>
         {done.length === 0 ? <div style={{ fontSize: 12.5, color: C.textFaint }}>None this month.</div> : done.map((r) => (
           <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "7px 0", borderTop: `1px solid ${C.border}`, fontSize: 12.5, flexWrap: "wrap", opacity: r.status === "given" ? 1 : 0.6 }}>
             <span><b>{r.req_no}</b> · {String(r.decided_at || "").slice(0, 10)} · {sgPurpose(r.purpose)} · <b>{r.recipient}</b> · {lineText(r.lines)} <span style={{ color: C.textDim }}>· asked by {nameOf(r.requested_by)}{r.decided_by ? `, ${r.status === "given" ? "approved" : r.status} by ${nameOf(r.decided_by)}` : ""}{r.decision_note ? ` · “${r.decision_note}”` : ""}</span></span>
