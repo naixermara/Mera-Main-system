@@ -11093,6 +11093,7 @@ function SamplesGiftsPage({ C, sbFetch, authUser, logActivity, canApprove }) {
   const [reqs, setReqs] = useState(null);
   const [stock, setStock] = useState({});
   const [sMoves, setSMoves] = useState([]);
+  const [bpc, setBpc] = useState({}); // boxes per carton (Stock Plan settings)
   const [form, setForm] = useState({ purpose: "sample", recipient: "", note: "", qty: {} });
   const [outForm, setOutForm] = useState({ purpose: "sample", recipient: "", note: "", qty: {} });
   const [adj, setAdj] = useState({ item: "travel", qty: "", note: "" });
@@ -11109,6 +11110,7 @@ function SamplesGiftsPage({ C, sbFetch, authUser, logActivity, canApprove }) {
         sbFetch("stock_moves?select=product,qty").catch(() => []),
         sbFetch("sample_stock_moves?select=*&order=id.desc").catch(() => []),
       ]);
+      sbFetch("stock_plan_settings?select=boxes_per_carton&id=eq.1").then((x) => setBpc((x && x[0] && x[0].boxes_per_carton) || {})).catch(() => {});
       setReqs(r || []);
       const s = {}; (m || []).forEach((x) => { s[x.product] = (s[x.product] || 0) + Number(x.qty || 0); });
       setStock(s);
@@ -11119,7 +11121,10 @@ function SamplesGiftsPage({ C, sbFetch, authUser, logActivity, canApprove }) {
 
   const sampleBal = {}; sMoves.forEach((x) => { sampleBal[x.item] = (sampleBal[x.item] || 0) + Number(x.qty || 0); });
   const pick = (q, items) => Object.fromEntries(items.map((x) => [x.code, Math.max(0, parseInt(q[x.code] || "0", 10) || 0)]).filter(([, v]) => v > 0));
-  const lines = pick(form.qty, SKUS);
+  const perCtn = (code) => Number(bpc[code]) || 0;
+  const ctnLines = pick(form.qty, SKUS.filter((x) => perCtn(x.code) > 0)); // cartons asked
+  const lines = Object.fromEntries(Object.entries(ctnLines).map(([k, c]) => [k, c * perCtn(k)])); // boxes moved
+  const totalCtn = Object.values(ctnLines).reduce((a, b) => a + b, 0);
   const outLines = pick(outForm.qty, SAMPLE_ITEMS);
   const totalAsked = Object.values(lines).reduce((a, b) => a + b, 0);
   const totalOut = Object.values(outLines).reduce((a, b) => a + b, 0);
@@ -11130,13 +11135,13 @@ function SamplesGiftsPage({ C, sbFetch, authUser, logActivity, canApprove }) {
   async function submit() {
     setErr(""); setOkMsg("");
     if (!form.recipient.trim()) { setErr("What is it for? Type the campaign, event or reason."); return; }
-    if (!totalAsked) { setErr("Type how many boxes."); return; }
+    if (!totalAsked) { setErr("Type how many cartons."); return; }
     const short = SKUS.filter((x) => (lines[x.code] || 0) > (stock[x.code] || 0));
     if (short.length) { setErr(`Not enough in the warehouse: ${short.map((x) => `${x.label} (have ${stock[x.code] || 0})`).join(", ")}.`); return; }
     setBusy(true);
     try {
-      const [row] = (await sbFetch("sample_requests", { method: "POST", body: JSON.stringify({ purpose: form.purpose, recipient: form.recipient.trim(), note: form.note.trim() || null, lines, requested_by: me || "unknown" }) })) || [];
-      logActivity?.("Sample stock requested", row?.req_no || "", `${sgPurpose(form.purpose)} · ${form.recipient.trim()} · ${totalAsked} boxes`);
+      const [row] = (await sbFetch("sample_requests", { method: "POST", body: JSON.stringify({ purpose: form.purpose, recipient: form.recipient.trim(), note: [`${Object.entries(ctnLines).map(([k, c]) => `${sampleItemLabel(k)} ${c} ctn`).join(", ")}`, form.note.trim()].filter(Boolean).join(" · "), lines, requested_by: me || "unknown" }) })) || [];
+      logActivity?.("Sample stock requested", row?.req_no || "", `${sgPurpose(form.purpose)} · ${form.recipient.trim()} · ${totalCtn} cartons (${totalAsked} boxes)`);
       setForm({ purpose: form.purpose, recipient: "", note: "", qty: {} });
       setOkMsg(`Request ${row?.req_no || ""} sent — once the owner or Lita approves, the boxes move from the warehouse into sample stock.`);
       await load();
@@ -11302,10 +11307,21 @@ function SamplesGiftsPage({ C, sbFetch, authUser, logActivity, canApprove }) {
           </select>
           <input value={form.recipient} onChange={(e) => setForm({ ...form, recipient: e.target.value })} placeholder="For what? (campaign, event, top-up)" style={{ ...inp, flex: "2 1 240px" }} />
         </div>
-        {qtyGrid(SKUS, form, setForm, stock, "in warehouse")}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 8, marginBottom: 10 }}>
+          {SKUS.map((x) => {
+            const per = perCtn(x.code); const c = ctnLines[x.code] || 0;
+            return (
+              <div key={x.code}>
+                <div style={{ fontSize: 11, color: C.textDim, marginBottom: 3 }}>{x.label} <span style={{ color: C.textFaint }}>· {per ? `${Math.floor((stock[x.code] || 0) / per).toLocaleString()} ctn in warehouse` : "carton size not set"}</span></div>
+                <input type="number" min="0" inputMode="numeric" disabled={!per} value={form.qty[x.code] || ""} onChange={(e) => setForm({ ...form, qty: { ...form.qty, [x.code]: e.target.value } })} placeholder="0 ctn" style={{ ...inp, width: "100%", textAlign: "right", opacity: per ? 1 : 0.5 }} />
+                <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 2 }}>{per ? (c ? `= ${(c * per).toLocaleString()} boxes` : `${per} boxes / ctn`) : ""}</div>
+              </div>
+            );
+          })}
+        </div>
         <input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="Why? (optional)" style={{ ...inp, width: "100%", marginBottom: 10 }} />
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 12.5, color: C.textDim }}>{totalAsked ? `${totalAsked} boxes` : ""}</span>
+          <span style={{ fontSize: 12.5, color: C.textDim }}>{totalCtn ? `${totalCtn} cartons = ${totalAsked} boxes into sample stock` : "Request in cartons — they arrive in sample stock as boxes."}</span>
           <button disabled={busy} onClick={submit} style={btn}>{busy ? "Sending…" : "Send request"}</button>
         </div>
       </div>
