@@ -11203,7 +11203,8 @@ function SamplesGiftsPage({ C, sbFetch, authUser, logActivity, canApprove }) {
   const waiting = all.filter((r) => r.status === "requested");
   const done = all.filter((r) => r.status !== "requested" && String(r.decided_at || r.created_at).slice(0, 7) === month);
   const moved = done.filter((r) => r.status === "given");
-  const movedTotal = moved.reduce((a, r) => a + sumLines(r.lines), 0);
+  const otherIn = sMoves.filter((x) => (x.kind === "return" || x.kind === "adjust") && String(x.move_date).slice(0, 7) === month);
+  const movedTotal = moved.reduce((a, r) => a + sumLines(r.lines), 0) + otherIn.filter((x) => x.kind === "return").reduce((a, x) => a + Number(x.qty || 0), 0);
   // give-outs this month, grouped by reference
   const outsMonth = sMoves.filter((x) => x.kind === "out" && String(x.move_date).slice(0, 7) === month);
   const outGroups = Object.values(outsMonth.reduce((acc, x) => {
@@ -11341,8 +11342,14 @@ function SamplesGiftsPage({ C, sbFetch, authUser, logActivity, canApprove }) {
       </div>
 
       <div style={card}>
-        <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>Moved in from warehouse — {movedTotal} boxes</div>
-        {done.length === 0 ? <div style={{ fontSize: 12.5, color: C.textFaint }}>None this month.</div> : done.map((r) => (
+        <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>Moved into sample stock — {movedTotal} boxes</div>
+        {otherIn.map((x) => (
+          <div key={`o${x.id}`} style={{ padding: "7px 0", borderTop: `1px solid ${C.border}`, fontSize: 12.5 }}>
+            {x.kind === "return" ? <><b>{x.reference}</b> · {x.move_date} · Damaged return from <b>{x.recipient}</b> · {sampleItemLabel(x.item)} {x.qty}</> : <>{x.move_date} · Count adjustment · {sampleItemLabel(x.item)} {Number(x.qty) > 0 ? "+" : ""}{x.qty}</>}
+            <span style={{ color: C.textDim }}> · {nameOf(x.created_by)}{x.note ? ` · “${x.note}”` : ""}</span>
+          </div>
+        ))}
+        {done.length === 0 && otherIn.length === 0 ? <div style={{ fontSize: 12.5, color: C.textFaint }}>None this month.</div> : done.map((r) => (
           <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "7px 0", borderTop: `1px solid ${C.border}`, fontSize: 12.5, flexWrap: "wrap", opacity: r.status === "given" ? 1 : 0.6 }}>
             <span><b>{r.req_no}</b> · {String(r.decided_at || "").slice(0, 10)} · {sgPurpose(r.purpose)} · <b>{r.recipient}</b> · {lineText(r.lines)} <span style={{ color: C.textDim }}>· asked by {nameOf(r.requested_by)}{r.decided_by ? `, ${r.status === "given" ? "approved" : r.status} by ${nameOf(r.decided_by)}` : ""}{r.decision_note ? ` · “${r.decision_note}”` : ""}</span></span>
             <span style={{ fontWeight: 700, color: statusTone[r.status] }}>{statusLabel[r.status]}</span>
@@ -15795,6 +15802,11 @@ const RETURN_TYPES = [
   { key: "corporate", label: "Corporate" },
   { key: "cod", label: "COD / Online" },
 ];
+const RETURN_COND = {
+  good: { label: "Good — back to sale stock", short: "back to sale stock", done: "Back in sale stock" },
+  sample: { label: "Damaged — keep as sample", short: "to sample stock", done: "To sample stock" },
+  damaged: { label: "Damaged", short: "damaged", done: "Damaged", old: true },
+};
 function StockReturnsPanel({ C, sbFetch, authUser, logActivity, lists, salespeople, addStockMove, defaultOpen }) {
   const empty = { type: "consignment", storeId: "", condition: "good", reason: "", broughtBy: "", note: "", qty: {}, offShelf: true };
   const [open, setOpen] = useState(!!defaultOpen);
@@ -15824,14 +15836,19 @@ function StockReturnsPanel({ C, sbFetch, authUser, logActivity, lists, salespeop
       }) })) || [];
       const ref = `${row?.ret_no || "RT"} · ${store.name}`;
       if (form.condition === "good") await addStockMove(SKUS.map((x) => ({ product: x.code, qty: lines[x.code] || 0 })), "return", ref);
+      // Damaged box but still usable → goes into sample stock, never back into the sales warehouse.
+      if (form.condition === "sample") {
+        const sm = Object.entries(lines).map(([item, q]) => ({ item, qty: q, kind: "return", reference: row?.ret_no || "RT", recipient: store.name, note: form.reason.trim() || "Damaged return", created_by: authUser?.email || "unknown" }));
+        if (sm.length) await sbFetch("sample_stock_moves", { method: "POST", body: JSON.stringify(sm) });
+      }
       // Consignment: the boxes also leave the store's shelf (same as "returned" on a visit).
       if (form.type === "consignment" && form.offShelf) {
         const today = new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
         const v = SKUS.filter((x) => lines[x.code]).map((x) => ({ date: today, store_name: store.name, product: x.visitKey, sold: 0, returned: lines[x.code], paid: 0, notes: `Stock return ${row?.ret_no || ""}`, created_by: authUser?.email || "unknown" }));
         if (v.length) await sbFetch("visits", { method: "POST", body: JSON.stringify(v) });
       }
-      logActivity?.("Stock returned", store.name, `${row?.ret_no || ""} · ${lineText(lines)} · ${form.condition === "good" ? "back in stock" : "damaged"}`);
-      setOk(`${row?.ret_no || "Return"} saved — ${total} boxes from ${store.name}${form.condition === "good" ? " are back in the warehouse." : " recorded as damaged (not added to sellable stock)."}${form.type !== "consignment" ? " The customer was billed for these boxes — tell the accountant so the bill can be reduced." : ""}`);
+      logActivity?.("Stock returned", store.name, `${row?.ret_no || ""} · ${lineText(lines)} · ${RETURN_COND[form.condition]?.short || form.condition}`);
+      setOk(`${row?.ret_no || "Return"} saved — ${total} boxes from ${store.name}${form.condition === "good" ? " are back in the sales warehouse." : " moved into sample stock (not sellable)."}${form.type !== "consignment" ? " The customer was billed for these boxes — tell the accountant so the bill can be reduced." : ""}`);
       setForm({ ...empty, type: form.type });
       setOpen(!!defaultOpen);
       await load();
@@ -15872,9 +15889,8 @@ function StockReturnsPanel({ C, sbFetch, authUser, logActivity, lists, salespeop
             ))}
           </div>
           <label style={lab}>Condition</label>
-          <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-            <button type="button" onClick={() => setForm({ ...form, condition: "good" })} style={pill(form.condition === "good")}>Good — back into stock</button>
-            <button type="button" onClick={() => setForm({ ...form, condition: "damaged" })} style={pill(form.condition === "damaged")}>Damaged — can't resell</button>
+          <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+            {Object.entries(RETURN_COND).filter(([, c]) => !c.old).map(([k, c]) => <button key={k} type="button" onClick={() => setForm({ ...form, condition: k })} style={pill(form.condition === k)}>{c.label}</button>)}
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
             <div>
@@ -15908,7 +15924,7 @@ function StockReturnsPanel({ C, sbFetch, authUser, logActivity, lists, salespeop
           {rows.map((r) => (
             <div key={r.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 0", fontSize: 12.5, flexWrap: "wrap", borderBottom: `1px solid ${C.border}` }}>
               <span><b>{r.ret_no}</b> · {r.return_date} · <b>{r.store_name}</b> · {lineText(r.lines)}<span style={{ color: C.textDim }}>{r.brought_by ? ` · by ${r.brought_by}` : ""}{r.reason ? ` · ${r.reason}` : ""}</span></span>
-              <span style={{ fontWeight: 700, color: r.condition === "good" ? C.emerald : C.rose }}>{r.condition === "good" ? "Back in stock" : "Damaged"}</span>
+              <span style={{ fontWeight: 700, color: r.condition === "good" ? C.emerald : r.condition === "sample" ? C.amber : C.rose }}>{RETURN_COND[r.condition]?.done || r.condition}</span>
             </div>
           ))}
         </div>
